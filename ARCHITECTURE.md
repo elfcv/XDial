@@ -211,7 +211,9 @@ Provider 诊断限定当前事务的 active Line。短时 route watch 只返回�
 
 Provider 是运行报告的权威写入者。root 与用户 App Group 是不同容器：初始报告随启动
 options 传入，Provider 原子 journal 由文件锁串行写入，helper 只读转发，宿主镜像给 UI。
-残留半完成事务先与系统状态协调清理；journal 无法可靠写入时不能 Commit。
+残留半完成事务先与系统状态协调清理；残留按所有权判定，只有此前 Host 进程遗留的事务才会被
+回收，本进程发起或接管的事务归实时状态机，迟到的状态同步不能凭报告形状撤销它。
+journal 无法可靠写入时不能 Commit。入口：[事务处置](macos/Shared/PersistedTransactionReconciliation.swift)。
 
 配置指纹由 Go 与计划同源生成：包含实际 binding 顺序、默认 Line、有效依赖及 fetch Line；
 排除显示名称、图标、SSID 和顶层视觉排序。Swift 只比较指纹判断 `configDirty`。

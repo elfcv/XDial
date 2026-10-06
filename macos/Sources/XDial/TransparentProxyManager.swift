@@ -85,6 +85,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
     private var startAttemptID: UUID?
     private var startIntentID: UUID?
     private var currentTransactionID: String?
+    /// Transactions this Host process began or adopted. Only transactions
+    /// outside this set can be leftovers of an earlier Host process.
+    private var hostOwnedTransactionIDs = Set<String>()
     private var currentTransactionSeedJSON: String?
     private var reportPollTimer: Timer?
     private var recoveringTransactionID: String?
@@ -320,6 +323,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
 
         let requestID = UUID().uuidString
         let targetTransactionID = UUID().uuidString
+        hostOwnedTransactionIDs.insert(targetTransactionID)
         let targetReport = ConnectionReport(
             transactionID: targetTransactionID,
             plan: plan
@@ -972,7 +976,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 self.publishRuntimeStatus("disconnected", error: nil)
             case let .success(manager?):
                 self.installStatusObserver(for: manager)
-                if self.reconcileInterruptedTransactionIfNeeded(
+                if self.reconcilePersistedTransactionIfNeeded(
                     manager
                 ) {
                     return
@@ -2235,6 +2239,17 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                     taskID: "ingress:transparent-proxy"
                 )
             }
+            if let report = ConnectionReportJournal.read(),
+               PersistedTransactionReconciliation.decide(
+                   report: report,
+                   ownership: ownership(of: report),
+                   systemSession: .inactive,
+                   hostIntentActive: hostIntentActive
+               ) == .finishWithdrawnTransaction {
+                finishWithdrawnTransaction(
+                    transactionID: report.transactionID
+                )
+            }
             if let transactionID = recoveringTransactionID {
                 recoveringTransactionID = nil
                 finishInterruptedTransactionRecovery(
@@ -2548,6 +2563,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         guard let seedJSON = String(data: seedData, encoding: .utf8) else {
             throw ManagerError.invalidConnectionPlan
         }
+        hostOwnedTransactionIDs.insert(transactionID)
         try ConnectionReportJournal.write(report)
         currentTransactionID = transactionID
         currentTransactionSeedJSON = seedJSON
@@ -2791,47 +2807,84 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         return runtimeStatus
     }
 
-    private func reconcileInterruptedTransactionIfNeeded(
-        _ manager: NETransparentProxyManager
+    private var hostIntentActive: Bool {
+        startIntentID != nil
+            || automaticReconnectInProgress
+            || activeScenarioSwitch != nil
+    }
+
+    private func ownership(
+        of report: ConnectionReport
+    ) -> TransactionOwnership {
+        hostOwnedTransactionIDs.contains(report.transactionID)
+            ? .thisHost
+            : .inherited
+    }
+
+    private static func systemSessionState(
+        _ manager: NETransparentProxyManager?
+    ) -> SystemProxySessionState {
+        guard let manager else { return .absent }
+        switch manager.connection.status {
+        case .invalid, .disconnected:
+            return .inactive
+        default:
+            return .active
+        }
+    }
+
+    /// Status synchronization may arrive late (for example a wake sync whose
+    /// preferences load stalls). It reads the journal at callback time and may
+    /// only act on facts: a takeover macOS no longer has, a session this Host
+    /// stopped, or a transaction an earlier Host process left unfinished.
+    /// Anything this Host is still starting, reconnecting or switching belongs
+    /// to the live state machine.
+    @discardableResult
+    private func reconcilePersistedTransactionIfNeeded(
+        _ manager: NETransparentProxyManager?
     ) -> Bool {
         guard let report = ConnectionReportJournal.read() else {
             return false
         }
-        if report.state == .committed {
-            switch manager.connection.status {
-            case .invalid, .disconnected:
-                currentTransactionID = report.transactionID
-                finishInterruptedTransactionRecovery(
-                    transactionID: report.transactionID,
-                    error: .providerSessionLost,
-                    code: "provider-session-lost",
-                    taskID: "ingress:transparent-proxy"
-                )
-            default:
-                break
-            }
+        let disposition = PersistedTransactionReconciliation.decide(
+            report: report,
+            ownership: ownership(of: report),
+            systemSession: Self.systemSessionState(manager),
+            hostIntentActive: hostIntentActive
+        )
+        switch disposition {
+        case .none:
             return false
-        }
-        guard ![
-            .failed,
-            .cancelled,
-        ].contains(report.state) else {
+        case .adoptCommittedSession:
+            hostOwnedTransactionIDs.insert(report.transactionID)
             return false
-        }
-        currentTransactionID = report.transactionID
-        beginReportPolling(transactionID: report.transactionID)
-        recoveringTransactionID = report.transactionID
-        updateReport(transactionID: report.transactionID) {
-            $0.setState(.rollingBack)
-        }
-        switch manager.connection.status {
-        case .invalid, .disconnected:
-            recoveringTransactionID = nil
+        case .markProviderSessionLost:
+            currentTransactionID = report.transactionID
             finishInterruptedTransactionRecovery(
+                transactionID: report.transactionID,
+                error: .providerSessionLost,
+                code: "provider-session-lost",
+                taskID: "ingress:transparent-proxy"
+            )
+            return false
+        case .finishWithdrawnTransaction:
+            finishWithdrawnTransaction(
                 transactionID: report.transactionID
             )
             return false
-        case .connected, .connecting, .reasserting, .disconnecting:
+        case let .recoverInterrupted(stopSystemSession):
+            currentTransactionID = report.transactionID
+            guard stopSystemSession, let manager else {
+                finishInterruptedTransactionRecovery(
+                    transactionID: report.transactionID
+                )
+                return false
+            }
+            beginReportPolling(transactionID: report.transactionID)
+            recoveringTransactionID = report.transactionID
+            updateReport(transactionID: report.transactionID) {
+                $0.setState(.rollingBack)
+            }
             publishRuntimeStatus(
                 "disconnecting",
                 error: ManagerError.interruptedTransactionRecovered
@@ -2839,8 +2892,22 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             )
             manager.connection.stopVPNTunnel()
             return true
-        @unknown default:
-            return false
+        }
+    }
+
+    /// Completes a transaction this Host stopped before its Provider finished
+    /// the report. macOS has confirmed that no session remains, so no other
+    /// writer can complete it.
+    private func finishWithdrawnTransaction(transactionID: String) {
+        updateReport(transactionID: transactionID) { report in
+            if ![.rollingBack, .rolledBack].contains(report.state) {
+                report.setState(.rollingBack)
+            }
+            report.rollbackSessionTasks(
+                systemTakeoverRemoved: true,
+                cleanupComplete: true,
+                finalState: report.error == nil ? .cancelled : .failed
+            )
         }
     }
 
@@ -2878,21 +2945,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             return
         }
         currentTransactionID = report.transactionID
-        switch report.state {
-        case .committed:
-            finishInterruptedTransactionRecovery(
-                transactionID: report.transactionID,
-                error: .providerSessionLost,
-                code: "provider-session-lost",
-                taskID: "ingress:transparent-proxy"
-            )
-        case .failed, .cancelled:
-            break
-        default:
-            finishInterruptedTransactionRecovery(
-                transactionID: report.transactionID
-            )
-        }
+        reconcilePersistedTransactionIfNeeded(nil)
     }
 
     private func startUnderlayMonitoringIfNeeded() {
