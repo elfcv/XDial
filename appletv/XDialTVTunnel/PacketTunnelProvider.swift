@@ -763,6 +763,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     ///   {"cmd":"test-outbound","outbound_tag":"...","test_url":"...","timeout_ms":"5000"}
     ///   {"cmd":"probe-outbound-address","outbound_tag":"...","timeout_ms":"7000"}
     ///   {"cmd":"routing-probe-snapshot"}
+    ///   {"cmd":"traffic-snapshot"}
     ///   {"cmd":"tailscale-status","endpoint_tag":"tailscale-..."}
     /// 响应结构见 GoEngine.swift 的 DaemonResponse:{id?, ok?, message?, data?, event?}。
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
@@ -880,6 +881,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             completion.value(encodeResponse(
                 ok: true,
                 dataString: engine.routingProbeSnapshot()
+            ))
+
+        case "traffic-snapshot":
+            // 全线路累计字节数，App 按相邻两次采样差值算实时速率。
+            guard let engine = currentEngine(), engine.isRunning() else {
+                completion.value(encodeResponse(ok: false, message: "连接引擎未运行"))
+                return
+            }
+            completion.value(encodeResponse(
+                ok: true,
+                dataString: engine.trafficTotals()
             ))
 
         case "tailscale-status":

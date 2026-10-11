@@ -3,11 +3,13 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var app: AppState
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @Binding var selectedTab: MobileTab
     @State private var showingScenarios = false
     @State private var showingConfigurationIssues = false
     @State private var tailscaleLoginLineID: String?
     @State private var tailscaleLoginError: String?
+    @State private var trafficRate = TrafficRate.unavailable
 
     var body: some View {
         NavigationStack {
@@ -67,9 +69,74 @@ struct HomeView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            if app.isConnected {
+                trafficRateCapsule
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 12)
+        .task(id: samplesTraffic) {
+            await sampleTraffic()
+        }
+    }
+
+    /// 只在首页可见、App 在前台且已连接时每秒采样；切页、退后台或断开即停。
+    private var samplesTraffic: Bool {
+        app.isConnected && scenePhase == .active
+    }
+
+    private func sampleTraffic() async {
+        guard samplesTraffic else {
+            trafficRate = .unavailable
+            return
+        }
+        var estimator = TrafficRateEstimator()
+        while !Task.isCancelled {
+            let totals = await app.trafficTotals()
+            guard !Task.isCancelled else { return }
+            if let rate = estimator.update(totals, sampledAt: Date()) {
+                trafficRate = rate
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    private var trafficRateCapsule: some View {
+        let download = TrafficRate.format(trafficRate.downloadBytesPerSecond)
+        let upload = TrafficRate.format(trafficRate.uploadBytesPerSecond)
+        return HStack(spacing: 0) {
+            trafficMetric(symbol: "arrow.down", value: download)
+            Divider()
+                .frame(height: 14)
+                .padding(.horizontal, 10)
+            trafficMetric(symbol: "arrow.up", value: upload)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 32)
+        .background(Color.primary.opacity(0.04), in: Capsule())
+        .overlay {
+            Capsule().stroke(Color.primary.opacity(0.07), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(app.tr(
+            "下载 \(download)，上传 \(upload)",
+            "Download \(download), upload \(upload)"
+        ))
+        .accessibilityIdentifier("traffic-rate")
+    }
+
+    private func trafficMetric(symbol: String, value: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.footnote, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 88, alignment: .trailing)
+        }
     }
 
     private var powerButton: some View {
