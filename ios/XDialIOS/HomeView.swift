@@ -3,11 +3,12 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var app: AppState
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @Binding var selectedTab: MobileTab
-    @State private var showingScenarios = false
     @State private var showingConfigurationIssues = false
     @State private var tailscaleLoginLineID: String?
     @State private var tailscaleLoginError: String?
+    @State private var trafficRate = TrafficRate.unavailable
 
     var body: some View {
         NavigationStack {
@@ -15,7 +16,7 @@ struct HomeView: View {
                 VStack(spacing: 24) {
                     statusHero
                     powerButton
-                    scenarioCard
+                    scenarioList
 
                     if app.requiresUserAction {
                         tailscaleSignInCard
@@ -38,10 +39,6 @@ struct HomeView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("XDial")
-            .sheet(isPresented: $showingScenarios) {
-                QuickScenarioPicker()
-                    .presentationDetents([.medium, .large])
-            }
         }
     }
 
@@ -67,9 +64,74 @@ struct HomeView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            if app.isConnected {
+                trafficRateCapsule
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 12)
+        .task(id: samplesTraffic) {
+            await sampleTraffic()
+        }
+    }
+
+    /// 只在首页可见、App 在前台且已连接时每秒采样；切页、退后台或断开即停。
+    private var samplesTraffic: Bool {
+        app.isConnected && scenePhase == .active
+    }
+
+    private func sampleTraffic() async {
+        guard samplesTraffic else {
+            trafficRate = .unavailable
+            return
+        }
+        var estimator = TrafficRateEstimator()
+        while !Task.isCancelled {
+            let totals = await app.trafficTotals()
+            guard !Task.isCancelled else { return }
+            if let rate = estimator.update(totals, sampledAt: Date()) {
+                trafficRate = rate
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    private var trafficRateCapsule: some View {
+        let download = TrafficRate.format(trafficRate.downloadBytesPerSecond)
+        let upload = TrafficRate.format(trafficRate.uploadBytesPerSecond)
+        return HStack(spacing: 0) {
+            trafficMetric(symbol: "arrow.down", value: download)
+            Divider()
+                .frame(height: 14)
+                .padding(.horizontal, 10)
+            trafficMetric(symbol: "arrow.up", value: upload)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 32)
+        .background(Color.primary.opacity(0.04), in: Capsule())
+        .overlay {
+            Capsule().stroke(Color.primary.opacity(0.07), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(app.tr(
+            "下载 \(download)，上传 \(upload)",
+            "Download \(download), upload \(upload)"
+        ))
+        .accessibilityIdentifier("traffic-rate")
+    }
+
+    private func trafficMetric(symbol: String, value: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.footnote, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 88, alignment: .trailing)
+        }
     }
 
     private var powerButton: some View {
@@ -116,32 +178,72 @@ struct HomeView: View {
         .accessibilityIdentifier("connection-toggle")
     }
 
-    private var scenarioCard: some View {
-        Button { showingScenarios = true } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "square.grid.2x2.fill")
-                    .font(.title3)
-                    .frame(width: 34, height: 34)
-                    .background(Color.accentColor.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.tr("当前场景", "Current scenario"))
+    private var scenarioList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(app.tr("场景", "Scenarios"))
+                    .font(.headline)
+                Spacer()
+                if app.hasActiveTunnel {
+                    Text(app.tr("断开后可切换", "Disconnect to switch"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(app.activeScenario?.name ?? app.tr("请选择", "Select"))
-                        .font(.headline)
-                        .foregroundStyle(.primary)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
             }
             .padding()
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+
+            if app.profile.scenarios.isEmpty {
+                Divider()
+                Text(app.tr("暂无场景，请在「配置 › 场景」中新建。", "No scenarios yet. Create one in Configuration › Scenes."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding()
+            }
+
+            ForEach(app.profile.scenarios) { scenario in
+                Divider()
+                    .padding(.leading)
+                scenarioRow(scenario)
+            }
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func scenarioRow(_ scenario: Scenario) -> some View {
+        let isActive = scenario.id == app.profile.activeScenarioID
+        let issueCount = app.configurationIssues(for: scenario).count
+        return Button {
+            guard app.canMutateConfiguration, !isActive else { return }
+            app.profile.activeScenarioID = scenario.id
+            app.save()
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(scenario.name)
+                        .foregroundStyle(.primary)
+                    if issueCount > 0 {
+                        Text(app.tr("需补齐 \(issueCount) 项配置", "\(issueCount) setup item(s) required"))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Spacer()
+                if isActive {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(app.hasActiveTunnel || app.isBusy)
+        .opacity((app.hasActiveTunnel || app.isBusy) && !isActive ? 0.45 : 1)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .accessibilityIdentifier("home-scenario-\(scenario.id)")
     }
 
     private var tailscaleSignInCard: some View {
@@ -353,46 +455,6 @@ struct PendingRuntimeChangesBanner: View {
         .padding()
         .background(Color.orange.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 14))
-    }
-}
-
-private struct QuickScenarioPicker: View {
-    @EnvironmentObject private var app: AppState
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List(app.profile.scenarios) { scenario in
-                Button {
-                    guard app.canMutateConfiguration else { return }
-                    app.profile.activeScenarioID = scenario.id
-                    app.save()
-                    dismiss()
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(scenario.name)
-                                .foregroundStyle(.primary)
-                            Text(app.tr("\(scenario.bindings.count) 条分流绑定", "\(scenario.bindings.count) bindings"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if scenario.id == app.profile.activeScenarioID {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                        }
-                    }
-                }
-                .disabled(app.hasActiveTunnel || app.isBusy)
-            }
-            .navigationTitle(app.tr("选择场景", "Select scenario"))
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(app.tr("完成", "Done")) { dismiss() }
-                }
-            }
-        }
     }
 }
 

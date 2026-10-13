@@ -259,6 +259,7 @@ final class HomeViewUITests: XCTestCase {
         XCTAssertTrue(app.segmentedControls.buttons["线路"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.segmentedControls.buttons["规则"].exists)
         XCTAssertTrue(app.segmentedControls.buttons["订阅"].exists)
+        XCTAssertTrue(app.segmentedControls.buttons["场景"].exists)
 
         app.buttons["添加线路"].tap()
         app.buttons["VMess"].tap()
@@ -277,10 +278,17 @@ final class HomeViewUITests: XCTestCase {
         XCTAssertTrue(app.textFields["订阅 URL"].waitForExistence(timeout: 2))
         app.buttons["取消"].tap()
 
-        app.tabBars.buttons["场景"].tap()
+        app.segmentedControls.buttons["场景"].tap()
         app.buttons["添加场景"].tap()
         app.buttons["空白场景"].tap()
         XCTAssertTrue(app.staticTexts["空白场景"].waitForExistence(timeout: 2))
+        app.staticTexts["空白场景"].tap()
+        XCTAssertTrue(app.navigationBars["编辑场景"].waitForExistence(timeout: 2))
+        app.navigationBars["编辑场景"].buttons["配置"].tap()
+        XCTAssertTrue(app.navigationBars["配置"].waitForExistence(timeout: 2))
+
+        app.tabBars.buttons["首页"].tap()
+        XCTAssertTrue(homeScenario(named: "空白场景", in: app).waitForExistence(timeout: 2))
 
         app.tabBars.buttons["设置"].tap()
         let diagnosticsButton = app.buttons["查看诊断详情"]
@@ -299,6 +307,36 @@ final class HomeViewUITests: XCTestCase {
         diagnosticsButton.tap()
         XCTAssertTrue(app.navigationBars["诊断详情"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'XDial 诊断'")).firstMatch.exists)
+    }
+
+    func testHomeListsScenariosAndSwitchesWithOneTap() {
+        let app = launchApp()
+
+        XCTAssertEqual(app.tabBars.buttons.count, 3)
+        XCTAssertFalse(app.tabBars.buttons["场景"].exists)
+
+        let overseas = homeScenario(named: "海外", in: app)
+        let domestic = homeScenario(named: "国内", in: app)
+        XCTAssertTrue(overseas.waitForExistence(timeout: 3))
+        XCTAssertTrue(domestic.exists)
+        XCTAssertTrue(overseas.isSelected)
+        XCTAssertFalse(domestic.isSelected)
+
+        app.buttons["连接"].tap()
+        XCTAssertTrue(app.staticTexts["断开后可切换"].waitForExistence(timeout: 3))
+        XCTAssertFalse(domestic.isEnabled)
+        app.buttons["断开"].tap()
+        XCTAssertTrue(app.staticTexts["未连接"].waitForExistence(timeout: 3))
+
+        domestic.tap()
+        XCTAssertTrue(domestic.isSelected)
+        XCTAssertFalse(overseas.isSelected)
+        app.terminate()
+
+        let relaunched = launchApp(reset: false)
+        let persisted = homeScenario(named: "国内", in: relaunched)
+        XCTAssertTrue(persisted.waitForExistence(timeout: 3))
+        XCTAssertTrue(persisted.isSelected)
     }
 
     func testConnectivityAcceptanceRulesAreVisibleAndProtected() {
@@ -661,11 +699,13 @@ final class HomeViewUITests: XCTestCase {
             "这是 XDial 内置线路的独立授权，与手机上的 Tailscale App 登录状态不共享。完成一次授权后，XDial 会自动继续连接验收。"
         ].exists)
 
-        app.tabBars.buttons["场景"].tap()
-        XCTAssertFalse(app.buttons["添加场景"].isEnabled)
+        XCTAssertFalse(homeScenario(named: "国内", in: app).isEnabled)
 
         app.tabBars.buttons["配置"].tap()
         XCTAssertFalse(app.buttons["添加线路"].isEnabled)
+        app.segmentedControls.buttons["场景"].tap()
+        XCTAssertFalse(app.buttons["添加场景"].isEnabled)
+        app.segmentedControls.buttons["线路"].tap()
         let tailscale = app.buttons.matching(NSPredicate(
             format: "label CONTAINS %@",
             "Tailscale 演示"
@@ -733,6 +773,14 @@ final class HomeViewUITests: XCTestCase {
         }
         XCTAssertTrue(rule.waitForExistence(timeout: 2))
         return rule
+    }
+
+    private func homeScenario(named name: String, in app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label BEGINSWITH %@",
+            "home-scenario-",
+            name
+        )).firstMatch
     }
 
     private func openAnyConnectEditor(in app: XCUIApplication) {

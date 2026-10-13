@@ -323,6 +323,16 @@ final class FakeTunnelManager: TunnelManaging, ObservableObject {
         completion(true)
     }
 
+    /// 演示用累计流量：连接期间按墙钟时间线性增长，首页能看到稳定的非零速率。
+    func trafficTotals() async -> TrafficTotals? {
+        guard let connectedAt = engine?.connectedAt else { return nil }
+        let elapsed = max(0, Date().timeIntervalSince(connectedAt))
+        return TrafficTotals(
+            uploadBytes: Int64(elapsed * 48_000),
+            downloadBytes: Int64(elapsed * 1_350_000)
+        )
+    }
+
     func setSystemOnDemandEnabled(_ enabled: Bool) {
         systemOnDemandRequested = enabled
         if !enabled {

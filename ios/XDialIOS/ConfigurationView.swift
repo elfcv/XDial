@@ -30,6 +30,7 @@ struct ConfigurationView: View {
                 case .lines: lineList
                 case .rules: ruleList
                 case .subscriptions: subscriptionList
+                case .scenarios: ScenarioList()
                 }
             }
             .navigationTitle(app.tr("配置", "Configuration"))
@@ -78,6 +79,8 @@ struct ConfigurationView: View {
                 Image(systemName: "plus")
             }
             .accessibilityLabel(app.tr("添加订阅", "Add subscription"))
+        case .scenarios:
+            ScenarioAddMenu()
         }
     }
 
@@ -402,7 +405,7 @@ struct ConfigurationView: View {
 }
 
 private enum ConfigSection: String, CaseIterable, Identifiable {
-    case lines, rules, subscriptions
+    case lines, rules, subscriptions, scenarios
     var id: String { rawValue }
 
     @MainActor
@@ -411,6 +414,7 @@ private enum ConfigSection: String, CaseIterable, Identifiable {
         case .lines: return app.tr("线路", "Lines")
         case .rules: return app.tr("规则", "Rules")
         case .subscriptions: return app.tr("订阅", "Subs")
+        case .scenarios: return app.tr("场景", "Scenes")
         }
     }
 }

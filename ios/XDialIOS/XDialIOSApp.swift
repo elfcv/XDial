@@ -2,6 +2,11 @@ import SwiftUI
 
 @main
 struct XDialIOSApp: App {
+    init() {
+        // 快捷指令和控制中心会在无窗口时后台启动 App，宿主必须在 App 初始化时注册。
+        XDialIntentHost.current = MobileIntentHost(app: MobileAppRuntime.state)
+    }
+
     var body: some Scene {
         WindowGroup {
             MobileRootView()
@@ -11,7 +16,6 @@ struct XDialIOSApp: App {
 
 enum MobileTab: Hashable {
     case home
-    case scenarios
     case configuration
     case settings
 }
@@ -21,31 +25,7 @@ struct MobileRootView: View {
     @State private var selectedTab: MobileTab = .home
 
     init() {
-        #if targetEnvironment(simulator)
-        let engine = FakeTunnelEngine()
-        let manager = FakeTunnelManager(engine: engine)
-        engine.retain(manager: manager)
-        let arguments = ProcessInfo.processInfo.arguments
-        let shouldResetUITesting = arguments.contains("-XDialUITestingReset")
-        let isUITesting = shouldResetUITesting || arguments.contains("-XDialUITesting")
-        let persistence: AppPersistenceContext = isUITesting ? .uiTesting : .production
-        if shouldResetUITesting { _ = persistence.clearForTesting() }
-        let state = AppState(
-            engine: engine,
-            tunnelManager: manager,
-            tailscaleSetupRuntime: FakeTailscaleSetupRuntime(),
-            persistence: persistence
-        )
-        _app = StateObject(wrappedValue: state)
-        #else
-        let engine = GoEngine.shared
-        let manager = TunnelManager(engine: engine)
-        _app = StateObject(wrappedValue: AppState(
-            engine: engine,
-            tunnelManager: manager,
-            tailscaleSetupRuntime: LocalTailscaleSetupRuntime()
-        ))
-        #endif
+        _app = StateObject(wrappedValue: MobileAppRuntime.state)
     }
 
     var body: some View {
@@ -53,15 +33,6 @@ struct MobileRootView: View {
             HomeView(selectedTab: $selectedTab)
                 .tabItem { Label(app.tr("首页", "Home"), systemImage: "power") }
                 .tag(MobileTab.home)
-
-            ScenariosView()
-                .tabItem {
-                    Label(
-                        app.tr("场景", "Scenarios"),
-                        systemImage: "square.grid.2x2"
-                    )
-                }
-                .tag(MobileTab.scenarios)
 
             ConfigurationView()
                 .tabItem { Label(app.tr("配置", "Config"), systemImage: "slider.horizontal.3") }

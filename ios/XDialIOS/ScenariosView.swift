@@ -1,82 +1,62 @@
 import SwiftUI
 
-struct ScenariosView: View {
+struct ScenarioList: View {
     @EnvironmentObject private var app: AppState
 
     var body: some View {
-        NavigationStack {
-            List {
-                ForEach(app.profile.scenarios) { scenario in
-                    let issues = app.configurationIssues(for: scenario)
-                    NavigationLink {
-                        ScenarioDetailView(scenarioID: scenario.id)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: scenario.id == app.profile.activeScenarioID ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(scenario.id == app.profile.activeScenarioID ? .green : .secondary)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(scenario.name)
-                                Text(scenarioSummary(scenario))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                if !issues.isEmpty {
-                                    Text(app.tr(
-                                        "需补齐 \(issues.count) 项配置",
-                                        "\(issues.count) setup item(s) required"
-                                    ))
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                                }
+        List {
+            ForEach(app.profile.scenarios) { scenario in
+                let issues = app.configurationIssues(for: scenario)
+                NavigationLink {
+                    ScenarioDetailView(scenarioID: scenario.id)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: scenario.id == app.profile.activeScenarioID ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(scenario.id == app.profile.activeScenarioID ? .green : .secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(scenario.name)
+                            Text(scenarioSummary(scenario))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if !issues.isEmpty {
+                                Text(app.tr(
+                                    "需补齐 \(issues.count) 项配置",
+                                    "\(issues.count) setup item(s) required"
+                                ))
+                                .font(.caption)
+                                .foregroundStyle(.orange)
                             }
                         }
                     }
-                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                        Button {
-                            guard app.canMutateConfiguration else { return }
-                            app.profile.activeScenarioID = scenario.id
-                            app.save()
-                        } label: {
-                            Label(app.tr("使用", "Use"), systemImage: "checkmark")
-                        }
-                        .tint(.green)
-                        .disabled(app.hasActiveTunnel || app.isBusy)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            app.deleteScenario(scenario)
-                        } label: {
-                            Label(app.tr("删除", "Delete"), systemImage: "trash")
-                        }
-                        .disabled(app.hasActiveTunnel || app.isBusy)
-                    }
                 }
-            }
-            .overlay {
-                if app.profile.scenarios.isEmpty {
-                    ContentUnavailableView(
-                        app.tr("暂无场景", "No scenarios"),
-                        systemImage: "square.grid.2x2",
-                        description: Text(app.tr("点击右上角从模板新建场景。", "Create a scenario from a template."))
-                    )
-                }
-            }
-            .navigationTitle(app.tr("场景", "Scenarios"))
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        ForEach(ScenarioTemplate.allCases, id: \.self) { template in
-                            Button(templateName(template)) {
-                                app.createScenario(from: template, named: templateName(template))
-                            }
-                            .disabled(!app.canCreateScenario(from: template)
-                                || app.hasActiveTunnel || app.isBusy)
-                        }
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    Button {
+                        guard app.canMutateConfiguration else { return }
+                        app.profile.activeScenarioID = scenario.id
+                        app.save()
                     } label: {
-                        Image(systemName: "plus")
+                        Label(app.tr("使用", "Use"), systemImage: "checkmark")
                     }
-                    .accessibilityLabel(app.tr("添加场景", "Add scenario"))
-                    .disabled(!app.canMutateConfiguration || app.hasActiveTunnel || app.isBusy)
+                    .tint(.green)
+                    .disabled(app.hasActiveTunnel || app.isBusy)
                 }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        app.deleteScenario(scenario)
+                    } label: {
+                        Label(app.tr("删除", "Delete"), systemImage: "trash")
+                    }
+                    .disabled(app.hasActiveTunnel || app.isBusy)
+                }
+            }
+        }
+        .overlay {
+            if app.profile.scenarios.isEmpty {
+                ContentUnavailableView(
+                    app.tr("暂无场景", "No scenarios"),
+                    systemImage: "square.grid.2x2",
+                    description: Text(app.tr("点击右上角从模板新建场景。", "Create a scenario from a template."))
+                )
             }
         }
     }
@@ -96,6 +76,26 @@ struct ScenariosView: View {
             "默认：\(defaultName) · \(scenario.bindings.count) 条规则",
             "Default: \(defaultName) · \(scenario.bindings.count) rules"
         )
+    }
+}
+
+struct ScenarioAddMenu: View {
+    @EnvironmentObject private var app: AppState
+
+    var body: some View {
+        Menu {
+            ForEach(ScenarioTemplate.allCases, id: \.self) { template in
+                Button(templateName(template)) {
+                    app.createScenario(from: template, named: templateName(template))
+                }
+                .disabled(!app.canCreateScenario(from: template)
+                    || app.hasActiveTunnel || app.isBusy)
+            }
+        } label: {
+            Image(systemName: "plus")
+        }
+        .accessibilityLabel(app.tr("添加场景", "Add scenario"))
+        .disabled(!app.canMutateConfiguration)
     }
 
     private func templateName(_ template: ScenarioTemplate) -> String {
