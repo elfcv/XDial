@@ -4,7 +4,6 @@ struct HomeView: View {
     @EnvironmentObject private var app: AppState
     @Environment(\.openURL) private var openURL
     @Binding var selectedTab: MobileTab
-    @State private var showingScenarios = false
     @State private var showingConfigurationIssues = false
     @State private var tailscaleLoginLineID: String?
     @State private var tailscaleLoginError: String?
@@ -15,7 +14,7 @@ struct HomeView: View {
                 VStack(spacing: 24) {
                     statusHero
                     powerButton
-                    scenarioCard
+                    scenarioList
 
                     if app.requiresUserAction {
                         tailscaleSignInCard
@@ -38,10 +37,6 @@ struct HomeView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("XDial")
-            .sheet(isPresented: $showingScenarios) {
-                QuickScenarioPicker()
-                    .presentationDetents([.medium, .large])
-            }
         }
     }
 
@@ -116,32 +111,72 @@ struct HomeView: View {
         .accessibilityIdentifier("connection-toggle")
     }
 
-    private var scenarioCard: some View {
-        Button { showingScenarios = true } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "square.grid.2x2.fill")
-                    .font(.title3)
-                    .frame(width: 34, height: 34)
-                    .background(Color.accentColor.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.tr("当前场景", "Current scenario"))
+    private var scenarioList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(app.tr("场景", "Scenarios"))
+                    .font(.headline)
+                Spacer()
+                if app.hasActiveTunnel {
+                    Text(app.tr("断开后可切换", "Disconnect to switch"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(app.activeScenario?.name ?? app.tr("请选择", "Select"))
-                        .font(.headline)
-                        .foregroundStyle(.primary)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
             }
             .padding()
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+
+            if app.profile.scenarios.isEmpty {
+                Divider()
+                Text(app.tr("暂无场景，请在「配置 › 场景」中新建。", "No scenarios yet. Create one in Configuration › Scenes."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding()
+            }
+
+            ForEach(app.profile.scenarios) { scenario in
+                Divider()
+                    .padding(.leading)
+                scenarioRow(scenario)
+            }
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func scenarioRow(_ scenario: Scenario) -> some View {
+        let isActive = scenario.id == app.profile.activeScenarioID
+        let issueCount = app.configurationIssues(for: scenario).count
+        return Button {
+            guard app.canMutateConfiguration, !isActive else { return }
+            app.profile.activeScenarioID = scenario.id
+            app.save()
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(scenario.name)
+                        .foregroundStyle(.primary)
+                    if issueCount > 0 {
+                        Text(app.tr("需补齐 \(issueCount) 项配置", "\(issueCount) setup item(s) required"))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Spacer()
+                if isActive {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(app.hasActiveTunnel || app.isBusy)
+        .opacity((app.hasActiveTunnel || app.isBusy) && !isActive ? 0.45 : 1)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .accessibilityIdentifier("home-scenario-\(scenario.id)")
     }
 
     private var tailscaleSignInCard: some View {
@@ -353,46 +388,6 @@ struct PendingRuntimeChangesBanner: View {
         .padding()
         .background(Color.orange.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 14))
-    }
-}
-
-private struct QuickScenarioPicker: View {
-    @EnvironmentObject private var app: AppState
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List(app.profile.scenarios) { scenario in
-                Button {
-                    guard app.canMutateConfiguration else { return }
-                    app.profile.activeScenarioID = scenario.id
-                    app.save()
-                    dismiss()
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(scenario.name)
-                                .foregroundStyle(.primary)
-                            Text(app.tr("\(scenario.bindings.count) 条分流绑定", "\(scenario.bindings.count) bindings"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if scenario.id == app.profile.activeScenarioID {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                        }
-                    }
-                }
-                .disabled(app.hasActiveTunnel || app.isBusy)
-            }
-            .navigationTitle(app.tr("选择场景", "Select scenario"))
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(app.tr("完成", "Done")) { dismiss() }
-                }
-            }
-        }
     }
 }
 
