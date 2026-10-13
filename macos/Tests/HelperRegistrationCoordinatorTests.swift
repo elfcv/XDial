@@ -181,6 +181,61 @@ final class HelperRegistrationCoordinatorTests: XCTestCase {
         XCTAssertTrue(fixture.savedMarkers.isEmpty)
     }
 
+    func testFreshRegistrationThatNeverStartsIsReplacedOnce() async throws {
+        let fixture = Fixture()
+        fixture.status = .notRegistered
+        fixture.runtime = .absent
+        fixture.onRegister = {
+            fixture.status = .enabled
+            // The first record is accepted but launchd never starts its daemon.
+            if fixture.registrations > 1 { fixture.runtime = .running(Fixture.currentDaemon) }
+            return true
+        }
+        try await fixture.coordinator().prepare()
+        XCTAssertEqual(fixture.registrations, 2)
+        XCTAssertEqual(fixture.unregisteredPIDs, [nil])
+        XCTAssertEqual(fixture.savedMarkers, ["current-registration"])
+        XCTAssertEqual(fixture.stages.last, .ready)
+    }
+
+    func testFreshRegistrationIsReplacedAtMostOnce() async {
+        let fixture = Fixture()
+        fixture.status = .notRegistered
+        fixture.runtime = .absent
+        fixture.onRegister = {
+            fixture.status = .enabled
+            return true
+        }
+        do {
+            try await fixture.coordinator().prepare()
+            XCTFail("missing helper became ready")
+        } catch {
+            XCTAssertEqual(error as? HelperRegistrationCoordinator.Failure, .serviceUnavailable)
+        }
+        XCTAssertEqual(fixture.registrations, 2)
+        XCTAssertEqual(fixture.unregisteredPIDs, [nil])
+        XCTAssertTrue(fixture.savedMarkers.isEmpty)
+    }
+
+    func testFreshRegistrationRunningAnotherBinaryIsNotReplaced() async {
+        let fixture = Fixture()
+        fixture.status = .notRegistered
+        fixture.runtime = .absent
+        fixture.onRegister = {
+            fixture.status = .enabled
+            fixture.runtime = .running(.init(pid: 50, executableHash: "wrong", handoffProtocolVersion: 1))
+            return true
+        }
+        do {
+            try await fixture.coordinator().prepare()
+            XCTFail("wrong helper became ready")
+        } catch {
+            XCTAssertEqual(error as? HelperRegistrationCoordinator.Failure, .versionMismatch)
+        }
+        XCTAssertEqual(fixture.registrations, 1)
+        XCTAssertTrue(fixture.unregisteredPIDs.isEmpty)
+    }
+
     func testRefreshedRegistrationWithoutRuntimeStopsAfterOneAttempt() async {
         let fixture = Fixture()
         fixture.runtime = .absent

@@ -149,7 +149,13 @@ final class HelperRegistrationCoordinator {
                 return
             }
             if registeredCurrentBundle {
-                throw runtime == .absent ? Failure.serviceUnavailable : Failure.versionMismatch
+                // Acceptance does not prove launchd can start the service: a fresh
+                // record has been observed to carry a launch constraint it could
+                // never satisfy. Replacing the record is the remedy, done once here.
+                guard runtime == .absent, !refreshedRegistration else {
+                    throw runtime == .absent ? Failure.serviceUnavailable : Failure.versionMismatch
+                }
+                registeredCurrentBundle = false
             }
 
             guard runtime != .unknown, runtime != .unresponsive else {
