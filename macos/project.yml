@@ -297,21 +297,50 @@ targets:
           - "$(BUILT_PRODUCTS_DIR)/XDial Settings UI.app"
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/XDial Settings UI.app"
-      - name: Embed private RuleSet presets
+      - name: Embed private build configuration
         script: |
           set -eu
-          preset_source="${XDIAL_RULE_SET_PRESETS_FILE:-${SRCROOT}/PrivateConfig/RuleSetPresets.json}"
-          preset_dir="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
-          preset_destination="${preset_dir}/RuleSetPresets.json"
-          if [ "${CONFIGURATION}" = "NextRelease" ]; then
-            rm -f "${preset_destination}"
-            exit 0
+          resource_dir="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          # An explicit path must exist; only the ignored PrivateConfig default is optional.
+          embed() {
+            explicit="$1" fallback="$2" destination="${resource_dir}/$3"
+            if [ "${CONFIGURATION}" = "NextRelease" ]; then
+              rm -f "${destination}"
+              return
+            fi
+            if [ -n "${explicit}" ] && [ ! -f "${explicit}" ]; then
+              echo "error: private build configuration not found: ${explicit}" >&2
+              exit 1
+            fi
+            source="${explicit:-${fallback}}"
+            if [ -f "${source}" ]; then
+              mkdir -p "${resource_dir}"
+              cp "${source}" "${destination}"
+            else
+              rm -f "${destination}"
+            fi
+          }
+          embed "${XDIAL_RULE_SET_PRESETS_FILE:-}" "${SRCROOT}/PrivateConfig/RuleSetPresets.json" RuleSetPresets.json
+          # The seed file name becomes the Profile name, as with "Import from File".
+          seed_dir="${resource_dir}/SeedProfile"
+          rm -rf "${seed_dir}"
+          seed_source="${XDIAL_SEED_PROFILE_FILE:-}"
+          if [ -z "${seed_source}" ]; then
+            for candidate in "${SRCROOT}"/PrivateConfig/SeedProfile/*.json; do
+              if [ -f "${candidate}" ]; then seed_source="${candidate}"; break; fi
+            done
           fi
-          if [ -f "${preset_source}" ]; then
-            mkdir -p "${preset_dir}"
-            cp "${preset_source}" "${preset_destination}"
-          else
-            rm -f "${preset_destination}"
+          if [ "${CONFIGURATION}" != "NextRelease" ] && [ -n "${seed_source}" ]; then
+            case "${seed_source}" in
+              *.json) ;;
+              *) echo "error: seed Profile must be a .json file: ${seed_source}" >&2; exit 1 ;;
+            esac
+            if [ ! -f "${seed_source}" ]; then
+              echo "error: private build configuration not found: ${seed_source}" >&2
+              exit 1
+            fi
+            mkdir -p "${seed_dir}"
+            cp "${seed_source}" "${seed_dir}/"
           fi
       - name: Embed configuration-matched System Extension
         script: |

@@ -465,7 +465,7 @@ struct LinesTab: View {
                     if groupsOnly {
                     lineTypeButton("新建线路组", type: "urltest", icon: "square.stack.3d.up")
                     } else {
-                    lineTypeButton("VPN", type: "vpn", icon: "lock.shield")
+                    lineTypeButton("AnyConnect", type: "vpn", icon: "lock.shield")
                     lineTypeButton(
                         "Trojan",
                         type: "trojan",
@@ -515,7 +515,7 @@ struct LinesTab: View {
         let id = type + "-" + String(UUID().uuidString.prefix(6))
         let name: String
         switch type {
-        case "vpn": name = "VPN"
+        case "vpn": name = "AnyConnect"
         case "trojan": name = "Trojan 节点"
         case "shadowsocks": name = "SS 节点"
         case "vmess": name = "VMess 节点"
@@ -2893,7 +2893,7 @@ private func lineBriefInfo(_ line: Line, state: AppState, net: NetworkInfo) -> S
 private func lineTypeLabel(_ line: Line) -> String {
     switch line.type {
     case "direct": return "直连"
-    case "vpn": return "VPN"
+    case "vpn": return "AnyConnect"
     case "trojan": return "Trojan"
     case "shadowsocks": return "SS"
     case "vmess": return "VMess"

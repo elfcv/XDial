@@ -994,7 +994,7 @@ extension Profile {
         var p = Profile()
         p.lines = [
             Line(id: "direct", name: "直连", type: "direct", verified: true),
-            Line(id: "vpn", name: "VPN", type: "vpn"),
+            Line(id: "vpn", name: "AnyConnect", type: "vpn"),
             Line(id: "ss", name: "SS 节点", type: "trojan", enabled: false),
         ]
         p.ruleSets = [
@@ -1121,7 +1121,7 @@ extension Profile {
             }
             guard let item = resources[id] else { return "包含已不存在的线路" }
             if item.type == "vpn" || item.type == "tailscale" {
-                return "VPN 和 Tailscale 需直接用于场景"
+                return "AnyConnect 和 Tailscale 需直接用于场景"
             }
             if item.type == "direct", underURLTest {
                 return "自动选择暂不支持直连，包括子组中的直连"
