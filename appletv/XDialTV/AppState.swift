@@ -2131,6 +2131,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 等待系统隧道配置加载完成。快捷指令可能在 App 冷启动后立即执行，
+    /// 此时 manager 尚未加载，直接 stop / 判断状态会读到初始值。
+    func refreshTunnelProfileStatusAndWait() async {
+        guard let tunnelManager else {
+            helperInstalled = false
+            return
+        }
+        let installed = await withCheckedContinuation { continuation in
+            tunnelManager.refreshProfileStatus { continuation.resume(returning: $0) }
+        }
+        helperInstalled = installed
+    }
+
     // MARK: - Subscription Management
 
     func addSubscription(name: String, url: String, format: String, strategy: String,
