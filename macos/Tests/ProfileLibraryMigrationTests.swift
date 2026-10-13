@@ -147,43 +147,55 @@ final class ProfileLibraryMigrationTests: XCTestCase {
         XCTAssertEqual(try store.loadOrCreate { XCTFail(); return nil }, result)
     }
 
-    private func seedResource(in home: URL, _ text: String = "{}") throws -> URL {
-        let url = home.appendingPathComponent("SeedProfile.json")
-        try Data(text.utf8).write(to: url)
-        return url
-    }
-
     private func seededProfile(id: String) -> Profile {
         var profile = Profile()
         profile.profileID = id
-        profile.lines = [Line(id: "direct", name: "直连", type: "direct"), Line(id: "vpn", name: "Company", type: "vpn")]
+        profile.lines = [Line(id: "direct", name: "直连", type: "direct"), Line(id: id + "-vpn", name: "Company", type: "vpn")]
         profile.lines[1].vpnServer = "vpn.example.test:8443"
-        profile.ruleSets = [RuleSet(id: "intranet", name: "Intranet", type: "manual", domains: ["corp.example"])]
-        var office = Scenario(id: "office", name: "Office", defaultLineID: "direct")
+        profile.ruleSets = [RuleSet(id: id + "-intranet", name: "Intranet", type: "manual", domains: ["corp.example"])]
+        var office = Scenario(id: id + "-office", name: "Office", defaultLineID: "direct")
         office.matchSSIDs = ["CORP"]
-        var remote = Scenario(id: "remote", name: "Remote", defaultLineID: "direct")
-        remote.bindings = [RuleBinding(ruleSetID: "intranet", lineID: "vpn")]
+        var remote = Scenario(id: id + "-remote", name: "Remote", defaultLineID: "direct")
+        remote.bindings = [RuleBinding(ruleSetID: id + "-intranet", lineID: id + "-vpn")]
+        remote.matchSSIDs = ["CORP-GUEST"]
         profile.scenarios = [office, remote]
-        profile.activeScenarioID = "remote"
+        profile.activeScenarioID = remote.id
         return profile
     }
 
-    func testSeedProfileCreatesGlobalScenariosOnceWithoutCredentials() throws {
+    private func existingLibrary(claiming ssids: [String]) throws -> ProfileLibrary {
+        var library = ProfileLibrary()
+        library.scenarios[0].matchSSIDs = ssids
+        return try library.validated()
+    }
+
+    func testSeedLoadsOneNamedDocumentAndRejectsAmbiguousDirectories() throws {
+        let home = try temporaryHome()
+        let directory = home.appendingPathComponent("SeedProfile")
+        XCTAssertNil(try SeedProfile.load(directory: directory))
+        XCTAssertNil(try SeedProfile.load(directory: nil))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("seed document".utf8).write(to: directory.appendingPathComponent("公司.json"))
+        XCTAssertEqual(try SeedProfile.load(directory: directory), SeedProfile(name: "公司", text: "seed document"))
+        try Data("{}".utf8).write(to: directory.appendingPathComponent("Other.json"))
+        XCTAssertThrowsError(try SeedProfile.load(directory: directory))
+    }
+
+    func testSeedCreatesEmptyLibraryOnceWithUnprefixedScenarios() throws {
         let home = try temporaryHome()
         let key = SymmetricKey(size: .bits256)
         let store = ProfileLibraryStore(directory: ConfigurationStorage.directory(home: home), keyProvider: { _ in key })
-        let resource = try seedResource(in: home, "seed document")
         var imports = 0
         let library = try store.loadOrCreate {
             try ProfileLibraryMigration.initialLibrary(home: home) { _, _ in XCTFail(); return Profile() }
-                ?? ProfileLibraryMigration.seedLibrary(resource: resource) { text, id in
+                ?? ProfileLibraryMigration.seedLibrary(SeedProfile(name: "公司", text: "seed document")) { text, id in
                     imports += 1
                     XCTAssertEqual(text, "seed document")
                     return self.seededProfile(id: id)
                 }
         }
         XCTAssertEqual(imports, 1)
-        XCTAssertEqual(library.profiles.count, 1)
+        XCTAssertEqual(library.profiles.map(\.name), ["公司"])
         XCTAssertEqual(library.profiles[0].profile.profileID, library.profiles[0].id)
         XCTAssertEqual(library.scenarios.map(\.name), ["Office", "Remote"])
         XCTAssertEqual(library.scenarios[0].matchSSIDs, ["CORP"])
@@ -192,26 +204,44 @@ final class ProfileLibraryMigrationTests: XCTestCase {
         XCTAssertEqual(try store.loadOrCreate { XCTFail("must not seed twice"); return nil }, library)
     }
 
-    func testSeedProfileNeverReplacesExistingConfiguration() throws {
+    func testSeedNeverCreatesLibraryWhenExistingConfigurationIsFound() throws {
         let home = try temporaryHome()
         _ = try writeLegacy(ProfileRecord.empty(named: "Old").profile, at: ConfigurationStorage.desktopLocations[0], home: home)
-        let resource = try seedResource(in: home)
         let library = try ProfileLibraryMigration.initialLibrary(home: home, convertProfile: converted)
-            ?? ProfileLibraryMigration.seedLibrary(resource: resource) { _, _ in XCTFail("existing configuration wins"); return Profile() }
-        XCTAssertNotNil(library)
+            ?? ProfileLibraryMigration.seedLibrary(SeedProfile(name: "公司", text: "")) { _, _ in XCTFail(); return Profile() }
+        XCTAssertEqual(library?.profiles.map(\.name), ["默认配置"])
     }
 
-    func testMissingSeedProfileKeepsBuiltInDefault() throws {
-        XCTAssertNil(try ProfileLibraryMigration.seedLibrary(resource: nil) { _, _ in XCTFail(); return Profile() })
+    func testMissingSeedKeepsBuiltInDefault() throws {
+        XCTAssertNil(try ProfileLibraryMigration.seedLibrary(nil) { _, _ in XCTFail(); return Profile() })
     }
 
-    func testInvalidSeedProfileDoesNotCreateLibrary() throws {
+    func testInvalidSeedDoesNotCreateLibrary() throws {
         let home = try temporaryHome()
         let store = ProfileLibraryStore(directory: ConfigurationStorage.directory(home: home), keyProvider: { _ in SymmetricKey(size: .bits256) })
-        let resource = try seedResource(in: home)
         XCTAssertThrowsError(try store.loadOrCreate {
-            try ProfileLibraryMigration.seedLibrary(resource: resource) { _, _ in throw ProfileLibraryError.invalid("bad seed") }
+            try ProfileLibraryMigration.seedLibrary(SeedProfile(name: "公司", text: "")) { _, _ in
+                throw ProfileLibraryError.invalid("bad seed")
+            }
         })
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.appendingPathComponent("profiles.enc").path))
+    }
+
+    func testSeedJoinsExistingLibraryWithoutChangingSelection() throws {
+        let original = try existingLibrary(claiming: ["HOME"])
+        let merged = try ProfileLibraryMigration.merging(seededProfile(id: "seed"), named: "公司", id: "seed", into: original)
+        XCTAssertEqual(merged.profiles.map(\.name), ["默认配置", "公司"])
+        XCTAssertEqual(merged.profiles.dropLast().map(\.self), original.profiles)
+        XCTAssertEqual(merged.activeScenarioID, original.activeScenarioID)
+        XCTAssertEqual(merged.editingProfileID, original.editingProfileID)
+        XCTAssertEqual(merged.scenarios.first, original.scenarios.first)
+        XCTAssertEqual(merged.scenarios.dropFirst().map(\.name), ["公司 · Office", "公司 · Remote"])
+        XCTAssertEqual(merged.scenarios.dropFirst().map(\.matchSSIDs), [["CORP"], ["CORP-GUEST"]])
+    }
+
+    func testSeedLeavesClaimedWiFiTriggerWithExistingScenario() throws {
+        let original = try existingLibrary(claiming: ["CORP"])
+        let merged = try ProfileLibraryMigration.merging(seededProfile(id: "seed"), named: "公司", id: "seed", into: original)
+        XCTAssertEqual(merged.scenarios.map(\.matchSSIDs), [["CORP"], [], ["CORP-GUEST"]])
     }
 }

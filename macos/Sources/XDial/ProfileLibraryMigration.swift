@@ -44,19 +44,30 @@ enum ProfileLibraryMigration {
         return try library(with: ProfileRecord(id: id, name: "默认配置", profile: convertProfile(original, id)))
     }
 
-    /// A build may embed one portable Profile document for machines without any
-    /// saved configuration. It is never merged into or substituted for an existing library.
+    /// An empty library is created from the seed as is: its Scenarios keep their own names.
     static func seedLibrary(
-        resource: URL? = Bundle.main.url(forResource: "SeedProfile", withExtension: "json"),
+        _ seed: SeedProfile?,
         importDocument: (String, String) throws -> Profile
     ) throws -> ProfileLibrary? {
-        guard let url = resource else { return nil }
-        let data = try Data(contentsOf: url)
-        guard data.count <= 4 * 1024 * 1024, let text = String(data: data, encoding: .utf8) else {
-            throw ProfileLibraryError.invalid("预置配置必须为 UTF-8 文本，且不能超过 4 MiB")
-        }
+        guard let seed else { return nil }
         let id = UUID().uuidString.lowercased()
-        return try library(with: ProfileRecord(id: id, name: "默认配置", profile: importDocument(text, id)))
+        return try library(with: ProfileRecord(id: id, name: seed.name, profile: importDocument(seed.text, id)))
+    }
+
+    /// Adds the seed beside existing Profiles like a file import, without changing
+    /// the active Scenario or the edited Profile. A Wi-Fi trigger already owned by
+    /// an existing Scenario stays there instead of rejecting the whole seed.
+    static func merging(_ seed: Profile, named name: String, id: String,
+                        into library: ProfileLibrary) throws -> ProfileLibrary {
+        var record = ProfileRecord(id: id, name: name, profile: seed)
+        let claimed = Set(library.scenarios.flatMap(\.matchSSIDs))
+        for index in record.profile.scenarios.indices {
+            record.profile.scenarios[index].matchSSIDs.removeAll(where: claimed.contains)
+        }
+        var result = library
+        try result.insert(record)
+        result.editingProfileID = library.editingProfileID
+        return result
     }
 
     private static func library(with record: ProfileRecord) throws -> ProfileLibrary {
@@ -67,5 +78,31 @@ enum ProfileLibraryMigration {
         library.activeProfileID = record.id
         library.editingProfileID = record.id
         return try library.validated()
+    }
+}
+
+/// A Profile document embedded by an enterprise build. Its file name is the
+/// Profile name, as with "Import from File".
+struct SeedProfile: Equatable {
+    static let appliedDefaultsKey = "xdial.appliedSeedProfiles"
+
+    let name: String
+    let text: String
+
+    static func load(
+        directory: URL? = Bundle.main.resourceURL?.appendingPathComponent("SeedProfile", isDirectory: true)
+    ) throws -> SeedProfile? {
+        guard let directory, FileManager.default.fileExists(atPath: directory.path) else { return nil }
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        guard files.count == 1, let file = files.first else {
+            throw ProfileLibraryError.invalid("预置配置必须恰好是一个 JSON 文件")
+        }
+        let data = try Data(contentsOf: file)
+        let name = file.deletingPathExtension().lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard data.count <= 4 * 1024 * 1024, let text = String(data: data, encoding: .utf8), !name.isEmpty else {
+            throw ProfileLibraryError.invalid("预置配置必须为有名称的 UTF-8 文本，且不能超过 4 MiB")
+        }
+        return SeedProfile(name: name, text: text)
     }
 }

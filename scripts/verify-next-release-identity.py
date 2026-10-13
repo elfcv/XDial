@@ -56,7 +56,7 @@ def verify(bundle, tag):
     require(b"DebugServer:" not in host_strings, "Next distribution contains DebugServer")
     require(not (bundle / "Contents/Resources/RuleSetPresets.json").exists(),
             "Next distribution contains private RuleSet presets")
-    require(not (bundle / "Contents/Resources/SeedProfile.json").exists(),
+    require(not (bundle / "Contents/Resources/SeedProfile").exists(),
             "Next distribution contains a private seed Profile")
     daemon_dir = bundle / "Contents/Library/LaunchDaemons"
     require(sorted(p.name for p in daemon_dir.iterdir()) == [prefix + ".daemon.plist"],

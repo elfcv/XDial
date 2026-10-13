@@ -75,23 +75,54 @@ extension AppState {
     }
 
     func loadProfileLibrary() {
+        var seed: SeedProfile?
+        do { seed = try SeedProfile.load() }
+        catch { profileOperationError = "预置配置无效：\(error.localizedDescription)" }
+        var seeded: ProfileLibrary?
         do {
             let loaded = try profileLibraryStore.loadOrCreate {
-                try ProfileLibraryMigration.initialLibrary {
+                if let migrated = try ProfileLibraryMigration.initialLibrary(convertProfile: {
                     try ProfileDocumentService.convertLegacyProfile($0, id: $1)
-                } ?? ProfileLibraryMigration.seedLibrary {
+                }) { return migrated }
+                seeded = try ProfileLibraryMigration.seedLibrary(seed) {
                     try ProfileDocumentService.importDocument($0, profileID: $1)
                 }
+                return seeded
             }
             profileLibrary = loaded
             profile = loaded.snapshot()
             browsedProfileID = loaded.activeProfileID
             profileLibraryLoaded = true
             profilePersistenceError = nil
+            // Another version may have created the library first; only ours already contains the seed.
+            if let seed { mergeSeedProfile(seed, alreadyInLibrary: seeded == loaded) }
         } catch {
             profilePersistenceError = "无法读取配置库：\(error.localizedDescription)"
             profileLibraryLoaded = false
         }
+    }
+
+    /// The seed joins each shared library once per channel. The marker lives in channel
+    /// preferences because older versions rewrite the shared library without unknown fields;
+    /// a seed Profile the user later deleted is therefore not added again.
+    private func mergeSeedProfile(_ seed: SeedProfile, alreadyInLibrary: Bool) {
+        var applied = Set(xdialDefaults.stringArray(forKey: SeedProfile.appliedDefaultsKey) ?? [])
+        guard !applied.contains(seed.name) else { return }
+        if !alreadyInLibrary {
+            let original = profileLibrary
+            do {
+                let id = UUID().uuidString.lowercased()
+                let imported = try ProfileDocumentService.importDocument(seed.text, profileID: id)
+                profileLibrary = try ProfileLibraryMigration.merging(imported, named: seed.name, id: id, into: original)
+            } catch {
+                profileOperationError = "未能加入预置配置「\(seed.name)」：\(error.localizedDescription)"
+                return
+            }
+            guard persistProfileLibrary() else { profileLibrary = original; return }
+            profile = profileLibrary.snapshot()
+        }
+        applied.insert(seed.name)
+        xdialDefaults.set(applied.sorted(), forKey: SeedProfile.appliedDefaultsKey)
     }
 
     @discardableResult

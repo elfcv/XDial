@@ -321,7 +321,27 @@ targets:
             fi
           }
           embed "${XDIAL_RULE_SET_PRESETS_FILE:-}" "${SRCROOT}/PrivateConfig/RuleSetPresets.json" RuleSetPresets.json
-          embed "${XDIAL_SEED_PROFILE_FILE:-}" "${SRCROOT}/PrivateConfig/SeedProfile.json" SeedProfile.json
+          # The seed file name becomes the Profile name, as with "Import from File".
+          seed_dir="${resource_dir}/SeedProfile"
+          rm -rf "${seed_dir}"
+          seed_source="${XDIAL_SEED_PROFILE_FILE:-}"
+          if [ -z "${seed_source}" ]; then
+            for candidate in "${SRCROOT}"/PrivateConfig/SeedProfile/*.json; do
+              if [ -f "${candidate}" ]; then seed_source="${candidate}"; break; fi
+            done
+          fi
+          if [ "${CONFIGURATION}" != "NextRelease" ] && [ -n "${seed_source}" ]; then
+            case "${seed_source}" in
+              *.json) ;;
+              *) echo "error: seed Profile must be a .json file: ${seed_source}" >&2; exit 1 ;;
+            esac
+            if [ ! -f "${seed_source}" ]; then
+              echo "error: private build configuration not found: ${seed_source}" >&2
+              exit 1
+            fi
+            mkdir -p "${seed_dir}"
+            cp "${seed_source}" "${seed_dir}/"
+          fi
       - name: Embed configuration-matched System Extension
         script: |
           set -eu
