@@ -7,7 +7,7 @@
 	<!-- Installation fixes the app location before SMAppService registration.
 	     Avoid resolving an orphaned background-item container after replacement. -->
 	<key>Program</key>
-	<string>/Applications/XDail Debug.app/Contents/MacOS/xdial-daemon</string>
+	<string>/Applications/XDial Debug.app/Contents/MacOS/xdial-daemon</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>xdial-daemon</string>

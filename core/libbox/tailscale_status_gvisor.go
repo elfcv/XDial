@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,6 +192,7 @@ func sanitizeTailscalePeerDERPPath(
 		"new_private_key",
 		"conn_close",
 		"set_homeless",
+		"non_home_release",
 		"unknown",
 	)
 	return payload
@@ -569,6 +571,43 @@ func (l *Libbox) ReselectTailscaleHomeDERP(endpointTag string, timeoutMS int) (s
 		return "", fmt.Errorf("Tailscale HomeDERP reselection encoding failed")
 	}
 	return string(encoded), nil
+}
+
+// ReleaseNonHomeDERP closes DERP connections other than the current home on
+// the active Tailscale runtime. It is the idle cleanup Tailscale would run
+// after a minute, performed once a real-egress probe has already failed while
+// those connections are still being written. Home is left in place. The
+// result is only the closed count.
+func (l *Libbox) ReleaseNonHomeDERP(endpointTag string) (string, error) {
+	endpoint, _, _, release, err := l.tailscaleRuntime(endpointTag)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return releaseTailscaleNonHomeDERP(endpoint)
+}
+
+// ReleasePreparedSwitchNonHomeDERP is ReleaseNonHomeDERP for the unpublished
+// switch candidate. A reused Line runtime is the same process-owned
+// connection the active generation is using.
+func (l *Libbox) ReleasePreparedSwitchNonHomeDERP(endpointTag string) (string, error) {
+	endpoint, _, _, release, err := l.preparedSwitchTailscaleRuntime(endpointTag)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return releaseTailscaleNonHomeDERP(endpoint)
+}
+
+func releaseTailscaleNonHomeDERP(endpoint *boxTailscale.Endpoint) (string, error) {
+	if endpoint == nil || endpoint.Server() == nil || endpoint.Server().Sys() == nil {
+		return "", fmt.Errorf("Tailscale DERP release is unavailable")
+	}
+	magicSock, loaded := endpoint.Server().Sys().MagicSock.GetOK()
+	if !loaded || magicSock == nil {
+		return "", fmt.Errorf("Tailscale DERP release is unavailable")
+	}
+	return strconv.Itoa(magicSock.XDialCloseNonHomeDERPs()), nil
 }
 
 func probeTailscalePeerLayer(

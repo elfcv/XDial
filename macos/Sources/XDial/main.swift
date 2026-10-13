@@ -21,7 +21,7 @@ if CommandLine.arguments.contains("--import-xdial-debug") ||
         guard checkOnly || NSRunningApplication.runningApplications(
             withBundleIdentifier: XDialBuildIdentity.applicationIdentifier
         ).filter({ $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }).isEmpty else {
-            throw ProfileLibraryError.invalid("Next 正在运行，请关闭 Next 后再执行诊断导入；XDail Debug 可以继续运行")
+            throw ProfileLibraryError.invalid("Next 正在运行，请关闭 Next 后再执行诊断导入；XDial Debug 可以继续运行")
         }
         let id = UUID().uuidString.lowercased()
         let profile = try ProfileDocumentService.importExistingDebug(id: id)
@@ -31,7 +31,7 @@ if CommandLine.arguments.contains("--import-xdial-debug") ||
         if !checkOnly {
             let store = ProfileLibraryStore()
             var library = try store.load() ?? ProfileLibrary()
-            try library.insert(ProfileRecord(id: id, name: "XDail Debug 导入", profile: profile))
+            try library.insert(ProfileRecord(id: id, name: "XDial Debug 导入", profile: profile))
             library.editingProfileID = id
             try store.save(library)
             guard try store.load() == library else { throw ProfileLibraryError.invalid("导入后的加密配置校验失败") }
@@ -40,7 +40,7 @@ if CommandLine.arguments.contains("--import-xdial-debug") ||
             !$0.vpnPassword.isEmpty || !$0.trojanPassword.isEmpty || !$0.ssPassword.isEmpty ||
             !$0.vmessUUID.isEmpty || !$0.anytlsPassword.isEmpty
         }.count
-        fputs("\(checkOnly ? "Validated" : "Imported") XDail Debug: \(profile.lines.count) lines, \(profile.ruleSets.count) rule sets, \(profile.scenarios.count) scenarios, \(credentials) credential-bearing lines. No connection or activation.\n", stdout)
+        fputs("\(checkOnly ? "Validated" : "Imported") XDial Debug: \(profile.lines.count) lines, \(profile.ruleSets.count) rule sets, \(profile.scenarios.count) scenarios, \(credentials) credential-bearing lines. No connection or activation.\n", stdout)
         exit(0)
     } catch {
         // Decoder/validator errors can contain source fields; never emit them.

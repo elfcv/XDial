@@ -470,6 +470,66 @@ final class TailscaleReadinessTests: XCTestCase {
         )
     }
 
+    func testNonHomeDERPReleaseMatchesRelayedEgressTimeout() {
+        let timeout = ConnectionRuntimeFailure(
+            code: "line-readiness-transient",
+            message: "context deadline exceeded",
+            taskID: "line:tailscale",
+            evidence: nil
+        )
+        XCTAssertTrue(tailscaleRealEgressTimedOut(timeout))
+        XCTAssertTrue(shouldReleaseTailscaleNonHomeDERP(
+            clientCount: 2,
+            homeState: "protocol_ready",
+            pathCandidate: "relay",
+            probeTimedOut: true
+        ))
+    }
+
+    func testNonHomeDERPReleaseRejectsSettledOrUnrelatedFailures() {
+        // Only home is open: nothing stale to release.
+        XCTAssertFalse(shouldReleaseTailscaleNonHomeDERP(
+            clientCount: 1,
+            homeState: "protocol_ready",
+            pathCandidate: "relay",
+            probeTimedOut: true
+        ))
+        XCTAssertFalse(shouldReleaseTailscaleNonHomeDERP(
+            clientCount: 2,
+            homeState: "protocol_ready",
+            pathCandidate: "relay",
+            probeTimedOut: false
+        ))
+        XCTAssertFalse(shouldReleaseTailscaleNonHomeDERP(
+            clientCount: 2,
+            homeState: "protocol_ready",
+            pathCandidate: "direct",
+            probeTimedOut: true
+        ))
+        XCTAssertFalse(shouldReleaseTailscaleNonHomeDERP(
+            clientCount: 2,
+            homeState: "connecting",
+            pathCandidate: "relay",
+            probeTimedOut: true
+        ))
+        let terminal = ConnectionRuntimeFailure(
+            code: "line-readiness-terminal",
+            message: "context deadline exceeded",
+            taskID: "line:tailscale",
+            evidence: nil
+        )
+        XCTAssertFalse(tailscaleRealEgressTimedOut(terminal))
+        // Unclassified errors never qualify by their text.
+        let unclassified = NSError(
+            domain: "go",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "context deadline exceeded",
+            ]
+        )
+        XCTAssertFalse(tailscaleRealEgressTimedOut(unclassified))
+    }
+
     private func facts(
         path: String,
         online: Bool = true,

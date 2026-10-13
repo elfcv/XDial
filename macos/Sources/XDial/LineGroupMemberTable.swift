@@ -19,21 +19,25 @@ extension Line {
 /// and latency state belongs to data updates, never to scrolling or cell reuse.
 struct LineGroupMemberTable: NSViewRepresentable {
     struct Row: Identifiable, Equatable {
+        /// Automatic choice is a peer of the members but not a Line reference.
+        static let automaticID = "\u{0}automatic"
         let id: String
         let name: String
         let source: String
+        var sourceHelp: String?
         let selected: Bool
-        let latency: LineLatencyPresentation
+        let latency: LineLatencyPresentation?
         let isGroup: Bool
         let canRemove: Bool
         let reordering: Bool
         let canMoveUp: Bool
         let canMoveDown: Bool
+        var isAutomatic: Bool { id == Self.automaticID }
 
         func allows(_ action: Action) -> Bool {
             switch action {
             case .select: return true
-            case .test: return latency.buttonEnabled
+            case .test: return !isAutomatic && latency?.buttonEnabled == true
             case .expand: return isGroup
             case .remove: return canRemove && !reordering
             case .moveUp: return reordering && canMoveUp
@@ -44,19 +48,35 @@ struct LineGroupMemberTable: NSViewRepresentable {
 
     enum Action { case select, test, expand, remove, moveUp, moveDown }
     let rows: [Row]
-    let onAction: (String, Action) -> Void
+    /// A nil member is the automatic choice.
+    let onAction: (String?, Action) -> Void
 
     @MainActor
     static func rows(group: Line, members: [Line], followedMembers: Set<String>,
                      sourceNames: [String: String], globalSourceName: String,
-                     reordering: Bool, store: LineLatencyStore) -> [Row] {
-        members.map { member in
+                     reordering: Bool, store: LineLatencyStore, lineName: (String) -> String?) -> [Row] {
+        let profileID = ProfileLibrary.configurationID
+        let automatic = group.type == "urltest"
+        var pick = "", pickHelp: String?
+        if automatic, let id = store.measurement(group, profileID: profileID)?.selectedLineID, let name = lineName(id) {
+            let current = store.isAvailable(group, profileID: profileID)
+            pick = (current ? "当前使用：" : "本次优选：") + name
+            pickHelp = current ? "sing-box 当前出口" : "sing-box 根据本次测速得出的优选结果，尚未用于连接"
+        }
+        // Group latency is only the automatic row's measurement while it is the choice.
+        let automaticRow = Row(id: Row.automaticID, name: "自动选择", source: pick, sourceHelp: pickHelp,
+                               selected: automatic,
+                               latency: automatic ? LineLatencyPresentation(store: store, line: group,
+                                                                            profileID: profileID, allowsTesting: false) : nil,
+                               isGroup: false, canRemove: false, reordering: reordering,
+                               canMoveUp: false, canMoveDown: false)
+        return [automaticRow] + members.map { member in
             let editable = !followedMembers.contains(member.id)
             return Row(id: member.id, name: member.name,
                        source: member.isGroup ? "全局组" : sourceNames[member.id] ?? globalSourceName,
                        selected: group.chosenGroupMemberID == member.id,
                        latency: LineLatencyPresentation(store: store, line: member,
-                                                        profileID: ProfileLibrary.configurationID, group: group),
+                                                        profileID: profileID, group: group),
                        isGroup: member.isGroup, canRemove: editable, reordering: editable && reordering,
                        canMoveUp: editable && group.groupMembers.first != member.id,
                        canMoveDown: editable && group.groupMembers.last != member.id)
@@ -116,7 +136,7 @@ struct LineGroupMemberTable: NSViewRepresentable {
 
         func perform(_ action: Action, id: String) {
             guard let row = rowsByID[id], row.allows(action) else { return }
-            parent.onAction(id, action)
+            parent.onAction(row.isAutomatic ? nil : id, action)
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int { parent.rows.count }
@@ -190,28 +210,52 @@ struct LineGroupMemberTable: NSViewRepresentable {
         private static func symbol(_ name: String) -> NSImage? {
             NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
         }
+        // A borderless AppKit radio draws no indicator, so every row draws the
+        // same explicit mark; the trailing pad keeps titles on one column.
+        private static func radio(_ name: String) -> NSImage? {
+            guard let mark = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) else { return nil }
+            let image = NSImage(size: NSSize(width: 21, height: mark.size.height), flipped: false) { _ in
+                mark.draw(in: NSRect(origin: .zero, size: mark.size)); return true
+            }
+            image.isTemplate = true
+            return image
+        }
+        private static let radioOn = radio("largecircle.fill.circle")
+        private static let radioOff = radio("circle")
+        private static let titleAttributes: [NSAttributedString.Key: Any] = {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byTruncatingTail
+            return [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
+        }()
 
         func configure(_ row: Row) {
             self.row = row
-            selectButton.title = row.name
+            let title = NSAttributedString(string: row.name, attributes: Self.titleAttributes)
+            selectButton.attributedTitle = title
+            selectButton.attributedAlternateTitle = title
+            selectButton.image = row.selected ? Self.radioOn : Self.radioOff
+            selectButton.alternateImage = selectButton.image
+            selectButton.contentTintColor = row.selected ? NSColor(XDialPalette.primaryAction) : .secondaryLabelColor
             selectButton.state = row.selected ? .on : .off
             selectButton.toolTip = row.name
             selectButton.setAccessibilityLabel(row.name)
             source.stringValue = row.source
-            source.toolTip = row.source
-            latency.stringValue = row.latency.label
-            latency.toolTip = row.latency.detail
-            latency.textColor = row.latency.failed ? NSColor(XDialPalette.danger) : .secondaryLabelColor
-            testButton.image = Self.symbol(row.latency.buttonIcon)
+            source.toolTip = row.sourceHelp ?? row.source
+            latency.stringValue = row.latency?.label ?? ""
+            latency.toolTip = row.latency?.detail
+            latency.textColor = row.latency?.failed == true ? NSColor(XDialPalette.danger) : .secondaryLabelColor
+            testButton.isHidden = row.isAutomatic
+            testButton.image = row.latency.flatMap { Self.symbol($0.buttonIcon) }
             testButton.isEnabled = row.allows(.test)
-            testButton.toolTip = row.latency.buttonHelp
-            testButton.setAccessibilityLabel(row.latency.buttonLabel)
+            testButton.toolTip = row.latency?.buttonHelp
+            testButton.setAccessibilityLabel(row.latency?.buttonLabel)
             expandButton.isHidden = !row.isGroup
             expandButton.setAccessibilityLabel("展开 " + row.name)
             removeButton.isHidden = !row.canRemove || row.reordering
             removeButton.setAccessibilityLabel("移除 " + row.name)
-            upButton.isHidden = !row.reordering
-            downButton.isHidden = !row.reordering
+            upButton.isHidden = row.isAutomatic || !row.reordering
+            downButton.isHidden = row.isAutomatic || !row.reordering
             upButton.isEnabled = row.allows(.moveUp)
             downButton.isEnabled = row.allows(.moveDown)
             upButton.setAccessibilityLabel("上移 " + row.name)
@@ -224,19 +268,23 @@ struct LineGroupMemberTable: NSViewRepresentable {
             super.layout()
             // Leave room for the overlay scroller without covering row actions.
             var right = bounds.width - 22
-            func trailing(_ view: NSView, width: CGFloat, height: CGFloat = 22) {
-                guard !view.isHidden else { return }
+            func trailing(_ view: NSView, width: CGFloat, height: CGFloat = 22, reserved: Bool = false) {
+                guard !view.isHidden || reserved else { return }
                 right -= width
                 view.frame = NSRect(x: right, y: floor((bounds.height - height) / 2), width: width, height: height)
                 right -= 8
             }
-            trailing(downButton, width: 18)
-            trailing(upButton, width: 18)
-            trailing(removeButton, width: 20)
+            // The automatic row keeps an ordinary member's action slots so
+            // latency and caption columns line up with its peers.
+            let automatic = row?.isAutomatic == true, reordering = row?.reordering == true
+            trailing(downButton, width: 18, reserved: automatic && reordering)
+            trailing(upButton, width: 18, reserved: automatic && reordering)
+            trailing(removeButton, width: 20, reserved: automatic && !reordering)
             trailing(expandButton, width: 20)
-            trailing(testButton, width: 20)
+            trailing(testButton, width: 20, reserved: automatic)
             trailing(latency, width: 42, height: 16)
-            trailing(source, width: min(90, ceil(source.intrinsicContentSize.width)), height: 15)
+            // intrinsicContentSize omits the label cell's padding and always truncates.
+            trailing(source, width: min(automatic ? 200 : 90, ceil(source.cell?.cellSize.width ?? 0)), height: 15)
             selectButton.frame = NSRect(x: 6, y: 4, width: max(0, right - 6), height: 24)
         }
 

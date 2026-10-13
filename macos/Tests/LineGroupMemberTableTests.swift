@@ -11,20 +11,77 @@ final class LineGroupMemberTableTests: XCTestCase {
         group.groupMembers = ["a", "b"]
         return group
     }
-    private func rows(_ group: Line, members: [Line]? = nil, followed: Set<String> = [], reordering: Bool = false,
-                      store: LineLatencyStore? = nil) -> [LineGroupMemberTable.Row] {
+    private func allRows(_ group: Line, members: [Line]? = nil, followed: Set<String> = [], reordering: Bool = false,
+                         store: LineLatencyStore? = nil) -> [LineGroupMemberTable.Row] {
         LineGroupMemberTable.rows(group: group, members: members ?? [a, b], followedMembers: followed,
             sourceNames: ["a": "来源一", "b": "来源二"], globalSourceName: "全局",
-            reordering: reordering, store: store ?? LineLatencyStore())
+            reordering: reordering, store: store ?? LineLatencyStore(),
+            lineName: { id in [a, b].first { $0.id == id }?.name })
+    }
+    /// Member rows only; the automatic row always leads the list.
+    private func rows(_ group: Line, members: [Line]? = nil, followed: Set<String> = [], reordering: Bool = false,
+                      store: LineLatencyStore? = nil) -> [LineGroupMemberTable.Row] {
+        Array(allRows(group, members: members, followed: followed, reordering: reordering, store: store).dropFirst())
     }
 
     func testAutomaticAndFixedChoiceKeepExistingModelSemantics() {
         var group = group()
-        XCTAssertEqual(rows(group).filter(\.selected).map(\.id), ["a"])
+        XCTAssertEqual(allRows(group).filter(\.selected).map(\.id), ["a"])
         group.groupDefault = "b"
-        XCTAssertEqual(rows(group).filter(\.selected).map(\.id), ["b"])
+        XCTAssertEqual(allRows(group).filter(\.selected).map(\.id), ["b"])
         group.type = "urltest"
-        XCTAssertTrue(rows(group).allSatisfy { !$0.selected })
+        XCTAssertEqual(allRows(group).filter(\.selected).map(\.id), [LineGroupMemberTable.Row.automaticID])
+    }
+
+    func testAutomaticChoiceIsAPeerRowThatSurvivesSearchAndOnlySelects() {
+        var group = group()
+        group.type = "urltest"
+        for values in [allRows(group), allRows(group, members: []), allRows(group, reordering: true)] {
+            let automatic = values[0]
+            XCTAssertTrue(automatic.isAutomatic)
+            XCTAssertEqual(automatic.name, "自动选择")
+            XCTAssertTrue(automatic.allows(.select))
+            for action: LineGroupMemberTable.Action in [.test, .expand, .remove, .moveUp, .moveDown] {
+                XCTAssertFalse(automatic.allows(action))
+            }
+        }
+        XCTAssertFalse(allRows(group, members: [b]).dropFirst().contains(where: \.isAutomatic))
+        XCTAssertNotNil(allRows(group)[0].latency)
+        group.type = "selector"
+        XCTAssertNil(allRows(group)[0].latency)
+    }
+
+    func testAutomaticRowNamesTheNativePick() {
+        let store = LineLatencyStore()
+        var group = group()
+        group.type = "urltest"
+        store.bind(transactionID: "tx", profileID: ProfileLibrary.configurationID, lines: [a, b, group])
+        XCTAssertEqual(allRows(group, store: store)[0].source, "")
+        store.accept([ProviderLineLatency(lineID: "g", milliseconds: 31, observedAt: 100, selectedLineID: "b")])
+        XCTAssertTrue(allRows(group, store: store)[0].source.hasSuffix("：" + b.name))
+        XCTAssertNotNil(allRows(group, store: store)[0].sourceHelp)
+    }
+
+    func testAutomaticAndMemberRowsShareTheCellLayout() {
+        var group = group()
+        group.type = "urltest"
+        let values = allRows(group)
+        let automatic = LineGroupMemberTable.Cell(frame: NSRect(x: 0, y: 0, width: 550, height: 32))
+        let member = LineGroupMemberTable.Cell(frame: NSRect(x: 0, y: 0, width: 550, height: 32))
+        automatic.configure(values[0])
+        member.configure(values[1])
+        for cell in [automatic, member] { cell.layout() }
+        func frame(_ cell: LineGroupMemberTable.Cell, _ match: (NSView) -> Bool) -> NSRect? {
+            cell.subviews.first(where: match)?.frame
+        }
+        let radio: (NSView) -> Bool = { ($0 as? NSButton)?.image != nil && ($0 as? NSButton)?.title.isEmpty == false }
+        XCTAssertEqual(frame(automatic, radio)?.minX, frame(member, radio)?.minX)
+        XCTAssertEqual(automatic.subviews.compactMap { $0 as? NSButton }.first?.state, .on)
+        XCTAssertEqual(member.subviews.compactMap { $0 as? NSButton }.first?.state, .off)
+        // Latency is the right-aligned 42 pt field; both rows put it in the same column.
+        let latency: (NSView) -> Bool = { ($0 as? NSTextField)?.alignment == .right }
+        XCTAssertEqual(frame(automatic, latency), frame(member, latency))
+        XCTAssertFalse(automatic.subviews.contains { !$0.isHidden && ($0 as? NSButton)?.title.isEmpty == true })
     }
 
     func testSourceMembersAndSearchCannotBeReorderedOrRemovedIncorrectly() {
@@ -74,17 +131,20 @@ final class LineGroupMemberTableTests: XCTestCase {
 
     func testOldCallbackResolvesStableIDAndLatestPermissionsAfterReorder() {
         var calls: [String] = []
-        var value = LineGroupMemberTable(rows: rows(group())) { id, _ in calls.append(id) }
+        var value = LineGroupMemberTable(rows: allRows(group())) { id, _ in calls.append(id ?? "automatic") }
         let coordinator = value.makeCoordinator()
-        let cell = coordinator.tableView(NSTableView(), viewFor: nil, row: 0) as! LineGroupMemberTable.Cell
-        value = LineGroupMemberTable(rows: rows(group(), members: [b, a], followed: ["a"])) { id, _ in calls.append("updated:" + id) }
+        let automatic = coordinator.tableView(NSTableView(), viewFor: nil, row: 0) as! LineGroupMemberTable.Cell
+        let cell = coordinator.tableView(NSTableView(), viewFor: nil, row: 1) as! LineGroupMemberTable.Cell
+        value = LineGroupMemberTable(rows: allRows(group(), members: [b, a], followed: ["a"])) { id, _ in calls.append("updated:" + (id ?? "automatic")) }
         coordinator.update(value)
         cell.onAction?(.select)
         cell.onAction?(.remove)
-        XCTAssertEqual(calls, ["updated:a"])
-        coordinator.update(LineGroupMemberTable(rows: rows(group(), members: [b]), onAction: value.onAction))
+        automatic.onAction?(.select)
+        automatic.onAction?(.remove)
+        XCTAssertEqual(calls, ["updated:a", "updated:automatic"])
+        coordinator.update(LineGroupMemberTable(rows: allRows(group(), members: [b]), onAction: value.onAction))
         cell.onAction?(.select)
-        XCTAssertEqual(calls, ["updated:a"])
+        XCTAssertEqual(calls, ["updated:a", "updated:automatic"])
     }
 
     func testPresentationDoesNotProbeOrChangeThePinnedExit() {
@@ -97,7 +157,7 @@ final class LineGroupMemberTableTests: XCTestCase {
         store.accept([ProviderLineLatency(lineID: "a", milliseconds: 23, observedAt: 100, selectedLineID: nil)])
         for _ in 0..<10 {
             let values = rows(group, store: store)
-            XCTAssertEqual(values[0].latency.label, "23 ms")
+            XCTAssertEqual(values[0].latency?.label, "23 ms")
             XCTAssertEqual(values.filter(\.selected).map(\.id), ["b"])
         }
         XCTAssertEqual(probes, 0)
@@ -113,9 +173,9 @@ final class LineGroupMemberTableTests: XCTestCase {
         let job = store.test([a], profileID: ProfileLibrary.configurationID, group: group,
                              control: .line(a.id, groupID: group.id))
         defer { store.cancel(job) }
-        XCTAssertEqual(rows(group, store: store)[0].latency.buttonIcon, "stop.circle")
+        XCTAssertEqual(rows(group, store: store)[0].latency?.buttonIcon, "stop.circle")
         XCTAssertTrue(rows(group, store: store)[0].allows(.test))
-        XCTAssertEqual(rows(other, store: store)[0].latency.buttonIcon, "arrow.clockwise")
+        XCTAssertEqual(rows(other, store: store)[0].latency?.buttonIcon, "arrow.clockwise")
         XCTAssertFalse(rows(other, store: store)[0].allows(.test))
     }
 
@@ -173,7 +233,7 @@ final class LineGroupMemberTableTests: XCTestCase {
         store.accept([ProviderLineLatency(lineID: members[990].id, milliseconds: 19, observedAt: 100, selectedLineID: nil)])
         coordinator.update(LineGroupMemberTable(rows: rows(group, members: members, store: store), onAction: { _, _ in }))
         XCTAssertTrue(table.view(atColumn: 0, row: 990, makeIfNecessary: false) === visible)
-        XCTAssertEqual(visible.row?.latency.label, "19 ms")
+        XCTAssertEqual(visible.row?.latency?.label, "19 ms")
         XCTAssertEqual(scroll.contentView.bounds.origin, origin)
         XCTAssertNil(table.view(atColumn: 0, row: 0, makeIfNecessary: false))
         print("Group member offscreen scroll: 1000 rows, 34 positions, max resident rows \(maxCells), projection \(projectionMS) ms, scroll \(scrollMS) ms; not a displayed FPS measurement")

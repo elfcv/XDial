@@ -8,7 +8,7 @@ DEVELOPMENT_CONFIGURATION := Next
 APP_BUNDLE_NAME := XDial Next.app
 else ifeq ($(DEVELOPMENT_CHANNEL),debug)
 DEVELOPMENT_CONFIGURATION := Debug
-APP_BUNDLE_NAME := XDail Debug.app
+APP_BUNDLE_NAME := XDial Debug.app
 else
 $(error DEVELOPMENT_CHANNEL must be next or debug)
 endif
@@ -308,7 +308,7 @@ ci-macos-build: cli cli-debug cli-next libbox-macos-xcframework macos/AppIcon.ic
 		xcodebuild -project macos/XDial.xcodeproj -scheme XDial \
 			-configuration "$$configuration" -destination 'platform=macOS,arch=arm64' \
 			-derivedDataPath $(BUILD_DIR)/macos-xcode-ci CODE_SIGNING_ALLOWED=NO build; \
-		case "$$configuration" in Debug) product_name='XDail Debug';; Next*) product_name='XDial Next';; *) product_name=XDial;; esac; \
+		case "$$configuration" in Debug) product_name='XDial Debug';; Next*) product_name='XDial Next';; *) product_name=XDial;; esac; \
 		test "$$(plutil -extract LSUIElement raw "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app/Contents/Info.plist")" = true; \
 		python3 $(MACOS_DEPLOYMENT_VERIFIER) "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app" >/dev/null; \
 	done
@@ -425,7 +425,7 @@ publish-next:
 # 构建失败不得影响正在运行的旧实例。
 restart:
 	@$(MAKE) app DEVELOPMENT_CHANNEL=debug DEBUG_BUILD_VERSION=$(DEBUG_BUILD_VERSION)
-	@bash scripts/restart-macos-app.sh "$(BUILD_DIR_ABS)/XDail Debug.app" \
+	@bash scripts/restart-macos-app.sh "$(BUILD_DIR_ABS)/XDial Debug.app" \
 		"$(MACOS_APP_LAUNCHER_ABS)"
 
 inspector:

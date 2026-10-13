@@ -1,0 +1,154 @@
+From: XDial maintainers
+Subject: [PATCH] magicsock: release non-home DERP connections
+
+A default-route rebind can leave the peer region connected beside a
+protocol-ready home. Real egress through that peer region then fails, while
+each failed probe writes the connection and refreshes its idle timer.
+cleanStaleDerp therefore cannot drop it until the probes stop, which is after
+the readiness window has already failed. Releasing the non-home connections is
+the same cleanup, done once the caller has a failed real-egress sample. Home
+stays up. Region identifiers are not returned.
+
+diff --git a/wgengine/magicsock/xdial_non_home_derp.go b/wgengine/magicsock/xdial_non_home_derp.go
+new file mode 100644
+index 0000000..b7c4e1a
+--- /dev/null
++++ b/wgengine/magicsock/xdial_non_home_derp.go
+@@ -0,0 +1,32 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package magicsock
++
++// XDialCloseNonHomeDERPs closes every DERP connection except the current home.
++// Home must already be protocol-ready; otherwise the call does nothing.
++// The returned count is the number of connections closed.
++func (c *Conn) XDialCloseNonHomeDERPs() int {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if c.closed || c.myDerp == 0 {
++		return 0
++	}
++	home, ok := c.activeDerp[c.myDerp]
++	if !ok || home.c == nil || !home.protocolReady {
++		return 0
++	}
++	var nonHome []int
++	for regionID := range c.activeDerp {
++		if regionID != c.myDerp {
++			nonHome = append(nonHome, regionID)
++		}
++	}
++	for _, regionID := range nonHome {
++		c.closeDerpLocked(regionID, "xdial-non-home-release")
++	}
++	if len(nonHome) > 0 {
++		c.logActiveDerpLocked()
++	}
++	return len(nonHome)
++}
+diff --git a/wgengine/magicsock/xdial_non_home_derp_test.go b/wgengine/magicsock/xdial_non_home_derp_test.go
+new file mode 100644
+index 0000000..c3a91d2
+--- /dev/null
++++ b/wgengine/magicsock/xdial_non_home_derp_test.go
+@@ -0,0 +1,68 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package magicsock
++
++import (
++	"testing"
++	"time"
++
++	"github.com/sagernet/tailscale/types/key"
++)
++
++func TestXDialCloseNonHomeDERPsKeepsReadyHome(t *testing.T) {
++	c := newConn(t.Logf)
++	now := time.Now()
++	home := newXDialTestDERPClient(t, key.NewNode())
++	other := newXDialTestDERPClient(t, key.NewNode())
++	c.mu.Lock()
++	c.myDerp = 1
++	c.activeDerp = map[int]activeDerp{
++		1: {
++			c:             home,
++			cancel:        func() {},
++			lastWrite:     &now,
++			createTime:    now,
++			protocolReady: true,
++		},
++		9: {
++			c:             other,
++			cancel:        func() {},
++			lastWrite:     &now,
++			createTime:    now,
++			protocolReady: true,
++		},
++	}
++	c.mu.Unlock()
++
++	if got := c.XDialCloseNonHomeDERPs(); got != 1 {
++		t.Fatalf("closed = %d, want 1", got)
++	}
++	state := c.XDialDERPConnectionState()
++	if state.ClientCount != 1 || state.ProtocolReadyCount != 1 ||
++		state.HomeState != "protocol_ready" {
++		t.Fatalf("home after release = %+v", state)
++	}
++	if got := c.XDialCloseNonHomeDERPs(); got != 0 {
++		t.Fatalf("second release = %d, want 0", got)
++	}
++}
++
++func TestXDialCloseNonHomeDERPsRequiresReadyHome(t *testing.T) {
++	c := newConn(t.Logf)
++	now := time.Now()
++	other := newXDialTestDERPClient(t, key.NewNode())
++	c.mu.Lock()
++	c.myDerp = 1
++	c.activeDerp = map[int]activeDerp{
++		1: {c: newXDialTestDERPClient(t, key.NewNode()), cancel: func() {}, lastWrite: &now, createTime: now},
++		9: {c: other, cancel: func() {}, lastWrite: &now, createTime: now, protocolReady: true},
++	}
++	c.mu.Unlock()
++	if got := c.XDialCloseNonHomeDERPs(); got != 0 {
++		t.Fatalf("unready home release = %d, want 0", got)
++	}
++	if got := c.XDialDERPConnectionState(); got.ClientCount != 2 {
++		t.Fatalf("connections after refused release = %+v", got)
++	}
++}
+diff --git a/wgengine/magicsock/xdial_peer_derp_diagnostics.go b/wgengine/magicsock/xdial_peer_derp_diagnostics.go
+--- a/wgengine/magicsock/xdial_peer_derp_diagnostics.go
++++ b/wgengine/magicsock/xdial_peer_derp_diagnostics.go
+@@ -52,6 +52,7 @@ const (
+ 	xdialDERPClientCloseNewPrivateKey            = "new_private_key"
+ 	xdialDERPClientCloseConnClose                = "conn_close"
+ 	xdialDERPClientCloseSetHomeless              = "set_homeless"
++	xdialDERPClientCloseNonHomeRelease           = "non_home_release"
+ 	xdialDERPClientCloseUnknown                  = "unknown"
+ )
+ 
+@@ -391,6 +392,8 @@ func xdialDERPClientCloseReason(raw string) string {
+ 		return xdialDERPClientCloseConnClose
+ 	case "set-homeless":
+ 		return xdialDERPClientCloseSetHomeless
++	case "xdial-non-home-release":
++		return xdialDERPClientCloseNonHomeRelease
+ 	default:
+ 		return xdialDERPClientCloseUnknown
+ 	}
+diff --git a/wgengine/magicsock/xdial_peer_derp_diagnostics_test.go b/wgengine/magicsock/xdial_peer_derp_diagnostics_test.go
+--- a/wgengine/magicsock/xdial_peer_derp_diagnostics_test.go
++++ b/wgengine/magicsock/xdial_peer_derp_diagnostics_test.go
+@@ -198,6 +198,7 @@ func TestXDialDERPReasonMappingsAreClosed(t *testing.T) {
+ 		"new-private-key":             xdialDERPClientCloseNewPrivateKey,
+ 		"conn-close":                  xdialDERPClientCloseConnClose,
+ 		"set-homeless":                xdialDERPClientCloseSetHomeless,
++		"xdial-non-home-release":      xdialDERPClientCloseNonHomeRelease,
+ 	}
+ 	for raw, want := range closeReasons {
+ 		if got := xdialDERPClientCloseReason(raw); got != want {

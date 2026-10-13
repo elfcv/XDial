@@ -167,6 +167,7 @@ final class InstallationCoordinator: ObservableObject {
                 )
             }
             ApplicationRelocator.finishOwnedArtifactRecovery()
+            ApplicationRelocator.retirePreviousInstallations()
             xdialDefaults.set(
                 currentBuildMarker,
                 forKey: completionMarkerKey

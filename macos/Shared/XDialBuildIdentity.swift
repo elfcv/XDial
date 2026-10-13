@@ -50,6 +50,7 @@ enum XDialBuildIdentity {
     static let appGroupIdentifier =
         "UVZM439VGU.com.kafeifei.xdial.next.network"
     static let applicationBundleName = "XDial Next.app"
+    static let previousApplicationBundleNames: [String] = []
     static let applicationDisplayName = "XDial Next"
     static let productTitle = "XDial Next"
     static let dataIdentifier = "com.kafeifei.xdial.next"
@@ -75,8 +76,10 @@ enum XDialBuildIdentity {
     static let settingsUIIdentifier = developmentSettingsUIIdentifier
     static let appGroupIdentifier =
         "UVZM439VGU.com.kafeifei.xdial.debug.network"
-    static let applicationBundleName = "XDail Debug.app"
-    static let applicationDisplayName = "XDail Debug"
+    static let applicationBundleName = "XDial Debug.app"
+    /// Debug was installed under a misspelled name; installation migrates it.
+    static let previousApplicationBundleNames = ["XDail Debug.app"]
+    static let applicationDisplayName = "XDial Debug"
     static let productTitle = "XDial Debug"
     static let dataIdentifier = "com.kafeifei.xdial.debug"
     static let userDataDirectoryName = ".xdial-debug"
@@ -102,6 +105,7 @@ enum XDialBuildIdentity {
     static let appGroupIdentifier =
         "UVZM439VGU.com.kafeifei.xdial.network"
     static let applicationBundleName = "XDial.app"
+    static let previousApplicationBundleNames: [String] = []
     static let applicationDisplayName = "XDial"
     static let productTitle = "XDial"
     static let dataIdentifier = formalDataIdentifier
@@ -123,6 +127,9 @@ enum XDialBuildIdentity {
         fileURLWithPath: "/Applications/\(applicationBundleName)",
         isDirectory: true
     )
+    static let previousApplicationDestinationURLs = previousApplicationBundleNames.map {
+        URL(fileURLWithPath: "/Applications/\($0)", isDirectory: true)
+    }
     // Every independently installed channel is a known sibling. In particular,
     // Next must exclude Debug as well as the formal app when checking whether
     // its own helper has exited during a registration refresh.
@@ -132,11 +139,14 @@ enum XDialBuildIdentity {
         let daemonSocketPath: String
         var bundleURL: URL { URL(fileURLWithPath: "/Applications/\(bundleName)", isDirectory: true) }
     }
-    static let siblingChannels: [InstalledChannel] = [
+    static let installedChannels: [InstalledChannel] = [
         .init(applicationIdentifier: "com.kafeifei.xdial.app", bundleName: "XDial.app", daemonSocketPath: "/tmp/xdial.sock"),
+        .init(applicationIdentifier: "com.kafeifei.xdial.debug", bundleName: "XDial Debug.app", daemonSocketPath: "/tmp/xdial-debug.sock"),
+        // Debug stays recognizable at its previous path until it migrates.
         .init(applicationIdentifier: "com.kafeifei.xdial.debug", bundleName: "XDail Debug.app", daemonSocketPath: "/tmp/xdial-debug.sock"),
         .init(applicationIdentifier: "com.kafeifei.xdial.next", bundleName: "XDial Next.app", daemonSocketPath: "/tmp/xdial-next.sock"),
-    ].filter { $0.applicationIdentifier != applicationIdentifier }
+    ]
+    static let siblingChannels = installedChannels.filter { $0.applicationIdentifier != applicationIdentifier }
     static let siblingApplicationDestinationURLs = siblingChannels.map(\.bundleURL)
     static let settingsEntryTypeIdentifier =
         applicationIdentifier + ".settings-entry"

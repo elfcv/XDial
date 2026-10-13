@@ -8,7 +8,7 @@
 
 | 入口 | 应用 | 签名 | 调试服务 | 用途 |
 |---|---|---|---|---|
-| `make app` / `make app-debug` | `XDail Debug.app` | Apple Development | 有 | 本机 Debug |
+| `make app` / `make app-debug` | `XDial Debug.app` | Apple Development | 有 | 本机 Debug |
 | `make app-next` | `XDial Next.app` | Apple Development | 有 | 本机 Next 调试 |
 | `make release-next` | `XDial Next.app` | Developer ID + 公证 | 无 | GitHub Next 分发 |
 
@@ -16,7 +16,6 @@ Next 调试与分发使用同一组 `.next` 组件身份、socket 和运行目�
 `macos/project.yml` 的共享 Next 身份控制名称、helper、后台服务及扩展。
 分发使用独立的 `NextRelease` 配置和 `app-proxy-provider-systemextension` 授权。
 Swift 的 `isDevelopment` 目前表示独立于正式版的安装通道；是否包含调试服务由 `DEBUG` 编译条件决定。
-Debug 既有 `XDail` 文件名保留，避免在一次发布中额外引入安装路径迁移。
 
 ## 一次性签名配置
 

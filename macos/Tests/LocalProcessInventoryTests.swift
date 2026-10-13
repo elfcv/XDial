@@ -3,7 +3,7 @@ import XCTest
 
 final class LocalProcessInventoryTests: XCTestCase {
     func testOtherInstalledChannelsDoNotBlockHelperRegistration() {
-        for name in ["XDial.app", "XDail Debug.app", "XDial Next.app"]
+        for name in ["XDial.app", "XDial Debug.app", "XDial Next.app"]
         where name != XDialBuildIdentity.applicationBundleName {
             for executable in ["XDial", "xdial-daemon"] {
                 let entry = LocalProcessInventory.Entry(
@@ -17,6 +17,28 @@ final class LocalProcessInventoryTests: XCTestCase {
                     executableNames: ["xdial", "xdial-daemon"]
                 ), false, "The installed \(name) process must not block this channel")
             }
+        }
+    }
+
+    func testDebugStaysASiblingAtItsPreviousPathUntilItMigrates() {
+        let debug = XDialBuildIdentity.installedChannels.filter {
+            $0.applicationIdentifier == "com.kafeifei.xdial.debug"
+        }
+        XCTAssertEqual(debug.map(\.bundleName), ["XDial Debug.app", "XDail Debug.app"])
+        XCTAssertTrue(Set(debug.map(\.daemonSocketPath)) == ["/tmp/xdial-debug.sock"])
+    }
+
+    func testPreviousInstallationOfThisChannelIsNeverIgnoredAsASibling() {
+        for url in XDialBuildIdentity.previousApplicationDestinationURLs {
+            let entry = LocalProcessInventory.Entry(
+                pid: 42, name: nil,
+                executableURL: url.appendingPathComponent("Contents/MacOS/xdial-daemon")
+            )
+            XCTAssertNotEqual(entry.belongsToProductBundle(
+                XDialBuildIdentity.applicationDestinationURL,
+                excludingSiblingBundleURLs: XDialBuildIdentity.siblingApplicationDestinationURLs,
+                executableNames: ["xdial", "xdial-daemon"]
+            ), false, "\(url.path) still belongs to this channel")
         }
     }
 
@@ -36,7 +58,7 @@ final class LocalProcessInventoryTests: XCTestCase {
     func testKnownSiblingPathDoesNotMatchCurrentProductBundle() {
         let siblingURL = XDialBuildIdentity.isDevelopment
             ? URL(fileURLWithPath: "/Applications/XDial.app")
-            : URL(fileURLWithPath: "/Applications/XDail Debug.app")
+            : URL(fileURLWithPath: "/Applications/XDial Debug.app")
         let entry = LocalProcessInventory.Entry(
             pid: 42,
             name: "xdial-daemon",
