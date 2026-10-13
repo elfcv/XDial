@@ -2193,6 +2193,7 @@ final class EmbeddedSingBoxRuntime {
         var finalDERPPathObservation:
             TailscalePeerDERPPathObservation?
         var runtimeRefreshAttempted = false
+        var nonHomeDERPReleased = false
         while Date() < deadline {
             try checkCancellation(cancellation)
             var statusError: NSError?
@@ -2372,6 +2373,26 @@ final class EmbeddedSingBoxRuntime {
                         logger.notice(
                             "tailscale-egress-probe-failed sample=post-probe active=\(latest.node.active) pathCandidate=\(latest.node.pathCandidate, privacy: .public) tx=\(latest.node.txBytes) rx=\(latest.node.rxBytes) handshake=\(latest.node.hasHandshake) map=\(latest.node.inNetworkMap) magic=\(latest.node.inMagicSock) engine=\(latest.node.inEngine) controlGeneration=\(latest.status.readiness.control.generation) derpClients=\(latest.status.readiness.derp.clientCount) derpReady=\(latest.status.readiness.derp.protocolReadyCount) homeState=\(latest.status.readiness.derp.homeState, privacy: .public) netInfoSet=\(latest.status.readiness.control.setForCurrentClient) preferredRelation=\(latest.status.readiness.control.preferredDERPRelation, privacy: .public) health=\(latest.status.healthCount) controlSelfHome=\(latest.status.controlSelfHomePresent) controlHomeRelation=\(latest.node.controlHomeRelation, privacy: .public) derpPath=\(latest.node.derpPath.logSummary, privacy: .public)"
                         )
+                        if !nonHomeDERPReleased,
+                            let probeError = lastProbeError,
+                            shouldReleaseTailscaleNonHomeDERP(
+                                clientCount: latest.status.readiness.derp
+                                    .clientCount,
+                                homeState: latest.status.readiness.derp
+                                    .homeState,
+                                pathCandidate: latest.node.pathCandidate,
+                                probeTimedOut: tailscaleRealEgressTimedOut(
+                                    probeError
+                                )
+                            )
+                        {
+                            nonHomeDERPReleased = true
+                            releaseTailscaleNonHomeDERP(
+                                instance,
+                                generation: generation,
+                                endpointTag: target.endpointTag
+                            )
+                        }
                     } else {
                         // The post-probe sample is the chronology authority.
                         // Do not classify from the pre-probe snapshot if the
@@ -2558,6 +2579,34 @@ final class EmbeddedSingBoxRuntime {
             throw TailscaleEgressFailure.wrap(lastProbeError, taskID: taskID)
         }
         throw RuntimeError.tailscaleReadinessTimedOut(lastState)
+    }
+
+    private func releaseTailscaleNonHomeDERP(
+        _ instance: LibboxLibbox,
+        generation: TailscaleRuntimeGeneration,
+        endpointTag: String
+    ) {
+        var releaseError: NSError?
+        let closed: String
+        switch generation {
+        case .active:
+            closed = instance.releaseNonHomeDERP(
+                endpointTag,
+                error: &releaseError
+            )
+        case .preparedSwitch:
+            closed = instance.releasePreparedSwitchNonHomeDERP(
+                endpointTag,
+                error: &releaseError
+            )
+        }
+        if releaseError == nil {
+            logger.notice(
+                "tailscale-non-home-derp-released closed=\(closed, privacy: .public)"
+            )
+        } else {
+            logger.error("tailscale-non-home-derp-release-failed")
+        }
     }
 
     private func probeTailscaleGenerationOutbound(

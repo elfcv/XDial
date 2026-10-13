@@ -81,6 +81,17 @@ func TestTailscalePeerProbeUnavailableWithoutMobileDataPlane(t *testing.T) {
 	}
 }
 
+func TestTailscaleNonHomeDERPReleaseUnavailableWithoutMobileDataPlane(t *testing.T) {
+	engine := New(nil)
+	_, err := engine.ReleaseNonHomeDERP("private-endpoint-name")
+	if err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("expected unavailable error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "private-endpoint-name") {
+		t.Fatalf("error leaked endpoint tag: %v", err)
+	}
+}
+
 func TestTailscaleDERPHomeReselectionUnavailableWithoutMobileDataPlane(t *testing.T) {
 	engine := New(nil)
 	_, err := engine.ReselectTailscaleHomeDERP(

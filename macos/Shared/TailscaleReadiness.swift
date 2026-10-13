@@ -479,3 +479,29 @@ private func isTailscalePeerRecoveryCandidate(
         facts.rxBytes == 0 &&
         !facts.hasHandshake
 }
+
+/// 只认 Go 结构化分类；未分类错误不通过文字匹配获得释放资格。
+func tailscaleRealEgressTimedOut(_ error: Error) -> Bool {
+    guard let failure = error as? ConnectionRuntimeFailure else {
+        return false
+    }
+    return failure.code == ScenarioSwitchFailureCode.lineReadinessTransient
+}
+
+// A non-home DERP region can outlive the network it was opened on, for
+// example across a default-route rebind. Real egress to a relayed peer then
+// times out while each probe write refreshes that region's idle timer, so
+// Tailscale's one-minute cleanup never runs inside the readiness window.
+// Releasing non-home regions is that cleanup, independent of how the region
+// became stale. Home stays, and the next probe is still the success test.
+func shouldReleaseTailscaleNonHomeDERP(
+    clientCount: Int,
+    homeState: String,
+    pathCandidate: String,
+    probeTimedOut: Bool
+) -> Bool {
+    probeTimedOut &&
+        clientCount > 1 &&
+        homeState == "protocol_ready" &&
+        pathCandidate == "relay"
+}

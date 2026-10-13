@@ -37,6 +37,14 @@ func (l *Libbox) ReselectTailscaleHomeDERP(_ string, _ int) (string, error) {
 	return "", fmt.Errorf("Tailscale is unavailable in this build")
 }
 
+func (l *Libbox) ReleaseNonHomeDERP(_ string) (string, error) {
+	return "", fmt.Errorf("Tailscale is unavailable in this build")
+}
+
+func (l *Libbox) ReleasePreparedSwitchNonHomeDERP(_ string) (string, error) {
+	return "", fmt.Errorf("Tailscale is unavailable in this build")
+}
+
 func (l *Libbox) BeginTailscaleLogin(_ string) (string, error) {
 	return "", fmt.Errorf("Tailscale is unavailable in this build")
 }

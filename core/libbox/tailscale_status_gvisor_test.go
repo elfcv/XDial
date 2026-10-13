@@ -387,6 +387,22 @@ func TestInstallTailscaleDNSMemorySnapshotReturnsOnlyBoundedMetadata(t *testing.
 	}
 }
 
+func TestTailscaleNonHomeDERPReleaseRequiresRunningEndpoint(t *testing.T) {
+	engine := New(nil)
+	for _, release := range []func(string) (string, error){
+		engine.ReleaseNonHomeDERP,
+		engine.ReleasePreparedSwitchNonHomeDERP,
+	} {
+		_, err := release("private-endpoint-name")
+		if err == nil {
+			t.Fatal("expected stopped engine error")
+		}
+		if strings.Contains(err.Error(), "private-endpoint-name") {
+			t.Fatalf("error leaked endpoint tag: %v", err)
+		}
+	}
+}
+
 func TestTailscaleDERPHomeReselectionRequiresRunningEndpoint(t *testing.T) {
 	engine := New(nil)
 	_, err := engine.ReselectTailscaleHomeDERP(
