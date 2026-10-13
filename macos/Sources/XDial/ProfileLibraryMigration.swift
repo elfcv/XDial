@@ -41,14 +41,31 @@ enum ProfileLibraryMigration {
             throw ProfileLibraryError.invalid("旧版配置在转换期间发生变化，请稍后重试")
         }
         let id = UUID().uuidString.lowercased()
-        let converted = try convertProfile(original, id)
-        let record = ProfileRecord(id: id, name: "默认配置", profile: converted)
+        return try library(with: ProfileRecord(id: id, name: "默认配置", profile: convertProfile(original, id)))
+    }
+
+    /// A build may embed one portable Profile document for machines without any
+    /// saved configuration. It is never merged into or substituted for an existing library.
+    static func seedLibrary(
+        resource: URL? = Bundle.main.url(forResource: "SeedProfile", withExtension: "json"),
+        importDocument: (String, String) throws -> Profile
+    ) throws -> ProfileLibrary? {
+        guard let url = resource else { return nil }
+        let data = try Data(contentsOf: url)
+        guard data.count <= 4 * 1024 * 1024, let text = String(data: data, encoding: .utf8) else {
+            throw ProfileLibraryError.invalid("预置配置必须为 UTF-8 文本，且不能超过 4 MiB")
+        }
+        let id = UUID().uuidString.lowercased()
+        return try library(with: ProfileRecord(id: id, name: "默认配置", profile: importDocument(text, id)))
+    }
+
+    private static func library(with record: ProfileRecord) throws -> ProfileLibrary {
         var library = ProfileLibrary()
         library.schemaVersion = 2
         library.groups = []; library.scenarios = []; library.activeScenarioID = ""
         library.profiles = [record]
-        library.activeProfileID = id
-        library.editingProfileID = id
+        library.activeProfileID = record.id
+        library.editingProfileID = record.id
         return try library.validated()
     }
 }

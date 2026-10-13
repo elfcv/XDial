@@ -79,6 +79,8 @@ extension AppState {
             let loaded = try profileLibraryStore.loadOrCreate {
                 try ProfileLibraryMigration.initialLibrary {
                     try ProfileDocumentService.convertLegacyProfile($0, id: $1)
+                } ?? ProfileLibraryMigration.seedLibrary {
+                    try ProfileDocumentService.importDocument($0, profileID: $1)
                 }
             }
             profileLibrary = loaded

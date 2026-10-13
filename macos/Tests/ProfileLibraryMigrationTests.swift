@@ -146,4 +146,72 @@ final class ProfileLibraryMigrationTests: XCTestCase {
         XCTAssertEqual(result.profiles[0].name, "默认配置")
         XCTAssertEqual(try store.loadOrCreate { XCTFail(); return nil }, result)
     }
+
+    private func seedResource(in home: URL, _ text: String = "{}") throws -> URL {
+        let url = home.appendingPathComponent("SeedProfile.json")
+        try Data(text.utf8).write(to: url)
+        return url
+    }
+
+    private func seededProfile(id: String) -> Profile {
+        var profile = Profile()
+        profile.profileID = id
+        profile.lines = [Line(id: "direct", name: "直连", type: "direct"), Line(id: "vpn", name: "Company", type: "vpn")]
+        profile.lines[1].vpnServer = "vpn.example.test:8443"
+        profile.ruleSets = [RuleSet(id: "intranet", name: "Intranet", type: "manual", domains: ["corp.example"])]
+        var office = Scenario(id: "office", name: "Office", defaultLineID: "direct")
+        office.matchSSIDs = ["CORP"]
+        var remote = Scenario(id: "remote", name: "Remote", defaultLineID: "direct")
+        remote.bindings = [RuleBinding(ruleSetID: "intranet", lineID: "vpn")]
+        profile.scenarios = [office, remote]
+        profile.activeScenarioID = "remote"
+        return profile
+    }
+
+    func testSeedProfileCreatesGlobalScenariosOnceWithoutCredentials() throws {
+        let home = try temporaryHome()
+        let key = SymmetricKey(size: .bits256)
+        let store = ProfileLibraryStore(directory: ConfigurationStorage.directory(home: home), keyProvider: { _ in key })
+        let resource = try seedResource(in: home, "seed document")
+        var imports = 0
+        let library = try store.loadOrCreate {
+            try ProfileLibraryMigration.initialLibrary(home: home) { _, _ in XCTFail(); return Profile() }
+                ?? ProfileLibraryMigration.seedLibrary(resource: resource) { text, id in
+                    imports += 1
+                    XCTAssertEqual(text, "seed document")
+                    return self.seededProfile(id: id)
+                }
+        }
+        XCTAssertEqual(imports, 1)
+        XCTAssertEqual(library.profiles.count, 1)
+        XCTAssertEqual(library.profiles[0].profile.profileID, library.profiles[0].id)
+        XCTAssertEqual(library.scenarios.map(\.name), ["Office", "Remote"])
+        XCTAssertEqual(library.scenarios[0].matchSSIDs, ["CORP"])
+        XCTAssertEqual(library.scenarios.first { $0.id == library.activeScenarioID }?.name, "Remote")
+        XCTAssertEqual(library.profiles[0].profile.lines.first { $0.type == "vpn" }?.vpnPassword, "")
+        XCTAssertEqual(try store.loadOrCreate { XCTFail("must not seed twice"); return nil }, library)
+    }
+
+    func testSeedProfileNeverReplacesExistingConfiguration() throws {
+        let home = try temporaryHome()
+        _ = try writeLegacy(ProfileRecord.empty(named: "Old").profile, at: ConfigurationStorage.desktopLocations[0], home: home)
+        let resource = try seedResource(in: home)
+        let library = try ProfileLibraryMigration.initialLibrary(home: home, convertProfile: converted)
+            ?? ProfileLibraryMigration.seedLibrary(resource: resource) { _, _ in XCTFail("existing configuration wins"); return Profile() }
+        XCTAssertNotNil(library)
+    }
+
+    func testMissingSeedProfileKeepsBuiltInDefault() throws {
+        XCTAssertNil(try ProfileLibraryMigration.seedLibrary(resource: nil) { _, _ in XCTFail(); return Profile() })
+    }
+
+    func testInvalidSeedProfileDoesNotCreateLibrary() throws {
+        let home = try temporaryHome()
+        let store = ProfileLibraryStore(directory: ConfigurationStorage.directory(home: home), keyProvider: { _ in SymmetricKey(size: .bits256) })
+        let resource = try seedResource(in: home)
+        XCTAssertThrowsError(try store.loadOrCreate {
+            try ProfileLibraryMigration.seedLibrary(resource: resource) { _, _ in throw ProfileLibraryError.invalid("bad seed") }
+        })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.appendingPathComponent("profiles.enc").path))
+    }
 }

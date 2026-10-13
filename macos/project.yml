@@ -297,22 +297,31 @@ targets:
           - "$(BUILT_PRODUCTS_DIR)/XDial Settings UI.app"
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/XDial Settings UI.app"
-      - name: Embed private RuleSet presets
+      - name: Embed private build configuration
         script: |
           set -eu
-          preset_source="${XDIAL_RULE_SET_PRESETS_FILE:-${SRCROOT}/PrivateConfig/RuleSetPresets.json}"
-          preset_dir="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
-          preset_destination="${preset_dir}/RuleSetPresets.json"
-          if [ "${CONFIGURATION}" = "NextRelease" ]; then
-            rm -f "${preset_destination}"
-            exit 0
-          fi
-          if [ -f "${preset_source}" ]; then
-            mkdir -p "${preset_dir}"
-            cp "${preset_source}" "${preset_destination}"
-          else
-            rm -f "${preset_destination}"
-          fi
+          resource_dir="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          # An explicit path must exist; only the ignored PrivateConfig default is optional.
+          embed() {
+            explicit="$1" fallback="$2" destination="${resource_dir}/$3"
+            if [ "${CONFIGURATION}" = "NextRelease" ]; then
+              rm -f "${destination}"
+              return
+            fi
+            if [ -n "${explicit}" ] && [ ! -f "${explicit}" ]; then
+              echo "error: private build configuration not found: ${explicit}" >&2
+              exit 1
+            fi
+            source="${explicit:-${fallback}}"
+            if [ -f "${source}" ]; then
+              mkdir -p "${resource_dir}"
+              cp "${source}" "${destination}"
+            else
+              rm -f "${destination}"
+            fi
+          }
+          embed "${XDIAL_RULE_SET_PRESETS_FILE:-}" "${SRCROOT}/PrivateConfig/RuleSetPresets.json" RuleSetPresets.json
+          embed "${XDIAL_SEED_PROFILE_FILE:-}" "${SRCROOT}/PrivateConfig/SeedProfile.json" SeedProfile.json
       - name: Embed configuration-matched System Extension
         script: |
           set -eu

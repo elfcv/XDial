@@ -122,12 +122,16 @@ enum ProfileDocumentService {
         guard !input.isEmpty, input.utf8.count <= 4 * 1024 * 1024 else { throw ProfileLibraryError.invalid("配置为空或超过 4 MiB") }
         let text = input
         return try await Task.detached(priority: .userInitiated) {
-            var error: NSError?
-            let result = LibboxImportProfile(text, "auto", profileID, nodesOnly, &error)
-            if let error { throw error }
-            guard !result.isEmpty else { throw ProfileLibraryError.invalid("无法解析配置") }
-            return try JSONDecoder().decode(Profile.self, from: Data(result.utf8))
+            try importDocument(text, profileID: profileID, nodesOnly: nodesOnly)
         }.value
+    }
+
+    static func importDocument(_ text: String, profileID: String, nodesOnly: Bool = false) throws -> Profile {
+        var error: NSError?
+        let result = LibboxImportProfile(text, "auto", profileID, nodesOnly, &error)
+        if let error { throw error }
+        guard !result.isEmpty else { throw ProfileLibraryError.invalid("无法解析配置") }
+        return try JSONDecoder().decode(Profile.self, from: Data(result.utf8))
     }
 
     static func export(_ profile: Profile) throws -> Data {
