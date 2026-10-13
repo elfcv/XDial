@@ -95,34 +95,46 @@ extension AppState {
             profileLibraryLoaded = true
             profilePersistenceError = nil
             // Another version may have created the library first; only ours already contains the seed.
-            if let seed { mergeSeedProfile(seed, alreadyInLibrary: seeded == loaded) }
+            if let seed { applySeedProfile(seed, createdProfileID: seeded == loaded ? loaded.profiles.first?.id : nil) }
         } catch {
             profilePersistenceError = "无法读取配置库：\(error.localizedDescription)"
             profileLibraryLoaded = false
         }
     }
 
-    /// The seed joins each shared library once per channel. The marker lives in channel
-    /// preferences because older versions rewrite the shared library without unknown fields;
-    /// a seed Profile the user later deleted is therefore not added again.
-    private func mergeSeedProfile(_ seed: SeedProfile, alreadyInLibrary: Bool) {
-        var applied = Set(xdialDefaults.stringArray(forKey: SeedProfile.appliedDefaultsKey) ?? [])
-        guard !applied.contains(seed.name) else { return }
-        if !alreadyInLibrary {
+    /// The seed joins the shared library once and later builds overwrite what it owns.
+    /// A seed Profile the user deleted is not added again.
+    private func applySeedProfile(_ seed: SeedProfile, createdProfileID: String?) {
+        let ledger: SeedProfileLedger
+        do { ledger = try SeedProfileLedger.load() }
+        catch { profileOperationError = "无法读取预置配置记录：\(error.localizedDescription)"; return }
+        let entry = ledger.entries[seed.name]
+        guard entry?.digest != seed.digest else { return }
+        let profileID = createdProfileID ?? entry?.profileID ?? UUID().uuidString.lowercased()
+        if createdProfileID == nil {
             let original = profileLibrary
             do {
-                let id = UUID().uuidString.lowercased()
-                let imported = try ProfileDocumentService.importDocument(seed.text, profileID: id)
-                profileLibrary = try ProfileLibraryMigration.merging(imported, named: seed.name, id: id, into: original)
+                if entry != nil {
+                    guard original.profiles.contains(where: { $0.id == profileID }) else { return }
+                    let incoming = try ProfileDocumentService.importDocument(seed.text, profileID: profileID)
+                    profileLibrary = try ProfileLibraryMigration.refreshingSeed(incoming, profileID: profileID,
+                                                                                named: seed.name, in: original)
+                } else {
+                    let incoming = try ProfileDocumentService.importDocument(seed.text, profileID: profileID)
+                    profileLibrary = try ProfileLibraryMigration.merging(incoming, named: seed.name, id: profileID, into: original)
+                }
             } catch {
+                profileLibrary = original
                 profileOperationError = "未能加入预置配置「\(seed.name)」：\(error.localizedDescription)"
                 return
             }
             guard persistProfileLibrary() else { profileLibrary = original; return }
             profile = profileLibrary.snapshot()
         }
-        applied.insert(seed.name)
-        xdialDefaults.set(applied.sorted(), forKey: SeedProfile.appliedDefaultsKey)
+        var updated = ledger
+        updated.entries[seed.name] = .init(profileID: profileID, digest: seed.digest)
+        do { try updated.save() }
+        catch { profileOperationError = "无法保存预置配置记录：\(error.localizedDescription)" }
     }
 
     @discardableResult

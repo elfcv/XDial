@@ -244,4 +244,84 @@ final class ProfileLibraryMigrationTests: XCTestCase {
         let merged = try ProfileLibraryMigration.merging(seededProfile(id: "seed"), named: "公司", id: "seed", into: original)
         XCTAssertEqual(merged.scenarios.map(\.matchSSIDs), [["CORP"], [], ["CORP-GUEST"]])
     }
+
+    private func refreshedSeed(id: String) -> Profile {
+        var profile = seededProfile(id: id)
+        profile.ruleSets[0].domains = ["corp.example", "corp2.example"]
+        profile.ruleSets.append(RuleSet(id: id + "-ops", name: "Ops", type: "manual", domains: ["ops.example"]))
+        profile.scenarios[0].matchSSIDs = ["CORP", "CORP-5G"]
+        profile.scenarios[1].bindings.append(RuleBinding(ruleSetID: id + "-ops", lineID: id + "-vpn"))
+        var travel = Scenario(id: id + "-travel", name: "Travel", defaultLineID: id + "-vpn")
+        travel.matchSSIDs = ["HOTEL"]
+        profile.scenarios.append(travel)
+        return profile
+    }
+
+    func testSeedRefreshOverwritesOwnedContentButKeepsUserState() throws {
+        var library = try ProfileLibraryMigration.merging(seededProfile(id: "seed"), named: "公司", id: "seed",
+                                                          into: existingLibrary(claiming: ["HOTEL"]))
+        let index = try XCTUnwrap(library.profiles.firstIndex { $0.id == "seed" })
+        let vpn = try XCTUnwrap(library.profiles[index].profile.lines.firstIndex { $0.type == "vpn" })
+        library.profiles[index].profile.lines[vpn].vpnUsername = "alice"
+        library.profiles[index].profile.lines[vpn].vpnPassword = "saved-password"
+        let office = try XCTUnwrap(library.scenarios.firstIndex { $0.id == "seed-office" })
+        library.scenarios[office].name = "My Office"
+        let active = library.activeScenarioID
+
+        let refreshed = try ProfileLibraryMigration.refreshingSeed(refreshedSeed(id: "seed"), profileID: "seed",
+                                                                   named: "公司", in: library)
+        let record = try XCTUnwrap(refreshed.profiles.first { $0.id == "seed" })
+        XCTAssertEqual(record.profile.ruleSets.first { $0.id == "seed-intranet" }?.domains, ["corp.example", "corp2.example"])
+        XCTAssertEqual(record.profile.lines.first { $0.type == "vpn" }?.vpnUsername, "alice")
+        XCTAssertEqual(record.profile.lines.first { $0.type == "vpn" }?.vpnPassword, "saved-password")
+        XCTAssertEqual(refreshed.scenarios.first { $0.id == "seed-office" }?.name, "My Office")
+        XCTAssertEqual(refreshed.scenarios.first { $0.id == "seed-office" }?.matchSSIDs, ["CORP", "CORP-5G"])
+        XCTAssertEqual(refreshed.scenarios.first { $0.id == "seed-remote" }?.bindings.map(\.ruleSetID), ["seed-intranet", "seed-ops"])
+        let travel = try XCTUnwrap(refreshed.scenarios.first { $0.id == "seed-travel" })
+        XCTAssertEqual(travel.name, "公司 · Travel")
+        XCTAssertEqual(travel.matchSSIDs, [], "HOTEL stays with the user's Scenario")
+        XCTAssertEqual(refreshed.activeScenarioID, active)
+        XCTAssertEqual(refreshed.editingProfileID, library.editingProfileID)
+        XCTAssertEqual(refreshed.profiles.first, library.profiles.first)
+    }
+
+    func testSeedRefreshCanDropARuleItsScenarioUsed() throws {
+        let library = try ProfileLibraryMigration.merging(refreshedSeed(id: "seed"), named: "公司", id: "seed",
+                                                          into: existingLibrary(claiming: []))
+        let refreshed = try ProfileLibraryMigration.refreshingSeed(seededProfile(id: "seed"), profileID: "seed",
+                                                                   named: "公司", in: library)
+        XCTAssertNil(refreshed.profiles.first { $0.id == "seed" }?.profile.ruleSets.first { $0.id == "seed-ops" })
+        XCTAssertEqual(refreshed.scenarios.first { $0.id == "seed-remote" }?.bindings.map(\.ruleSetID), ["seed-intranet"])
+    }
+
+    func testFirstLaunchSeedRefreshKeepsUnprefixedNames() throws {
+        let created = try XCTUnwrap(ProfileLibraryMigration.seedLibrary(SeedProfile(name: "公司", text: "v1")) { _, id in
+            self.seededProfile(id: id)
+        })
+        let id = created.profiles[0].id
+        let refreshed = try ProfileLibraryMigration.refreshingSeed(refreshedSeed(id: id), profileID: id, named: "公司", in: created)
+        XCTAssertEqual(refreshed.scenarios.map(\.name), ["Office", "Remote", "Travel"])
+        XCTAssertEqual(refreshed.scenarios.last?.matchSSIDs, ["HOTEL"])
+    }
+
+    func testSeedLedgerRoundTripsAndStartsEmpty() throws {
+        let url = SeedProfileLedger.url(directory: try temporaryHome())
+        XCTAssertEqual(try SeedProfileLedger.load(from: url), SeedProfileLedger())
+        var ledger = SeedProfileLedger()
+        ledger.entries["公司"] = .init(profileID: "seed", digest: SeedProfile(name: "公司", text: "v1").digest)
+        try ledger.save(to: url)
+        XCTAssertEqual(try SeedProfileLedger.load(from: url), ledger)
+        XCTAssertNotEqual(SeedProfile(name: "公司", text: "v1").digest, SeedProfile(name: "公司", text: "v2").digest)
+    }
+
+    func testSeedRefreshAdoptsARecordWithoutBaseline() throws {
+        var library = try ProfileLibraryMigration.merging(seededProfile(id: "seed"), named: "公司", id: "seed",
+                                                          into: existingLibrary(claiming: []))
+        let index = try XCTUnwrap(library.profiles.firstIndex { $0.id == "seed" })
+        library.profiles[index].baseline = nil
+        let refreshed = try ProfileLibraryMigration.refreshingSeed(refreshedSeed(id: "seed"), profileID: "seed",
+                                                                   named: "公司", in: library)
+        XCTAssertEqual(refreshed.scenarios.map(\.id).filter { $0.hasPrefix("seed-") }, ["seed-office", "seed-remote", "seed-travel"])
+        XCTAssertEqual(refreshed.scenarios.count, library.scenarios.count + 1)
+    }
 }
