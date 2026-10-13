@@ -572,6 +572,18 @@ struct ConfiguredDataPathResult: Sendable {
     }
 }
 
+/// 扩展 `traffic-snapshot` 的应答，对应 Go `Libbox.TrafficTotals`。
+/// 只单调递增；新一次隧道启动会从 0 重新计数。
+struct TrafficTotals: Decodable, Sendable, Equatable {
+    let uploadBytes: Int64
+    let downloadBytes: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case uploadBytes = "upload_bytes"
+        case downloadBytes = "download_bytes"
+    }
+}
+
 struct RoutingProbeSnapshot: Decodable, Sendable, Equatable {
     let directTargetDirect: Int64
     let directTargetVPN: Int64
@@ -1810,6 +1822,32 @@ final class TunnelManager: ObservableObject, TunnelManaging {
                 ))
             }
         }
+    }
+
+    func trafficTotals() async -> TrafficTotals? {
+        guard let session = providerSession else { return nil }
+        let request = Data("{\"cmd\":\"traffic-snapshot\"}".utf8)
+        let raw: String? = await withCheckedContinuation { continuation in
+            let oneShot = OneShotContinuation<String?>(continuation)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                oneShot.finish(nil)
+            }
+            do {
+                try session.sendProviderMessage(request) { responseData in
+                    guard let responseData,
+                          let response = try? JSONDecoder().decode(DaemonResponse.self, from: responseData),
+                          response.ok == true else {
+                        oneShot.finish(nil)
+                        return
+                    }
+                    oneShot.finish(response.data)
+                }
+            } catch {
+                oneShot.finish(nil)
+            }
+        }
+        guard let raw, let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TrafficTotals.self, from: data)
     }
 
     private func requestRoutingProbeSnapshot() async -> RoutingProbeSnapshot? {

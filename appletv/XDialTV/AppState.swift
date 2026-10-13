@@ -258,6 +258,8 @@ protocol TunnelManaging: AnyObject {
     func stopTunnel()
     func removeProfile(completion: @escaping @Sendable (Result<Void, Error>) -> Void)
 
+    /// 扩展内全线路累计上下行字节数；隧道未运行或不可读时返回 nil。
+    func trafficTotals() async -> TrafficTotals?
 }
 
 extension TunnelManaging {
@@ -278,6 +280,8 @@ extension TunnelManaging {
     func removeProfile(completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
         completion(.failure(TunnelRuntimeError.unavailable))
     }
+
+    func trafficTotals() async -> TrafficTotals? { nil }
 }
 
 private let appOSLog = OSLog(subsystem: "com.kafeifei.xdial.mobile", category: "app")
@@ -483,6 +487,12 @@ final class AppState: ObservableObject {
     var isConnected: Bool { engine.isConnected }
     var requiresUserAction: Bool { engine.status == "action-required" }
     var hasFormalTunnel: Bool { isConnected || requiresUserAction }
+
+    /// 首页速率采样入口。只在已连接时向扩展发请求，避免唤醒未运行的隧道。
+    func trafficTotals() async -> TrafficTotals? {
+        guard isConnected, let tunnelManager else { return nil }
+        return await tunnelManager.trafficTotals()
+    }
     var isTailscaleSetupActive: Bool {
         tailscaleSetupLineID != nil && tailscaleSetupRuntime?.isActive == true
     }

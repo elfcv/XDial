@@ -126,10 +126,12 @@ type Libbox struct {
 	switchCleanupMu          sync.Mutex
 	debugRoutingProbeEnabled bool
 	routingProbe             *routingProbeTracker
-	stateLocks               []*os.File
-	anyConnectDiagnostics    stdjson.RawMessage
-	anyConnectLine           *anyConnectLineRuntime
-	anyConnectConfig         engine.VPNConfig
+	// traffic 是跨 Box 代共享的全线路累计流量，见 traffic_counter.go。
+	traffic               trafficCounter
+	stateLocks            []*os.File
+	anyConnectDiagnostics stdjson.RawMessage
+	anyConnectLine        *anyConnectLineRuntime
+	anyConnectConfig      engine.VPNConfig
 	// anyConnectRuntimeIdentity is an opaque, Provider-memory-only identity
 	// produced from the effective AnyConnect connection parameters (including
 	// credentials).  It is deliberately separate from Line ID and the complete
@@ -1338,6 +1340,7 @@ func (l *Libbox) coldStart(
 			if startErr != nil {
 				startErr = fmt.Errorf("construct sing-box: %w", startErr)
 			} else {
+				instance.Router().AppendTracker(&l.traffic)
 				if debugRoutingProbeEnabled {
 					routingProbe = newRoutingProbeTracker()
 					instance.Router().AppendTracker(routingProbe)
@@ -1968,6 +1971,7 @@ func (l *Libbox) prepareSwitch(
 			if err != nil {
 				err = fmt.Errorf("construct switch sing-box: %w", err)
 			} else {
+				instance.Router().AppendTracker(&l.traffic)
 				var routingProbe *routingProbeTracker
 				if debugRoutingProbeEnabled {
 					routingProbe = newRoutingProbeTracker()
