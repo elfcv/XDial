@@ -64,16 +64,14 @@ struct LineGroupRow: View {
                                 .help(reordering ? "完成排序" : "调整成员顺序")
                         }
                     }.buttonStyle(.borderless).font(.caption).padding(.bottom, 3)
-                    automaticSelectionRow
-                    Divider()
+                    // Automatic choice is the first peer row; at most seven members show below it.
+                    NativeGroupMembersView(group: line, members: members, state: state,
+                        latencies: state.lineLatencies, reordering: reordering && search.isEmpty,
+                        select: select, move: move, remove: remove)
+                        .frame(height: CGFloat(min(members.count, 7) + 1) * 32)
                     if line.groupMembers.isEmpty {
                         Text("添加线路后，即可自动择优或固定选择一条线路")
                             .foregroundStyle(.secondary).font(.caption).frame(maxWidth: .infinity).padding(.vertical, 18)
-                    } else {
-                        NativeGroupMembersView(group: line, members: members, state: state,
-                            latencies: state.lineLatencies, reordering: reordering && search.isEmpty,
-                            select: select, move: move, remove: remove)
-                            .frame(height: CGFloat(max(1, min(members.count, 7))) * 32)
                     }
                     if let error { Text(error).font(.caption).foregroundStyle(XDialPalette.danger).frame(maxWidth: .infinity, alignment: .leading) }
                     Divider()
@@ -93,26 +91,6 @@ struct LineGroupRow: View {
 
     private func latency(_ member: Line, interactive: Bool = true) -> some View {
         LineLatencyView(store: state.lineLatencies, line: member, profileID: profileID, group: member.id == line.id ? nil : line, allowsTesting: interactive)
-    }
-
-    private var automaticSelectionRow: some View {
-        let selected = line.type == "urltest"
-        return HStack(spacing: 8) {
-            Button { select(nil) } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                        .foregroundStyle(selected ? XDialPalette.primaryAction : .secondary).frame(width: 17)
-                    Text("自动选择").font(.system(size: 12, weight: .medium))
-                    GroupSelectionCaption(store: state.lineLatencies, line: line, profileID: profileID, catalog: state.editingProfile.lines)
-                    Spacer(minLength: 4)
-                }.contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("自动选择")
-                .accessibilityValue(selected ? "已选择" : "未选择")
-            if selected { latency(line, interactive: false) }
-            else { Text("未启用").font(.system(size: 10)).foregroundStyle(.secondary) }
-            Text("择优").font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 30)
-        }.buttonStyle(.borderless).padding(.horizontal, 6).frame(height: 32)
-            .background(selected ? XDialPalette.selection.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 5))
     }
 
     private var settings: some View {
@@ -171,10 +149,13 @@ private struct NativeGroupMembersView: View {
     var body: some View {
         let source = state.profileLibrary.groupSources[group.id]
         let followedMembers = Set(source?.followsMembers == true ? source?.sourceMembers ?? [] : [])
+        let catalog = state.configurationCatalog
         let rows = LineGroupMemberTable.rows(group: group, members: members,
-            followedMembers: followedMembers, sourceNames: state.configurationCatalog.lineSources,
-            globalSourceName: state.tr("全局", "Global"), reordering: reordering, store: latencies)
+            followedMembers: followedMembers, sourceNames: catalog.lineSources,
+            globalSourceName: state.tr("全局", "Global"), reordering: reordering, store: latencies,
+            lineName: { catalog.line($0)?.name })
         LineGroupMemberTable(rows: rows) { id, action in
+            guard let id else { if case .select = action { select(nil) }; return }
             guard let currentGroup = state.configurationCatalog.line(group.id),
                   currentGroup.groupMembers.contains(id),
                   let member = state.configurationCatalog.line(id) else { return }
@@ -203,21 +184,6 @@ private struct GroupTestingCaption: View {
         if line.type == "urltest" {
             Text("\(store.isAvailable(line, profileID: profileID) ? "自动测速" : "连接后自动测速") · \(line.groupInterval.isEmpty ? "3m" : line.groupInterval)")
         } else { Text("已固定选择 · 测速不会切换线路") }
-    }
-}
-
-private struct GroupSelectionCaption: View {
-    @ObservedObject var store: LineLatencyStore
-    let line: Line
-    let profileID: String
-    let catalog: [Line]
-    var body: some View {
-        if line.type == "urltest", let fact = store.measurement(line, profileID: profileID),
-           let id = fact.selectedLineID, let current = catalog.first(where: { $0.id == id }) {
-            Text("\(store.isAvailable(line, profileID: profileID) ? "当前使用" : "本次优选")：\(current.name)")
-                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                .help(store.isAvailable(line, profileID: profileID) ? "sing-box 当前出口" : "sing-box 根据本次测速得出的优选结果，尚未用于连接")
-        }
     }
 }
 
