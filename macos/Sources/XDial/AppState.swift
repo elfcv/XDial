@@ -2734,51 +2734,26 @@ final class AppState: ObservableObject {
 
     // MARK: - Scenario Management
 
-    func createScenario(from template: ScenarioTemplate, named name: String) {
+    /// 新建空白场景并返回其 ID。空白场景只创建领域对象，不替用户作任何流量裁决；
+    /// 默认 Line、RuleSet binding 与 SSID 都由用户在展开的卡片中显式配置。
+    @discardableResult
+    func createBlankScenario() -> String {
         let direct = editingProfile.lines.first(where: { $0.type == "direct" })?.id ?? "direct"
-        let vpn = editingProfile.lines.first(where: { $0.type == "vpn" })?.id ?? direct
-        let ss = editingProfile.lines.first(where: { $0.type != "direct" && $0.type != "vpn" })?.id ?? direct
-
-        let manualRules = editingProfile.ruleSets
-            .filter { $0.type == "manual" && $0.enabled }
-            .map { $0.id }
-        let remoteRuleSet = editingProfile.ruleSets
-            .first(where: { $0.type == "url" && $0.enabled })?.id ?? ""
-
-        var s: Scenario
-        switch template {
-        case .overseas:
-            s = Profile.templateOverseas(
-                ruleSetIDs: manualRules,
-                vpnLineID: vpn,
-                directLineID: direct
-            )
-        case .domestic:
-            s = Profile.templateDomestic(
-                ruleSetIDs: manualRules,
-                remoteRuleSetID: remoteRuleSet,
-                vpnLineID: vpn,
-                directLineID: direct
-            )
-        case .domesticSS:
-            s = Profile.templateDomesticSS(
-                ruleSetIDs: manualRules,
-                remoteRuleSetID: remoteRuleSet,
-                vpnLineID: vpn,
-                ssLineID: ss,
-                directLineID: direct
-            )
-        case .blank:
-            // 空白模板只创建领域对象，不替用户作任何流量裁决。
-            // 默认 Line、RuleSet binding 与 SSID 都必须由用户显式配置。
-            s = Scenario(id: UUID().uuidString, name: name, defaultLineID: direct)
+        let baseName = tr("新场景", "New Scenario")
+        let existingNames = Set(editingProfile.scenarios.map(\.name))
+        var name = baseName
+        var suffix = 2
+        while existingNames.contains(name) {
+            name = "\(baseName) \(suffix)"
+            suffix += 1
         }
-        s.name = name
+        let s = Scenario(id: UUID().uuidString, name: name, defaultLineID: direct)
         editingProfile.scenarios.append(s)
         if editingProfile.activeScenarioID.isEmpty {
             editingProfile.activeScenarioID = s.id
         }
         saveEditingProfile()
+        return s.id
     }
 
     func deleteScenario(id: String) {
@@ -2829,17 +2804,4 @@ private struct ScenarioSwitchAttempt {
     let sourceScenarioID: String
     let requiresUnderlayRefresh: Bool
     let automaticIntent: NetworkEpochSwitchCoordinator.Intent?
-}
-
-enum ScenarioTemplate: String, CaseIterable {
-    case overseas, domestic, domesticSS, blank
-
-    var displayName: String {
-        switch self {
-        case .overseas: return "海外"
-        case .domestic: return "国内"
-        case .domesticSS: return "国内+SS"
-        case .blank: return "空白"
-        }
-    }
 }

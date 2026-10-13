@@ -21,7 +21,6 @@ struct MainPopover: View {
     @ObservedObject private var networkInfo = NetworkInfo.shared
     @StateObject private var trafficInfo = TrafficInfo()
     @State private var hoveredScenarioID: String?
-    @State private var settingsButtonHovered = false
     @State private var showsConnectionDetails = true
     @State private var showsPolicyMappings = false
 
@@ -179,42 +178,23 @@ struct MainPopover: View {
                 )
             }
             Spacer()
-            Button {
-                ApplicationWindowLifecycleController.shared
-                    .prepareToPresentSettingsWindow()
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .symbolRenderingMode(.monochrome)
-                    .frame(width: 28, height: 28)
-                    .background(
-                        XDialPalette.accent.opacity(
-                            settingsButtonHovered ? 0.18 : 0.11
-                        ),
-                        in: Circle()
-                    )
-                    .overlay {
-                        Circle().stroke(
-                            XDialPalette.accent.opacity(
-                                settingsButtonHovered ? 0.44 : 0.28
-                            ),
-                            lineWidth: 0.75
-                        )
-                    }
+            PopoverHeaderIconButton(
+                systemName: "gearshape.fill",
+                title: state.tr("设置", "Settings"),
+                tint: XDialPalette.accent
+            ) {
+                openSettingsWindow()
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut(",", modifiers: .command)
-            .foregroundStyle(XDialPalette.accent)
-            .contentShape(Circle())
-            .onHover { settingsButtonHovered = $0 }
-            .animation(
-                .easeOut(duration: 0.12),
-                value: settingsButtonHovered
-            )
-            .help(state.tr("设置", "Settings"))
-            .accessibilityLabel(state.tr("设置", "Settings"))
+            PopoverHeaderIconButton(
+                systemName: "power",
+                title: state.tr(
+                    "退出 \(XDialBuildIdentity.productTitle)",
+                    "Quit \(XDialBuildIdentity.productTitle)"
+                ),
+                tint: Color.secondary
+            ) {
+                MenuBarRecoveryController.shared.requestQuit()
+            }
         }
         .padding(.horizontal, 16)
         .frame(height: 54)
@@ -243,6 +223,13 @@ struct MainPopover: View {
             return dangerColor
         }
         return Color.secondary.opacity(0.82)
+    }
+
+    private func openSettingsWindow() {
+        ApplicationWindowLifecycleController.shared
+            .prepareToPresentSettingsWindow()
+        openWindow(id: "settings")
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func presentUpdateWindow() {
@@ -1561,6 +1548,40 @@ private enum ScenarioVisualState {
     case connecting
     case connected
     case failed
+}
+
+private struct PopoverHeaderIconButton: View {
+    let systemName: String
+    let title: String
+    let tint: Color
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13.5, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .frame(width: 28, height: 28)
+                .background(
+                    tint.opacity(hovered ? 0.18 : 0.11),
+                    in: Circle()
+                )
+                .overlay {
+                    Circle().stroke(
+                        tint.opacity(hovered ? 0.44 : 0.28),
+                        lineWidth: 0.75
+                    )
+                }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tint)
+        .contentShape(Circle())
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovered)
+        .help(title)
+        .accessibilityLabel(title)
+    }
 }
 
 private struct ScenarioBadge {

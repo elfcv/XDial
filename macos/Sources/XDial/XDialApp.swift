@@ -159,6 +159,21 @@ private struct MenuBarLabel: View {
     }
 }
 
+private struct SettingsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    let title: String
+
+    var body: some View {
+        Button(title) {
+            ApplicationWindowLifecycleController.shared
+                .prepareToPresentSettingsWindow()
+            openWindow(id: "settings")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .keyboardShortcut(",", modifiers: .command)
+    }
+}
+
 struct XDialApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var state = AppState()
@@ -184,6 +199,11 @@ struct XDialApp: App {
         }
         .menuBarExtraStyle(.window)
         .commands {
+            // 菜单栏应用没有常显的 App 菜单，但 key equivalent 仍经主菜单分派：
+            // Popover 与各窗口获得焦点时 ⌘, 都打开设置。
+            CommandGroup(replacing: .appSettings) {
+                SettingsCommand(title: state.tr("设置…", "Settings…"))
+            }
             CommandGroup(replacing: .appTermination) {
                 Button(state.tr("退出 \(XDialBuildIdentity.productTitle)", "Quit \(XDialBuildIdentity.productTitle)")) {
                     MenuBarRecoveryController.shared.requestQuit()

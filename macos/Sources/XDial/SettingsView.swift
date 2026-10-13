@@ -2081,66 +2081,70 @@ private enum ApplicationRulePicker {
 
 struct ScenariosTab: View {
     @EnvironmentObject var state: AppState
-    @State private var showTemplate = false
-    @State private var newName = ""
     private var expandedID: String? {
         get { state.editorPosition.expandedScenarioID }
         nonmutating set { state.editorPosition.expandedScenarioID = newValue }
     }
     @State private var draggedItem: SettingsReorderItem?
+    @State private var createdScenarioID: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                // Scenario cards change height when expanded. Keep their
-                // layout deterministic instead of estimating offscreen card
-                // heights and feeding those estimates back into visibility.
-                VStack(spacing: 8) {
-                    ForEach($state.editingProfile.scenarios) { $scenario in
-                        let scenarioID = scenario.id
-                        ScenarioRow(
-                            scenario: $scenario,
-                            isActive: state.editingActiveProfile && scenarioID == state.engine.connectionReport?.scenario.id && state.isConnected,
-                            isExpanded: expandedID == scenarioID,
-                            onToggle: {
-                                expandedID = expandedID == scenarioID
-                                    ? nil
-                                    : scenarioID
-                            },
-                            // 和主 popover 的 Picker、DebugServer 的 select-scenario
-                            // 走同一个 intent，门禁与 dirty 置位只有一处实现
-                            onActivate: { state.copyEditingScenario(scenarioID) },
-                            onDelete: {
-                                if expandedID == scenarioID {
-                                    expandedID = nil
+            ScrollViewReader { proxy in
+                ScrollView {
+                    // Scenario cards change height when expanded. Keep their
+                    // layout deterministic instead of estimating offscreen card
+                    // heights and feeding those estimates back into visibility.
+                    VStack(spacing: 8) {
+                        ForEach($state.editingProfile.scenarios) { $scenario in
+                            let scenarioID = scenario.id
+                            ScenarioRow(
+                                scenario: $scenario,
+                                isActive: state.editingActiveProfile && scenarioID == state.engine.connectionReport?.scenario.id && state.isConnected,
+                                isExpanded: expandedID == scenarioID,
+                                onToggle: {
+                                    expandedID = expandedID == scenarioID
+                                        ? nil
+                                        : scenarioID
+                                },
+                                // 和主 popover 的 Picker、DebugServer 的 select-scenario
+                                // 走同一个 intent，门禁与 dirty 置位只有一处实现
+                                onActivate: { state.copyEditingScenario(scenarioID) },
+                                onDelete: {
+                                    if expandedID == scenarioID {
+                                        expandedID = nil
+                                    }
+                                    state.deleteScenario(id: scenarioID)
                                 }
-                                state.deleteScenario(id: scenarioID)
+                            )
+                            .settingsReorderable(
+                                SettingsReorderItem(
+                                    kind: "scenario",
+                                    id: scenarioID
+                                ),
+                                draggedItem: $draggedItem,
+                                allowsDragging: expandedID != scenarioID
+                            ) { item, targetID in
+                                moveScenario(item, to: targetID)
                             }
-                        )
-                        .settingsReorderable(
-                            SettingsReorderItem(
-                                kind: "scenario",
-                                id: scenarioID
-                            ),
-                            draggedItem: $draggedItem,
-                            allowsDragging: expandedID != scenarioID
-                        ) { item, targetID in
-                            moveScenario(item, to: targetID)
                         }
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .settingsReorderDropArea(draggedItem: $draggedItem)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .settingsReorderDropArea(draggedItem: $draggedItem)
+                .onChange(of: createdScenarioID) { _, id in
+                    guard let id else { return }
+                    withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                    createdScenarioID = nil
+                }
             }
             Divider()
             AddBar {
-                Menu {
-                    ForEach(ScenarioTemplate.allCases, id: \.self) { t in
-                        Button(t.displayName) {
-                            state.createScenario(from: t, named: t.displayName)
-                        }
-                    }
+                Button {
+                    let id = state.createBlankScenario()
+                    expandedID = id
+                    createdScenarioID = id
                 } label: {
                     Label(state.tr("添加场景", "Add Scenario"), systemImage: "plus")
                 }
