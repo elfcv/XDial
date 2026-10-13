@@ -25,7 +25,7 @@ def main():
     bundle = pathlib.Path(sys.argv[1]).resolve()
     flavor = sys.argv[2] if len(sys.argv) > 2 else "debug"
     require(flavor in ("debug", "next"), "unknown development channel")
-    product = "XDial Next" if flavor == "next" else "XDail Debug"
+    product = "XDial Next" if flavor == "next" else "XDial Debug"
     prefix = "com.kafeifei.xdial." + flavor
     require(bundle.name == product + ".app", "unexpected development app filename")
     deployment_verifier = pathlib.Path(__file__).with_name(

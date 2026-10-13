@@ -79,11 +79,15 @@ final class XDialBuildIdentityTests: XCTestCase {
         )
         XCTAssertEqual(
             XDialBuildIdentity.applicationBundleName,
-            "XDail Debug.app"
+            "XDial Debug.app"
         )
         XCTAssertEqual(
             XDialBuildIdentity.applicationDisplayName,
-            "XDail Debug"
+            "XDial Debug"
+        )
+        XCTAssertEqual(
+            XDialBuildIdentity.previousApplicationDestinationURLs.map(\.path),
+            ["/Applications/XDail Debug.app"]
         )
         XCTAssertEqual(XDialBuildIdentity.productTitle, "XDial Debug")
         XCTAssertEqual(XDialBuildIdentity.dataIdentifier, "com.kafeifei.xdial.debug")

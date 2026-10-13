@@ -3,7 +3,7 @@ import XCTest
 
 final class SiblingProductProcessIdentityTests: XCTestCase {
     private let sibling = XDialBuildIdentity.InstalledChannel(
-        applicationIdentifier: "com.kafeifei.xdial.debug", bundleName: "XDail Debug.app",
+        applicationIdentifier: "com.kafeifei.xdial.debug", bundleName: "XDial Debug.app",
         daemonSocketPath: "/tmp/xdial-debug.sock"
     )
 

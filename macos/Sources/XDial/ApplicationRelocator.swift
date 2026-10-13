@@ -155,12 +155,14 @@ enum ApplicationRelocator {
         guard isRunningFromApplications else {
             throw InstallationError.applicationNotInstalled
         }
+        let identity = try? validateDistributionBundle(at: destinationURL)
         try unregisterApplication(at: destinationURL)
         var resultingURL: NSURL?
         try FileManager.default.trashItem(
             at: destinationURL,
             resultingItemURL: &resultingURL
         )
+        if let identity { retirePreviousInstallations(matching: identity) }
     }
 
     /// A command-line uninstaller does not pass through the normal singleton
@@ -179,13 +181,58 @@ enum ApplicationRelocator {
     /// Keep the outgoing container at its registered path until teardown ends.
     static func validateHelperReplacement() throws -> URL {
         let incoming = try validateDistributionBundle(at: Bundle.main.bundleURL)
-        let outgoing = try existingApplicationIdentity(at: destinationURL)
+        let outgoingURL = FileManager.default.fileExists(atPath: destinationURL.path)
+            ? destinationURL : previousInstallation(matching: incoming) ?? destinationURL
+        let outgoing = try existingApplicationIdentity(at: outgoingURL)
         guard incoming == outgoing,
-              platformComponentIdentifiers(at: destinationURL)
+              platformComponentIdentifiers(at: outgoingURL)
                 == platformComponentIdentifiers(at: Bundle.main.bundleURL) else {
             throw InstallationError.existingApplicationNotReplaceable
         }
-        return destinationURL
+        return outgoingURL
+    }
+
+    /// An installation under a previous bundle name owns the registered helper
+    /// until it is handed over; only an identical signing identity qualifies.
+    private static func previousInstallation(matching identity: SigningIdentity) -> URL? {
+        XDialBuildIdentity.previousApplicationDestinationURLs.first { url in
+            FileManager.default.fileExists(atPath: url.path)
+                && (try? existingApplicationIdentity(at: url)) == identity
+        }
+    }
+
+    /// Runs once the successor's helper and System Extension are ready, so
+    /// removing the old container cannot take the active extension with it.
+    /// A bundle that still hosts a process is left for a later transaction.
+    static func retirePreviousInstallations() {
+        guard isRunningFromApplications,
+              let identity = try? validateDistributionBundle(at: Bundle.main.bundleURL) else { return }
+        retirePreviousInstallations(matching: identity)
+    }
+
+    private static func retirePreviousInstallations(matching identity: SigningIdentity) {
+        for url in XDialBuildIdentity.previousApplicationDestinationURLs {
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard (try? existingApplicationIdentity(at: url)) == identity else {
+                NSLog("XDial kept previous installation with a different identity: %@", url.path)
+                continue
+            }
+            let runningURLs = NSWorkspace.shared.runningApplications.compactMap(\.bundleURL)
+            guard !ApplicationInstallationOccupancy.mayBeInUse(
+                url, processes: LocalProcessInventory.capture(), applicationURLs: runningURLs
+            ) else {
+                NSLog("XDial deferred retiring previous installation in use: %@", url.path)
+                continue
+            }
+            do {
+                try unregisterApplication(at: url)
+                var resultingURL: NSURL?
+                try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+                appLog("installation retired previous bundle \(url.path)")
+            } catch {
+                NSLog("XDial could not retire previous installation %@: %@", url.path, error.localizedDescription)
+            }
+        }
     }
 
     /// A helper may have held the replaced bundle during launch. Installation
@@ -327,6 +374,7 @@ enum ApplicationRelocator {
             let replaceExisting = FileManager.default.fileExists(atPath: destinationURL.path)
             let replacedIdentity = replaceExisting
                 ? try existingApplicationIdentity(at: destinationURL) : nil
+            let previousURL = replaceExisting ? nil : previousInstallation(matching: sourceIdentity)
             if let replacedIdentity {
                 guard XDialApplicationIdentifierPolicy.permitsReplacement(
                     existingIdentifier: replacedIdentity.identifier,
@@ -343,6 +391,7 @@ enum ApplicationRelocator {
                     sourceIdentity: sourceIdentity,
                     replacedIdentity: replacedIdentity,
                     replaceExisting: replaceExisting,
+                    handsOverPreviousInstallation: previousURL != nil,
                     temporaryURL: artifacts.stagingURL(for: transaction),
                     backupName: transaction.backupName
                 )
@@ -357,6 +406,7 @@ enum ApplicationRelocator {
         sourceIdentity: SigningIdentity,
         replacedIdentity: SigningIdentity?,
         replaceExisting: Bool,
+        handsOverPreviousInstallation: Bool = false,
         temporaryURL: URL,
         backupName: String
     ) throws {
@@ -430,6 +480,21 @@ enum ApplicationRelocator {
             // The receipt owns removal: it first checks background-process
             // occupancy and unregisters the backup while it still exists.
         } else {
+            if handsOverPreviousInstallation {
+                // The previous container stays at its registered path; stop it
+                // and tear its helper down before the successor can register.
+                try terminateOtherCopies(bundleIdentifiers: [sourceIdentity.identifier])
+                let cleanup = OutgoingApplicationCleanup.Plan(
+                    executableURL: sourceURL.appendingPathComponent("Contents/MacOS/XDial"),
+                    arguments: [OutgoingApplicationCleanup.helperReplacementArgument],
+                    timeout: .infinity
+                )
+                do {
+                    try OutgoingApplicationCleanup.run(cleanup, execute: runOutgoingCleanupProcess)
+                } catch {
+                    throw InstallationError.helperReplacementPreparationFailed
+                }
+            }
             try fileManager.moveItem(
                 at: temporaryURL,
                 to: destinationURL

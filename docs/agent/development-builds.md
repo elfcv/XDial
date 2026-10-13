@@ -1,6 +1,6 @@
 # macOS 构建与安装
 
-日常 Debug 由 `make app`（等同 `make app-debug`）生成 `build/XDail Debug.app`，使用 Apple Development 签名，
+日常 Debug 由 `make app`（等同 `make app-debug`）生成 `build/XDial Debug.app`，使用 Apple Development 签名，
 不提交公证。`FormalDevelopment` 保留正式身份，仅用于该身份的专项验证。
 正式归档由 `make release` 生成，签名、公证与发布机制见 [updates.md](updates.md)。
 Next 测试通道由 `make app-next` 构建，分发见 [next-releases.md](next-releases.md)。
@@ -9,7 +9,7 @@ Next 测试通道由 `make app-next` 构建，分发见 [next-releases.md](next-
 
 | 所有权 | Debug | 正式身份 |
 |---|---|---|
-| 安装路径 | `/Applications/XDail Debug.app` | `/Applications/XDial.app` |
+| 安装路径 | `/Applications/XDial Debug.app` | `/Applications/XDial.app` |
 | Host | `com.kafeifei.xdial.debug` | `com.kafeifei.xdial.app` |
 | Settings UI / Extension / Helper / Daemon | Host 加 `.settings-ui` / `.transparent-proxy` / `.helper` / `.daemon` | 同左 |
 | 通道偏好域 | `com.kafeifei.xdial.debug` | `com.kafeifei.xdial` |
@@ -49,6 +49,11 @@ make app-debug MACOS_DEBUG_XCODEBUILD_FLAGS=-allowProvisioningUpdates
 | 候选包的 `Contents/MacOS/XDial --install-only` | 安装到该通道的 `/Applications` 路径；替换时终止同通道旧 App，并维护旧 helper；不启动后继 App |
 | `make restart` | 完整构建 Debug 后退出旧 Debug、安装、启动最终 App，等待安装与连接意图收敛 |
 | 从 `/Applications` 外正常启动 App | 自动定位、替换同通道安装并启动最终 App，不是隔离的源码运行 |
+
+Debug 曾安装为 `/Applications/XDail Debug.app`。新包发现该路径上签名相同的 Debug 时，先结束旧 App，
+由新包注销旧容器注册的 helper，再装到新路径；新版 helper 与 System Extension 就绪后才把旧包移入废纸篓，
+仍有进程占用时留给下一次安装事务。正式版与 Next 按新旧两个路径识别 Debug；此前发布的版本只认旧路径，
+新 Debug 运行期间它们的 helper 维护会因进程状态未知而停止，退出 Debug 后恢复。
 
 `--install-only` 不提供保留旧进程或连接的安装能力。实现见
 [ApplicationRelocator.swift](../../macos/Sources/XDial/ApplicationRelocator.swift)；

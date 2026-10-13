@@ -8,7 +8,7 @@ enum ExistingXDialProfileReader {
                           keychainVault: @escaping () throws -> Data? = readDebugKeychainVault) throws -> Profile {
         let source = ConfigurationStorage.desktopLocations.first { $0.keychainService == "com.kafeifei.xdial.debug" }!
         guard let profile = try read(source, home: home, keychainVault: keychainVault) else {
-            throw ProfileLibraryError.invalid("没有找到 XDail Debug 的已保存配置")
+            throw ProfileLibraryError.invalid("没有找到 XDial Debug 的已保存配置")
         }
         return profile
     }
