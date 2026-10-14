@@ -473,13 +473,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if terminationTask != nil {
             return .terminateCancel
         }
-        if InstallationCoordinator.shared.isInstalling {
-            MenuBarRecoveryController.shared.cancelQuit()
-            appLog(
-                "application termination: installation transaction active"
-            )
-            return .terminateCancel
-        }
         let recovery = MenuBarRecoveryController.shared
         let event = NSAppleEventManager.shared().currentAppleEvent
         let isSystemQuit = event?.eventClass == kCoreEventClass
@@ -488,38 +481,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             recovery.suppressMenuRemovalTermination()
             return .terminateCancel
         }
+        // Quitting always succeeds. An installation stops at a recoverable point
+        // and a network transaction drains, each within a bounded wait.
+        let installation = InstallationCoordinator.shared
         let engine = GoEngine.shared
-        guard Self.requiresTerminationDrain(engine) else {
+        guard installation.isInstalling || Self.requiresTerminationDrain(engine) else {
             appLog("application termination: no active network transaction")
             return .terminateNow
         }
 
         // terminateLater 会让 NSApplication.terminate() 进入嵌套 RunLoop；
         // NE 的 completion 与 MainActor 投影在这个状态下都可能无法推进。先
-        // cancel 本轮退出，让主事件循环继续跑；回滚闭合后再发起第二轮退出。
-        appLog("application termination: draining active network transaction")
-        engine.stop(userInitiated: true)
-        let deadline = Date().addingTimeInterval(12)
+        // cancel 本轮退出，让主事件循环继续跑；收尾完成后再发起第二轮退出。
         terminationTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            while Date() < deadline,
-                  Self.requiresTerminationDrain(engine) {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+            if installation.isInstalling {
+                appLog("application termination: stopping installation transaction")
+                await installation.stopForTermination(timeout: 5)
             }
             if Self.requiresTerminationDrain(engine) {
-                let report = engine.connectionReport
-                let reportState = report?.state.rawValue ?? "none"
-                appLog(
-                    "application termination: network drain timed out; "
-                        + "status=\(engine.status) "
-                        + "report=\(reportState) "
-                        + "rollback_complete="
-                        + "\(report?.rollbackComplete ?? false) "
-                        + "system_takeover_removed="
-                        + "\(report?.systemTakeoverRemoved ?? false)"
-                )
-            } else {
-                appLog("application termination: network drain completed")
+                appLog("application termination: draining active network transaction")
+                engine.stop(userInitiated: true)
+                let deadline = Date().addingTimeInterval(12)
+                while Date() < deadline,
+                      Self.requiresTerminationDrain(engine) {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                if Self.requiresTerminationDrain(engine) {
+                    let report = engine.connectionReport
+                    let reportState = report?.state.rawValue ?? "none"
+                    appLog(
+                        "application termination: network drain timed out; "
+                            + "status=\(engine.status) "
+                            + "report=\(reportState) "
+                            + "rollback_complete="
+                            + "\(report?.rollbackComplete ?? false) "
+                            + "system_takeover_removed="
+                            + "\(report?.systemTakeoverRemoved ?? false)"
+                    )
+                } else {
+                    appLog("application termination: network drain completed")
+                }
             }
             self.terminationApproved = true
             self.terminationTask = nil

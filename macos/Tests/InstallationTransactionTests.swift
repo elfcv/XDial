@@ -1,6 +1,20 @@
 import XCTest
 
 final class InstallationTransactionTests: XCTestCase {
+    func testOnlyAwaitingUserApprovalAllowsTermination() {
+        var report = InstallationReport.fresh(applicationAlreadyInstalled: true)
+        XCTAssertFalse(report.allowsTermination)
+        report.updateTask(id: "helper", state: .running)
+        XCTAssertFalse(report.allowsTermination)
+        report.updateTask(id: "helper", state: .waitingForApproval)
+        XCTAssertTrue(report.allowsTermination)
+        report.updateTask(id: "helper", state: .running)
+        XCTAssertFalse(report.allowsTermination, "approval granted: mutation may follow")
+        report.updateTask(id: "helper", state: .ready)
+        report.updateTask(id: "system-extension", state: .waitingForApproval)
+        XCTAssertTrue(report.allowsTermination)
+    }
+
     func testReplacementExitWaiterExcludesCurrentInvalidAndDuplicates() {
         XCTAssertEqual(
             ApplicationReplacementExitWaiter

@@ -136,6 +136,12 @@ struct InstallationReport: Codable, Equatable {
         }
     }
 
+    /// Waiting for the user in System Settings changes nothing locally, so a quit
+    /// need not wait for the installation to stop; the next launch resumes it.
+    var allowsTermination: Bool {
+        state == .waitingForApproval
+    }
+
     mutating func updateTask(
         id: String,
         state: InstallationTaskState
