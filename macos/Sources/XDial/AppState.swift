@@ -55,7 +55,15 @@ final class AppState: ObservableObject {
     private var configurationChanges =
         ConfigurationDirtyTracker<RuntimeConfigurationSignature>()
 
-    var configDirty: Bool { configDirtyFlag && engineHoldsSnapshot }
+    var configDirty: Bool {
+        (configDirtyFlag && engineHoldsSnapshot)
+            || localSOCKSShare.ingressRequiresReconnect
+    }
+
+    /// 当前已提交连接的入口；未连接时为 nil。
+    var committedIngress: ConnectionIngress? {
+        localSOCKSShare.committedIngress
+    }
 
     @Published var language: Lang {
         didSet {
@@ -87,6 +95,15 @@ final class AppState: ObservableObject {
     }
 
     lazy var engine = GoEngine.shared
+    lazy var localSOCKSShare = LocalSOCKSShareController(
+        defaults: xdialDefaults
+    ) { [weak self] request, completion in
+        guard let self else {
+            completion(.failure(CocoaError(.userCancelled)))
+            return
+        }
+        self.engine.sendLocalSOCKSShare(request, completion: completion)
+    }
     lazy var installation = InstallationCoordinator.shared
     private var engineSubs = Set<AnyCancellable>()
     private var sleepObserver: NSObjectProtocol?
@@ -548,6 +565,9 @@ final class AppState: ObservableObject {
         engine.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &engineSubs)
+        localSOCKSShare.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &engineSubs)
         engine.underlayChangeHandler = {
             [weak self] fingerprint, connectivityRestored in
             self?.handleUnderlayChange(
@@ -609,6 +629,13 @@ final class AppState: ObservableObject {
                         report: report
                     )
                     self.synchronizeLineLatencies()
+                    let committed = status == "connected"
+                        && report?.state == .committed
+                        && report?.systemTakeoverRemoved == false
+                    self.localSOCKSShare.connectionChanged(
+                        transactionID: committed ? report?.transactionID : nil,
+                        ingress: committed ? report?.ingress : nil
+                    )
                     self.synchronizeAppliedConfiguration(
                         status: status,
                         report: report
@@ -1422,6 +1449,11 @@ final class AppState: ObservableObject {
     func reconnect() {
         ssidScenarioSelection.noteManualSelection()
         guard let activeScenario else { return }
+        // 改变连接方式会改变系统接管，不能用保留旧连接的 Switch 完成。
+        if localSOCKSShare.ingressRequiresReconnect {
+            connect()
+            return
+        }
         cancelNetworkEpochQuietWindow()
         _ = enqueueScenarioSwitch(
             to: activeScenario.id,

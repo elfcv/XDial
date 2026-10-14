@@ -56,7 +56,7 @@ TUN、系统代理、系统 DNS、默认路由或持久状态；不启动未连�
 ### 3.1 macOS 与 Underlay（D31–D35、D-UNDERLAY、D-INGRESS）
 
 macOS 主入口为 `NETransparentProxyProvider`，以随机凭据保护的回环 SOCKS 将 TCP/UDP
-flow 交给同进程 sing-box。iOS / tvOS 使用 Packet Tunnel；HTTP/SOCKS + PAC 不是当前入口。
+flow 交给同进程 sing-box。iOS / tvOS 使用 Packet Tunnel；系统 HTTP/SOCKS 代理与 PAC 不是当前入口。
 Transparent Proxy 不接管 ICMP。link-local、multicast、limited broadcast 留在 Underlay；
 RFC1918、IPv6 ULA、Tailnet 与企业单播地址仍由 Scenario 裁决，排除集合不按应用或产品扩展。
 
@@ -69,9 +69,24 @@ Underlay 来自宿主请求连接前同一时刻的内核默认接口、完整 `
 macOS 已绑定 flow 的接口是系统既有裁决，经认证且有长度上限的 metadata 传给 sing-box；
 Scenario 先选 Line，仅最终属于 Direct 的 flow 恢复该绑定，其他 Line 不继承它。
 
+本机 SOCKS5 由 Provider 持有 `127.0.0.1:<port>`，只接受本机无认证 TCP CONNECT，不设置
+系统代理、不监听其他地址。每条连接在接入时取得当前 generation 的会话入口，与系统 flow
+共用 relay 登记、换代排空和停止关闭；端口不随 Switch 重建。客户端主机名只放行可打印字节，
+不能携带 Provider 的 flow metadata；该入口没有应用身份，只命中 Scenario 的非应用规则。
+
+连接方式是 `ConnectionReport.ingress`，由宿主在完整连接开始时按 App 偏好写入，Switch 沿用
+已提交连接的入口，候选报告入口不同即拒绝。它不进入 Profile 或运行指纹；偏好与当前连接
+不同时以待应用状态提示，应用时完整重连，不用保留旧连接的 Switch 改变系统接管。
+
+| 入口 | 系统接管 | 本机端口 |
+|---|---|---|
+| `system`（默认） | 提交完整 flow 与 DNS 捕获规则 | 可选附加入口，经 Provider IPC 即时开关；失败只在设置中提示 |
+| `local-socks` | 提交不含任何捕获规则的设置，系统流量与 DNS 不经过 XDial | 唯一入口，Commit 前建立监听；失败即本次连接失败，回滚时关闭 |
+
 入口：[宿主](macos/Sources/XDial/TransparentProxyManager.swift)、
 [Provider](macos/TransparentProxyExtension/TransparentProxyProvider.swift)、
-[flow metadata](macos/Shared/TransparentProxyFlowMetadata.swift)。
+[flow metadata](macos/Shared/TransparentProxyFlowMetadata.swift)、
+[本机 SOCKS5](macos/TransparentProxyExtension/LocalSOCKSShareListener.swift)。
 
 ### 3.2 Tailscale 与 MagicDNS（D33）
 

@@ -70,6 +70,7 @@ private struct MenuBarLabel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let connected: Bool
+    let proxyOnly: Bool
     let connecting: Bool
     let hasError: Bool
     let updateAvailable: Bool
@@ -77,7 +78,7 @@ private struct MenuBarLabel: View {
     @State private var animationFrame = 0
 
     private var connection: MenuBarStatusIcon.ConnectionState {
-        if connected { return .connected }
+        if connected { return proxyOnly ? .connectedProxyOnly : .connected }
         if connecting { return .connecting }
         return .disconnected
     }
@@ -189,6 +190,8 @@ struct XDialApp: App {
         } label: {
             MenuBarLabel(
                 connected: state.isConnected,
+                proxyOnly: state.isConnected
+                    && state.committedIngress?.mode == .localSOCKS,
                 connecting: state.isBusy,
                 hasError: state.hasMenuBarError,
                 updateAvailable: updateChecker.isUpdateAvailable

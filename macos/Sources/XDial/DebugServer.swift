@@ -206,6 +206,14 @@ final class DebugServer {
         dict["profileLibraryReady"] = s.profileLibraryLoaded && s.profilePersistenceError == nil
         // 配置改了但引擎还在跑旧快照 —— 验收改动是否真正生效必须看这个
         dict["configDirty"] = s.configDirty
+        // 连接方式偏好与本机 SOCKS5 状态；实际入口以 connectionReport.ingress 为准。
+        dict["localSOCKS"] = [
+            "preferredMode": s.localSOCKSShare.ingressMode.rawValue,
+            "attachedEnabled": s.localSOCKSShare.isEnabled,
+            "port": s.localSOCKSShare.port,
+            "phase": String(describing: s.localSOCKSShare.phase),
+            "requiresReconnect": s.localSOCKSShare.ingressRequiresReconnect,
+        ] as [String: Any]
         if let report = s.engine.connectionReport,
            let data = try? JSONEncoder().encode(report),
            let rawObject = try? JSONSerialization.jsonObject(with: data),

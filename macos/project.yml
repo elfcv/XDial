@@ -429,6 +429,10 @@ targets:
       - Sources/XDial/SettingsReadOnlyText.swift
       - Sources/XDial/LineGroupMemberTable.swift
       - Sources/XDial/LineLatencyView.swift
+      - Sources/XDial/LocalSOCKSShareController.swift
+      - TransparentProxyExtension/LocalSOCKSShareListener.swift
+      - TransparentProxyExtension/TCPFlowSOCKSRelay.swift
+      - TransparentProxyExtension/SOCKSCredentials.swift
       - Sources/XDial/ProfileLibraryStore.swift
       - Sources/XDial/Localization.swift
       - Sources/XDial/MenuBarStatusIcon.swift
