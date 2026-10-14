@@ -34,6 +34,7 @@ final class InstallationCoordinator: ObservableObject {
     }
 
     private var runTask: Task<Void, Never>?
+    private var terminating = false
     private let completionMarkerKey = "xdial.installation.ready"
 
     var shouldPrepareAtLaunch: Bool {
@@ -41,7 +42,10 @@ final class InstallationCoordinator: ObservableObject {
             serviceRegistered: PrivilegeManager.isInstalled,
             registrationRecoveryPending: PrivilegeManager.hasPendingRegistrationRecovery,
             previousCompletedInstallation: xdialDefaults.string(forKey: completionMarkerKey),
-            bundleIdentifier: XDialBuildIdentity.applicationIdentifier
+            bundleIdentifier: XDialBuildIdentity.applicationIdentifier,
+            requestedInstallation: xdialDefaults.string(
+                forKey: InstallationBuildMarker.requestedInstallationKey
+            )
         )
     }
 
@@ -91,8 +95,38 @@ final class InstallationCoordinator: ObservableObject {
             present()
         }
         isInstalling = true
+        xdialDefaults.set(
+            XDialBuildIdentity.applicationIdentifier,
+            forKey: InstallationBuildMarker.requestedInstallationKey
+        )
         runTask = Task { [weak self] in
             await self?.run()
+        }
+    }
+
+    /// Quitting must never wait on the user or the system. Waiting for approval
+    /// changes nothing locally; otherwise cancellation gets a bounded chance to
+    /// reach a recoverable point, and the next launch resumes from the record.
+    func stopForTermination(timeout: TimeInterval) async {
+        guard let runTask else { return }
+        terminating = true
+        runTask.cancel()
+        guard !report.allowsTermination else { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while self.runTask != nil, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if self.runTask != nil {
+            appLog("application termination: installation did not stop within \(Int(timeout))s")
+        }
+    }
+
+    func openApprovalSettings(for taskID: String) {
+        switch taskID {
+        case "helper":
+            PrivilegeManager.openApprovalSettings()
+        default:
+            TransparentProxyManager.openExtensionApprovalSettings()
         }
     }
 
@@ -116,6 +150,7 @@ final class InstallationCoordinator: ObservableObject {
     func present(
         operation: InstallationOperation = .install
     ) {
+        guard !terminating else { return }
         presentedOperation = operation
         DispatchQueue.main.async {
             NotificationCenter.default.post(
@@ -171,6 +206,9 @@ final class InstallationCoordinator: ObservableObject {
             xdialDefaults.set(
                 currentBuildMarker,
                 forKey: completionMarkerKey
+            )
+            xdialDefaults.removeObject(
+                forKey: InstallationBuildMarker.requestedInstallationKey
             )
             appLog(
                 "installation ready transaction=\(report.transactionID)"

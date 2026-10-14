@@ -1,6 +1,79 @@
 import XCTest
 
 final class InstallationTransactionTests: XCTestCase {
+    func testOnlyAwaitingUserApprovalAllowsTermination() {
+        var report = InstallationReport.fresh(applicationAlreadyInstalled: true)
+        XCTAssertFalse(report.allowsTermination)
+        report.updateTask(id: "helper", state: .running)
+        XCTAssertFalse(report.allowsTermination)
+        report.updateTask(id: "helper", state: .waitingForApproval)
+        XCTAssertTrue(report.allowsTermination)
+        report.updateTask(id: "helper", state: .running)
+        XCTAssertFalse(report.allowsTermination, "approval granted: mutation may follow")
+        report.updateTask(id: "helper", state: .ready)
+        report.updateTask(id: "system-extension", state: .waitingForApproval)
+        XCTAssertTrue(report.allowsTermination)
+    }
+
+    func testReplacementForcesACopyThatRefusesToQuit() {
+        var now: TimeInterval = 0
+        var running: Set<Int32> = [81]
+        var graceful: [Int32] = []
+        var forced: [Int32] = []
+        XCTAssertTrue(
+            ApplicationReplacementExitWaiter.terminate(
+                gracefulTimeout: 20, forcedTimeout: 5, pollInterval: 1,
+                monotonicNow: { now }, sleep: { now += $0 },
+                requestGracefulTermination: { graceful.append($0) },
+                forceTermination: {
+                    forced.append($0)
+                    running.remove($0)
+                },
+                remainingProcessIdentifiers: { running }
+            )
+        )
+        XCTAssertEqual(graceful, [81])
+        XCTAssertEqual(forced, [81])
+        // One poll after forcing confirms the copy is gone.
+        XCTAssertEqual(now, 21, accuracy: 0.000_001)
+    }
+
+    func testReplacementDoesNotForceACopyThatQuits() {
+        var now: TimeInterval = 0
+        var running: Set<Int32> = [81]
+        var forced: [Int32] = []
+        XCTAssertTrue(
+            ApplicationReplacementExitWaiter.terminate(
+                pollInterval: 1,
+                monotonicNow: { now }, sleep: { now += $0 },
+                requestGracefulTermination: { _ in },
+                forceTermination: { forced.append($0) },
+                remainingProcessIdentifiers: {
+                    if now >= 3 { running = [] }
+                    return running
+                }
+            )
+        )
+        XCTAssertTrue(forced.isEmpty)
+        XCTAssertEqual(now, 3, accuracy: 0.000_001)
+    }
+
+    func testReplacementReportsACopyThatSurvivesForce() {
+        var now: TimeInterval = 0
+        var forced: [Int32] = []
+        XCTAssertFalse(
+            ApplicationReplacementExitWaiter.terminate(
+                gracefulTimeout: 2, forcedTimeout: 1, pollInterval: 0.5,
+                monotonicNow: { now }, sleep: { now += $0 },
+                requestGracefulTermination: { _ in },
+                forceTermination: { forced.append($0) },
+                remainingProcessIdentifiers: { [81] }
+            )
+        )
+        XCTAssertEqual(forced, [81])
+        XCTAssertEqual(now, 3, accuracy: 0.000_001)
+    }
+
     func testReplacementExitWaiterExcludesCurrentInvalidAndDuplicates() {
         XCTAssertEqual(
             ApplicationReplacementExitWaiter
@@ -205,6 +278,19 @@ final class InstallationTransactionTests: XCTestCase {
             previousCompletedInstallation: "com.kafeifei.xdial.debug:78:installation-v3",
             bundleIdentifier: "com.kafeifei.xdial.debug"
         ))
+    }
+
+    func testRequestedInstallationResumesAfterQuitOrReplacement() {
+        XCTAssertTrue(InstallationBuildMarker.shouldPrepareAtLaunch(
+            serviceRegistered: false, registrationRecoveryPending: false,
+            previousCompletedInstallation: nil, bundleIdentifier: "com.kafeifei.xdial",
+            requestedInstallation: "com.kafeifei.xdial"
+        ))
+        XCTAssertFalse(InstallationBuildMarker.shouldPrepareAtLaunch(
+            serviceRegistered: false, registrationRecoveryPending: false,
+            previousCompletedInstallation: nil, bundleIdentifier: "com.kafeifei.xdial.debug",
+            requestedInstallation: "com.kafeifei.xdial"
+        ), "another channel's request does not authorize registration")
     }
 
     func testFreshOrExplicitlyUninstalledApplicationDoesNotRegisterAutomatically() {

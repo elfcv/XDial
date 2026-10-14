@@ -112,7 +112,7 @@ struct InstallationView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(task.name)
                             .font(.system(size: 13, weight: .medium))
-                        Text(task.error?.message ?? task.detail)
+                        Text(task.error?.message ?? approvalGuidance(for: task) ?? task.detail)
                             .font(.caption)
                             .foregroundStyle(
                                 task.state == .failed
@@ -131,6 +131,12 @@ struct InstallationView: View {
                         .controlSize(.small)
                     } else if task.state == .running {
                         ProgressView().controlSize(.small)
+                    } else if task.state == .waitingForApproval {
+                        Button(state.tr("打开系统设置", "Open System Settings")) {
+                            coordinator.openApprovalSettings(for: task.id)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                     } else {
                         Text(stateText(task.state))
                             .font(.caption)
@@ -152,6 +158,26 @@ struct InstallationView: View {
         .padding(.horizontal, 14)
         .background(.quaternary.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Approval is the one step only the user can finish, so the row says
+    /// exactly where it lives instead of assuming System Settings stayed open.
+    private func approvalGuidance(for task: InstallationTaskReport) -> String? {
+        guard task.state == .waitingForApproval else { return nil }
+        switch task.id {
+        case "helper":
+            return state.tr(
+                "在「通用 → 登录项与扩展」的「App 后台活动」中，打开 XDial。",
+                "In General → Login Items & Extensions, turn on XDial under App Background Activity."
+            )
+        case "system-extension":
+            return state.tr(
+                "在「通用 → 登录项与扩展」最下方的「扩展」里找到 XDial，点右侧的 ⓘ，打开「网络扩展」。",
+                "In General → Login Items & Extensions, find XDial under Extensions at the bottom, click ⓘ and turn on Network Extensions."
+            )
+        default:
+            return nil
+        }
     }
 
     private var ssidAccessTask: some View {
@@ -392,8 +418,8 @@ struct InstallationView: View {
         switch coordinator.report.state {
         case .waitingForApproval:
             return state.tr(
-                "系统设置已经打开；完成 macOS 要求的批准后会自动继续。",
-                "System Settings is open; setup continues after macOS approval."
+                "请按下方提示在系统设置中批准；批准后会自动继续。",
+                "Approve XDial in System Settings as shown below; setup then continues."
             )
         case .ready:
             if needsSSIDAccess {
