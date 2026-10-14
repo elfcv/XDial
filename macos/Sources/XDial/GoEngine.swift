@@ -97,6 +97,9 @@ final class GoEngine: ObservableObject {
             coldLaunchSettledTransactionID =
                 connectionReport.transactionID
         }
+        transparentProxy.connectionIngress = {
+            LocalSOCKSShareController.preferredIngress(defaults: xdialDefaults)
+        }
         transparentProxy.statusHandler = { [weak self] status, error in
             Task { @MainActor in
                 self?.applyTransparentProxyStatus(status, error: error)
@@ -304,6 +307,13 @@ final class GoEngine: ObservableObject {
             addressFamily: addressFamily,
             completion: completion
         )
+    }
+
+    func sendLocalSOCKSShare(
+        _ request: LocalSOCKSShareRequest,
+        completion: @escaping (Result<LocalSOCKSShareResponse, Error>) -> Void
+    ) {
+        transparentProxy.sendLocalSOCKSShare(request, completion: completion)
     }
 
     func trafficSnapshot(

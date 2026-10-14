@@ -22,8 +22,22 @@ final class EditorExpansionSet {
     func sorted() -> [String] { rows.filter { $0.value.isExpanded }.keys.sorted() }
 }
 
+/// “通用”页左侧的分类。
+enum GeneralSettingsSection: CaseIterable, Hashable {
+    case startup, appearance, system, about
+}
+
 @Observable final class ProfileEditorPosition {
+    static let generalTab = 4
+
     var tab = 0
+    var generalSection = GeneralSettingsSection.startup
+
+    /// 从 Popover 等入口直接定位到“通用”里的某个分类。
+    func showGeneral(_ section: GeneralSettingsSection) {
+        tab = Self.generalTab
+        generalSection = section
+    }
     let expandedLineIDs = EditorExpansionSet()
     let expandedRuleIDs = EditorExpansionSet()
     var expandedScenarioID: String?

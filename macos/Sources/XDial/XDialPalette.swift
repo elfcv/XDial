@@ -43,6 +43,15 @@ enum XDialPalette {
         highContrastDark: XDialBrandPalette.dangerHighContrastDarkHex
     )
 
+    // 暮紫只承担“仅 SOCKS5、系统流量未经过 XDial”的已连接状态，
+    // 不能与 Success 混用：后者表示系统流量已由 XDial 裁决。
+    static let proxyOnly = adaptive(
+        light: XDialBrandPalette.proxyOnlyLightHex,
+        dark: XDialBrandPalette.proxyOnlyDarkHex,
+        highContrastLight: XDialBrandPalette.proxyOnlyHighContrastLightHex,
+        highContrastDark: XDialBrandPalette.proxyOnlyHighContrastDarkHex
+    )
+
     // 冷灰白与石墨灰形成三层表面。白天模式刻意拉开画布、卡片和边框，
     // 避免低对比屏幕把它们压成同一层。
     static let canvasNSColor = adaptiveNSColor(

@@ -10,10 +10,11 @@ enum TCPFlowSOCKSRelay {
         let encodedFlowMetadata: Data?
     }
 
-    private enum RelayError: Error {
+    enum RelayError: Error {
         case invalidDestination
         case socksUnavailable
         case socksProtocol(String)
+        case connectRejected(UInt8)
         case flowClosed
     }
 
@@ -101,13 +102,13 @@ enum TCPFlowSOCKSRelay {
         return nsError.code == 2 || nsError.code == 5
     }
 
-    private static func diagnosticCode(_ error: Error) -> String {
+    static func diagnosticCode(_ error: Error) -> String {
         switch error {
         case RelayError.invalidDestination:
             return "invalid-destination"
         case RelayError.socksUnavailable:
             return "socks-unavailable"
-        case RelayError.socksProtocol:
+        case RelayError.socksProtocol, RelayError.connectRejected:
             return "socks-protocol"
         case RelayError.flowClosed:
             return "flow-closed"
@@ -178,7 +179,7 @@ enum TCPFlowSOCKSRelay {
         )
     }
 
-    private static func start(_ connection: NWConnection) async throws {
+    static func start(_ connection: NWConnection) async throws {
         try await awaitRelayCallback { completion in
             let gate = OneShotGate()
             connection.stateUpdateHandler = { state in
@@ -203,7 +204,7 @@ enum TCPFlowSOCKSRelay {
         }
     }
 
-    private static func negotiateSOCKS(
+    static func negotiateSOCKS(
         _ connection: NWConnection,
         credentials: SOCKSCredentials?,
         host: String,
@@ -254,8 +255,9 @@ enum TCPFlowSOCKSRelay {
             throw RelayError.socksProtocol("invalid response version")
         }
         guard response[response.index(response.startIndex, offsetBy: 1)] == 0x00 else {
-            let code = response[response.index(response.startIndex, offsetBy: 1)]
-            throw RelayError.socksProtocol("connect rejected with code \(code)")
+            throw RelayError.connectRejected(
+                response[response.index(response.startIndex, offsetBy: 1)]
+            )
         }
         switch response[response.index(response.startIndex, offsetBy: 3)] {
         case 0x01:
@@ -364,7 +366,7 @@ enum TCPFlowSOCKSRelay {
     /// Marks the SOCKS TCP stream complete in the sending direction. Network
     /// framework documents this as the TCP FIN equivalent; the receive side
     /// remains available until its own EOF or an error.
-    private static func finishSending(
+    static func finishSending(
         to connection: NWConnection
     ) async throws {
         let _: Void = try await awaitRelayCallback { completion in
@@ -418,7 +420,7 @@ enum TCPFlowSOCKSRelay {
         }
     }
 
-    private static func send(
+    static func send(
         _ data: Data,
         to connection: NWConnection
     ) async throws {
@@ -433,13 +435,13 @@ enum TCPFlowSOCKSRelay {
         }
     }
 
-    private struct ReceiveResult {
+    struct ReceiveResult {
         let data: Data
         let isComplete: Bool
         let error: Error?
     }
 
-    private static func receive(
+    static func receive(
         from connection: NWConnection
     ) async throws -> ReceiveResult {
         try await awaitRelayCallback { completion in
@@ -463,7 +465,7 @@ enum TCPFlowSOCKSRelay {
         }
     }
 
-    private static func receiveExactly(
+    static func receiveExactly(
         _ length: Int,
         from connection: NWConnection
     ) async throws -> Data {

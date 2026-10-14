@@ -74,6 +74,23 @@ final class MenuBarStatusIconTests: XCTestCase {
         XCTAssertLessThan(alpha(disconnected, x: 12.2, y: 7.7), 0.05)
     }
 
+    // MARK: - 仅 SOCKS5：实心盘右下咬口 + 端口点
+
+    func testProxyOnlyIsConnectedDiscWithDetachedPortDot() throws {
+        let proxyOnly = try render(.connectedProxyOnly, badge: .none)
+        let connected = try render(.connected, badge: .none)
+        XCTAssertTrue(
+            MenuBarStatusIcon.image(connection: .connectedProxyOnly, badge: .none, menuBarTone: .light).isTemplate
+        )
+        // 盘面与“已连接”一致。
+        XCTAssertGreaterThan(alpha(proxyOnly, x: 8, y: 8), 0.9)
+        XCTAssertGreaterThan(alpha(proxyOnly, x: 8, y: 2.2), 0.9)
+        // 端口点实心，四周一圈空隙把它与盘面分开。
+        XCTAssertGreaterThan(alpha(proxyOnly, x: 13.4, y: 13.4), 0.9)
+        XCTAssertLessThan(alpha(proxyOnly, x: 12.65, y: 11.0), 0.1)
+        XCTAssertGreaterThan(alpha(connected, x: 12.65, y: 11.0), 0.9, "the bite is what distinguishes it")
+    }
+
     // MARK: - Connected：实心盘 + 镂空指孔 + 镂空指停器
 
     func testConnectedIsSolidDiscWithPunchedHolesAndFingerStop() throws {

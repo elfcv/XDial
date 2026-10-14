@@ -14,6 +14,9 @@ enum MenuBarStatusIcon {
         case disconnected
         case connecting
         case connected
+        /// 仅本机 SOCKS5、不接管系统：已连接的实心盘右下咬口并加一枚端口点。
+        /// 模板图只能靠形状与“已连接”区分。
+        case connectedProxyOnly
     }
 
     /// 错误优先级高于更新；两者同时存在时只显示错误，避免小尺寸图标过载。
@@ -129,12 +132,34 @@ enum MenuBarStatusIcon {
             RotaryDial.fillHoles(ink: ink) { holeOpacity(hole: $0, frame: frame) }
         case .connected:
             RotaryDial.fillDiscWithCutouts(ink: ink)
+        case .connectedProxyOnly:
+            drawProxyOnlyGlyph(ink: ink)
         }
 
         if badge == .update {
             dot.setFill()
             RotaryDial.circle(at: updateDotCenter, radius: updateDotRadius).fill()
         }
+    }
+
+    /// 端口点在右下，与右上的更新圆点分处两角，二者可以同时出现。
+    private static let proxyOnlyPortCenter = NSPoint(x: 13.4, y: 13.4)
+    private static let proxyOnlyPortRadius: CGFloat = 1.9
+    private static let proxyOnlyPortGap: CGFloat = 1.2
+
+    /// 已连接的实心盘，右下咬掉一口后放一枚实心端口点。
+    private static func drawProxyOnlyGlyph(ink: NSColor) {
+        RotaryDial.fillDiscWithCutouts(ink: ink)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current?.compositingOperation = .destinationOut
+        NSColor.black.setFill()
+        RotaryDial.circle(
+            at: proxyOnlyPortCenter,
+            radius: proxyOnlyPortRadius + proxyOnlyPortGap
+        ).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        ink.setFill()
+        RotaryDial.circle(at: proxyOnlyPortCenter, radius: proxyOnlyPortRadius).fill()
     }
 
     /// 错误：空心环 + 叹号，独立字形。

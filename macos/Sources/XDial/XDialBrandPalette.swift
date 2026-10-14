@@ -29,6 +29,12 @@ enum XDialBrandPalette {
     static let dangerHighContrastLightHex: UInt32 = 0x6F2C25
     static let dangerHighContrastDarkHex: UInt32 = 0xEFB0A4
 
+    // 暮紫：只表示“仅本机 SOCKS5、不接管系统”的连接。
+    static let proxyOnlyLightHex: UInt32 = 0x5A5182
+    static let proxyOnlyDarkHex: UInt32 = 0xB3AAD8
+    static let proxyOnlyHighContrastLightHex: UInt32 = 0x463D6C
+    static let proxyOnlyHighContrastDarkHex: UInt32 = 0xD2CBEE
+
     static let canvasLightHex: UInt32 = 0xE2E7EA
     static let canvasDarkHex: UInt32 = 0x1B1E20
     static let canvasHighContrastLightHex: UInt32 = 0xE8EBED
