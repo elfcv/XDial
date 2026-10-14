@@ -14,6 +14,8 @@ struct SettingsLineTable: NSViewRepresentable {
     var testLine: (String) -> Void = { _ in }
     var deleteLine: (String) -> Void = { _ in }
     var copyLine: (String) -> Void = { _ in }
+    var revealRequest: ProfileEditorPosition.LineRevealRequest?
+    var revealHandled: (ProfileEditorPosition.LineRevealRequest) -> Void = { _ in }
 
     struct Summary: Equatable {
         let name: String
@@ -76,6 +78,7 @@ struct SettingsLineTable: NSViewRepresentable {
         private var heights: [String: CGFloat] = [:]
         private var pendingHeights: Set<String> = []
         private var heightUpdateScheduled = false
+        private var handledRevealRequest: ProfileEditorPosition.LineRevealRequest?
 
         struct Entry {
             var line: Line
@@ -115,6 +118,20 @@ struct SettingsLineTable: NSViewRepresentable {
                     table?.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0))
                     table?.noteHeightOfRows(withIndexesChanged: changed)
                 }
+            }
+            reveal(value.revealRequest)
+        }
+
+        private func reveal(_ request: ProfileEditorPosition.LineRevealRequest?) {
+            guard let request, request != handledRevealRequest,
+                  let index = parent.lines.firstIndex(where: { $0.id == request.lineID }) else { return }
+            handledRevealRequest = request
+            // 展开后的行高在下一轮布局才确定。
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.parent.revealHandled(request)
+                guard let table = self.table, index < table.numberOfRows else { return }
+                table.scrollRowToVisible(index)
             }
         }
 

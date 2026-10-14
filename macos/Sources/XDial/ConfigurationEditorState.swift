@@ -41,6 +41,25 @@ enum GeneralSettingsSection: CaseIterable, Hashable {
     let expandedLineIDs = EditorExpansionSet()
     let expandedRuleIDs = EditorExpansionSet()
     var expandedScenarioID: String?
+    /// 一次性的“滚动到这条线路”请求；序号让同一条线路可以被再次定位。
+    private(set) var lineRevealRequest: LineRevealRequest?
+
+    struct LineRevealRequest: Equatable {
+        let lineID: String
+        let serial: Int
+    }
+
+    @ObservationIgnored private var revealSerial = 0
+
+    func revealLine(_ lineID: String) {
+        revealSerial += 1
+        lineRevealRequest = LineRevealRequest(lineID: lineID, serial: revealSerial)
+    }
+
+    /// 定位完成后撤销请求，重新打开窗口时不再跳回这条线路。
+    func finishLineReveal(_ request: LineRevealRequest) {
+        if lineRevealRequest == request { lineRevealRequest = nil }
+    }
 
     func showProfileSection() {
         switch tab {
