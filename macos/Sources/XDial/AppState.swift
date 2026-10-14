@@ -431,31 +431,44 @@ final class AppState: ObservableObject {
         guard !engine.isBusy else { return false }
         guard installation.isReady else { return false }
         guard let scenario = activeScenario else { return false }
-        return hasRequiredCredentials(for: scenario)
+        return connectionBlocker(for: scenario) == nil
     }
 
-    private func hasRequiredCredentials(for scenario: Scenario, in candidate: Profile? = nil) -> Bool {
-        let profile = candidate ?? self.profile
-        // Empty Scenarios are valid drafts, but connecting them would make the
-        // Go planner invent Direct as an undeclared default policy.
-        guard !scenario.defaultLineID.isEmpty
-                || !scenario.defaultSubscriptionID.isEmpty else {
-            return false
-        }
-        // 必须有效的 VPN 凭据（如果场景用到 VPN）
-        for binding in scenario.bindings {
-            if let line = profile.lines.first(where: { $0.id == binding.lineID }),
-               line.type == "vpn",
-               (line.vpnServer.isEmpty || line.vpnUsername.isEmpty || line.vpnPassword.isEmpty) {
-                return false
+    private func connectionBlocker(for scenario: Scenario, in candidate: Profile? = nil) -> ConnectionConfigurationBlocker? {
+        ConnectionConfigurationBlocker.evaluate(scenario, in: candidate ?? profile)
+    }
+
+    /// 最近一次被配置缺口拦下的场景。缺口本身每次从当前配置重新判定：
+    /// 补全配置后提示自然消失，不需要额外清理。
+    @Published private var blockedConnectionScenarioID: String?
+
+    var connectionConfigurationBlocker: ConnectionConfigurationBlocker? {
+        guard let id = blockedConnectionScenarioID,
+              let scenario = profile.scenarios.first(where: { $0.id == id }) else { return nil }
+        return connectionBlocker(for: scenario)
+    }
+
+    /// 连接入口被配置缺口拦下时必须留下可见原因，不能静默返回。
+    private func noteConnectionBlocked(_ blocker: ConnectionConfigurationBlocker) {
+        appLog("connection blocked: Scenario \(blocker.scenarioID) configuration is incomplete")
+        blockedConnectionScenarioID = blocker.scenarioID
+    }
+
+    /// 打开设置并定位到需要补全的对象。
+    func revealConnectionBlocker(_ blocker: ConnectionConfigurationBlocker) {
+        if let lineID = blocker.lineID {
+            if let record = profileLibrary.profiles.first(where: { record in
+                record.profile.lines.contains(where: { $0.id == lineID })
+            }), record.id != profileLibrary.editingProfileID {
+                selectEditingProfile(record.id)
             }
+            editorPosition.tab = 0
+            editorPosition.expandedLineIDs.insert(lineID)
+            editorPosition.revealLine(lineID)
+        } else {
+            editorPosition.tab = 2
+            editorPosition.expandedScenarioID = blocker.scenarioID
         }
-        if let line = profile.lines.first(where: { $0.id == scenario.defaultLineID }),
-           line.type == "vpn",
-           (line.vpnServer.isEmpty || line.vpnUsername.isEmpty || line.vpnPassword.isEmpty) {
-            return false
-        }
-        return true
     }
 
     var statusText: String {
@@ -959,6 +972,9 @@ final class AppState: ObservableObject {
         guard installation.isReady else { return }
         guard engine.status == "disconnected" else { return }
         guard canConnect else {
+            if let activeScenario, let blocker = connectionBlocker(for: activeScenario) {
+                noteConnectionBlocked(blocker)
+            }
             launchAutoConnectPending = false
             AppUpdateRelaunchIntentStore.clear()
             updateRelaunchDecision = nil
@@ -1382,7 +1398,12 @@ final class AppState: ObservableObject {
             installation.present()
             return
         }
+        if let activeScenario, let blocker = connectionBlocker(for: activeScenario) {
+            noteConnectionBlocked(blocker)
+            return
+        }
         guard canConnect else { return }
+        blockedConnectionScenarioID = nil
         _ = connectionAttempts.begin()
         clearLineObservations()
         // 这次 save 本身就是在下发前落盘，不该把自己标成"未下发"
@@ -1413,6 +1434,7 @@ final class AppState: ObservableObject {
         // 用户明确断开必须压过尚未消费的冷启动自动连接意图。
         connectionDesired.userRequestedDisconnection()
         launchAutoConnectPending = false
+        blockedConnectionScenarioID = nil
         connectionAttempts.cancel()
         cancelWakeReconnectTask()
         cancelScenarioSwitch()
@@ -1487,7 +1509,11 @@ final class AppState: ObservableObject {
         guard let scenario = targetProfile.scenarios.first(where: { $0.id == id }) else {
             return false
         }
-        guard hasRequiredCredentials(for: scenario, in: targetProfile) else { return false }
+        if let blocker = connectionBlocker(for: scenario, in: targetProfile) {
+            noteConnectionBlocked(blocker)
+            return false
+        }
+        blockedConnectionScenarioID = nil
 
         if let inFlight = scenarioSwitchInFlight,
            inFlight.targetScenarioID == id,
@@ -2504,6 +2530,7 @@ final class AppState: ObservableObject {
             return false
         }
         profile.activeScenarioID = id
+        if blockedConnectionScenarioID != id { blockedConnectionScenarioID = nil }
         save()
         return profilePersistenceError == nil
     }

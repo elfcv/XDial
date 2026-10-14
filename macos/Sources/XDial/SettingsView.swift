@@ -2945,6 +2945,8 @@ private struct NativeLinesView: View {
             }, deleteLine: { id in
                 guard let line = state.configurationCatalog.line(id), !owned.contains(id) else { return }
                 delete(line)
-            }, copyLine: state.copyEditingLine)
+            }, copyLine: state.copyEditingLine,
+            revealRequest: state.editorPosition.lineRevealRequest,
+            revealHandled: state.editorPosition.finishLineReveal)
     }
 }
