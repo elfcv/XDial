@@ -285,6 +285,27 @@ final class ProfileLibraryMigrationTests: XCTestCase {
         XCTAssertEqual(refreshed.profiles.first, library.profiles.first)
     }
 
+    /// The seed ships Lines without credentials; employees must be able to fill them in.
+    func testSeedLineCredentialsBelongToTheUserButSubscriptionCredentialsDoNot() throws {
+        let library = try ProfileLibraryMigration.merging(seededProfile(id: "seed"), named: "公司", id: "seed",
+                                                          into: existingLibrary(claiming: []))
+        let seed = try XCTUnwrap(library.profiles.first { $0.id == "seed" })
+        XCTAssertNotNil(seed.baseline, "seed Lines stay source-owned")
+        XCTAssertTrue(seed.lineCredentialsBelongToUser)
+
+        var subscription = seed
+        subscription.source = ProfileSource(url: "https://example.com/sub")
+        XCTAssertFalse(subscription.lineCredentialsBelongToUser, "a refresh replaces subscription credentials")
+
+        var line = Line(id: "vpn", name: "VPN", type: "vpn")
+        var saved = line
+        for field in Line.credentialFields { saved[keyPath: field] = "user" }
+        line = line.keepingCredentials(of: saved)
+        for field in Line.credentialFields {
+            XCTAssertEqual(line[keyPath: field], "user", "\(field) is editable and therefore kept")
+        }
+    }
+
     func testSeedRefreshCanDropARuleItsScenarioUsed() throws {
         let library = try ProfileLibraryMigration.merging(refreshedSeed(id: "seed"), named: "公司", id: "seed",
                                                           into: existingLibrary(claiming: []))

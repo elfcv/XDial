@@ -16,6 +16,10 @@ struct ProfileRecord: Codable, Identifiable, Hashable {
     var baseline: Profile?
     var resourceIDs: [String: String]?
 
+    /// 来源线路的账号密码归谁。订阅刷新会用订阅内容覆盖它们，只读；企业预置
+    /// 配置（有基线、无订阅来源）不带凭据，由用户填写，刷新时保留。
+    var lineCredentialsBelongToUser: Bool { source == nil }
+
     static func empty(named name: String) -> ProfileRecord {
         var profile = Profile()
         profile.lines = [Line(id: "direct", name: "直连", type: "direct", verified: true)]

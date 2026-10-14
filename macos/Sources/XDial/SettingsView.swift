@@ -748,6 +748,8 @@ struct LineRow: View {
     }
 
     private var sourceOwned: Bool { state.editingRecord.baseline?.lines.contains(where: { $0.id == line.id }) == true }
+    /// 预置配置的线路由来源维护，但账号密码由用户填写。
+    private var credentialsReadOnly: Bool { sourceOwned && !state.editingRecord.lineCredentialsBelongToUser }
     private var isLocked: Bool { line.type == "direct" }
     private var tailscaleStatus: TailscaleRuntimeStatus? {
         state.tailscaleConfigurationStatus(for: line.id)
@@ -794,7 +796,8 @@ struct LineRow: View {
                 Spacer()
                 LineLatencyView(store: state.lineLatencies, line: line, profileID: ProfileLibrary.configurationID)
                 Text(typeLabel).font(.caption).foregroundStyle(.secondary)
-                Text(sourceOwned ? "订阅" : "自建").font(.caption).foregroundStyle(.secondary)
+                Text(sourceOwned ? (state.editingRecord.lineCredentialsBelongToUser ? "预置" : "订阅") : "自建")
+                    .font(.caption).foregroundStyle(.secondary)
                 Button { state.copyEditingLine(line.id) } label: { Image(systemName: "doc.on.doc") }
                     .buttonStyle(.plain).help(state.tr("复制为自建副本", "Duplicate as Local Line"))
             },
@@ -879,7 +882,7 @@ struct LineRow: View {
         switch line.type {
         case "vpn":
             field("服务器", $line.vpnServer, placeholder: "vpn.example.com:8443")
-            field("用户名", $line.vpnUsername)
+            field("用户名", $line.vpnUsername, credential: true)
             secureField("密码", $line.vpnPassword)
             insecureToggle
         case "trojan":
@@ -1493,10 +1496,11 @@ struct LineRow: View {
         state.saveEditingProfile()
     }
 
-    private func field(_ label: String, _ binding: SwiftUI.Binding<String>, placeholder: String = "") -> some View {
-        HStack {
+    private func field(_ label: String, _ binding: SwiftUI.Binding<String>, placeholder: String = "", credential: Bool = false) -> some View {
+        let readOnly = credential ? credentialsReadOnly : sourceOwned
+        return HStack {
             Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 60, alignment: .leading)
-            SettingsDraftInput(binding, readOnlyText: sourceOwned ? String(describing: binding.wrappedValue) : nil, onCommit: markLineChanged) { ASCIITextField(placeholder: placeholder, text: $0) }
+            SettingsDraftInput(binding, readOnlyText: readOnly ? String(describing: binding.wrappedValue) : nil, onCommit: markLineChanged) { ASCIITextField(placeholder: placeholder, text: $0) }
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
         }
@@ -1505,7 +1509,8 @@ struct LineRow: View {
     private func secureField(_ label: String, _ binding: SwiftUI.Binding<String>) -> some View {
         HStack {
             Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 60, alignment: .leading)
-            if sourceOwned {
+            // 密码类字段都是用户凭据。
+            if credentialsReadOnly {
                 SettingsReadOnlySecret(text: binding.wrappedValue)
             } else {
                 SettingsDraftInput(binding, onCommit: markLineChanged) { ASCIISecureField(placeholder: "", text: $0) }
