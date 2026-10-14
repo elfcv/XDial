@@ -2,6 +2,15 @@ import Foundation
 
 enum ScenarioSwitchFailureCode {
     static let lineReadinessTransient = "line-readiness-transient"
+    static let anyConnectRebuildRequired = "switch-anyconnect-rebuild-required"
+    static let ruleSetPreflightUnavailable = "switch-rule-set-preflight-unavailable"
+
+    /// 原理上无法保留旧连接完成的切换：AnyConnect 是进程级单例，不同线路不能
+    /// 并存；规则需要冷获取时候选无法在不断流的前提下准备。这类失败不能停在
+    /// 原场景，改为断开旧连接后完整连接目标场景。
+    static func requiresFullReconnect(_ code: String?) -> Bool {
+        code == anyConnectRebuildRequired || code == ruleSetPreflightUnavailable
+    }
 }
 
 enum AutomaticScenarioSwitchWakePolicy {

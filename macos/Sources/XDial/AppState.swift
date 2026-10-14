@@ -1738,6 +1738,24 @@ final class AppState: ObservableObject {
                 }
             }
         case let .failure(error):
+            if !cancellationWasRequested,
+               scenarioSwitchGeneration == generation,
+               ScenarioSwitchFailureCode.requiresFullReconnect(
+                   (error as? ProviderScenarioSwitchRejectedError)?.code
+               ) {
+                if let automaticIntent = inFlight.automaticIntent {
+                    finishAutomaticScenarioSwitchIntent(
+                        automaticIntent,
+                        outcome: .succeeded
+                    )
+                }
+                reconnectFully(
+                    to: targetScenarioID,
+                    profileID: inFlight.targetProfileID,
+                    reason: (error as? ProviderScenarioSwitchRejectedError)?.code ?? ""
+                )
+                return
+            }
             // The Provider contract guarantees that a failed/aborted staged
             // switch leaves the source transaction committed. Do not persist
             // the target Scenario or replace the source report.
@@ -1804,6 +1822,24 @@ final class AppState: ObservableObject {
             return
         }
         driveScenarioSwitchIfPossible()
+    }
+
+    /// 无法保留旧连接的切换：放弃 Switch，断开旧连接后完整连接目标场景。
+    /// 中间会短暂断网，这是用户（或其 Wi-Fi 规则）选择目标场景的代价。
+    private func reconnectFully(
+        to targetScenarioID: String,
+        profileID: String,
+        reason: String
+    ) {
+        scenarioSwitchTargetID = nil
+        scenarioSwitchTargetProfileID = nil
+        scenarioSwitchRequiresUnderlayRefresh = false
+        engine.lastError = nil
+        profileLibrary.activeProfileID = profileID
+        profile = profileLibrary.runtimeRecord.profile
+        guard persistActiveScenario(targetScenarioID) else { return }
+        appLog("Scenario switch to \(targetScenarioID) needs a full reconnect: \(reason)")
+        connect()
     }
 
     private func scheduleAutomaticScenarioSwitchRetry(
