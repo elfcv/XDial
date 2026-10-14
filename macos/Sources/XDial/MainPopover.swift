@@ -35,12 +35,17 @@ struct MainPopover: View {
     private let successColor = XDialPalette.success
     private let dangerColor = XDialPalette.danger
     private let warningColor = XDialPalette.warning
+    private let proxyOnlyColor = XDialPalette.proxyOnly
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             scenarioCarousel
+            if let port = proxyOnlyPort {
+                Divider()
+                proxyOnlyBand(port: port)
+            }
             if needsSSIDAccess {
                 Divider()
                 ssidAccessWarningBand
@@ -141,6 +146,33 @@ struct MainPopover: View {
                             in: Capsule()
                         )
                     }
+                    if isProxyOnly {
+                        Button {
+                            state.editorPosition.showGeneral(.startup)
+                            openSettingsWindow()
+                        } label: {
+                            Text(state.tr("仅 SOCKS5", "SOCKS5 only"))
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(proxyOnlyColor)
+                                .padding(.horizontal, 7)
+                                .frame(height: 20)
+                                .background(proxyOnlyColor.opacity(0.12), in: Capsule())
+                                .overlay {
+                                    Capsule().stroke(proxyOnlyColor.opacity(0.32), lineWidth: 0.75)
+                                }
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help(state.tr("打开连接方式设置", "Open connection mode settings"))
+                        .accessibilityLabel(state.tr(
+                            "仅 SOCKS5，系统流量未经过 XDial",
+                            "SOCKS5 only; system traffic does not pass through XDial"
+                        ))
+                        .accessibilityHint(state.tr(
+                            "打开通用设置中的连接方式",
+                            "Opens the connection mode in General settings"
+                        ))
+                    }
                 }
             }
             if let candidate = updater.releaseCandidate {
@@ -211,9 +243,80 @@ struct MainPopover: View {
         }
     }
 
+    /// 仅 SOCKS5 的连接不接管系统：所有“已连接”的颜色改用暮紫，并常驻提示。
+    private var isProxyOnly: Bool {
+        proxyOnlyPort != nil
+    }
+
+    private var proxyOnlyPort: UInt16? {
+        guard state.isConnected,
+              let ingress = state.committedIngress,
+              ingress.mode == .localSOCKS else { return nil }
+        return ingress.localSOCKSPort
+    }
+
+    private var connectedColor: Color {
+        isProxyOnly ? proxyOnlyColor : successColor
+    }
+
+    private func proxyOnlyBand(port: UInt16) -> some View {
+        let address = "127.0.0.1:\(port)"
+        return HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "powerplug.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(proxyOnlyColor)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.tr(
+                    "系统流量没有经过 XDial",
+                    "System traffic is not going through XDial"
+                ))
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.primary.opacity(0.82))
+                .fixedSize(horizontal: false, vertical: true)
+                Text(state.tr(
+                    "只有把 SOCKS5 代理设为 \(address) 的程序按场景分流。",
+                    "Only apps using the SOCKS5 proxy \(address) follow the Scenario."
+                ))
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(address, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(proxyOnlyColor)
+                    .frame(width: 26, height: 26)
+                    .background(proxyOnlyColor.opacity(0.1), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(state.tr("复制 \(address)", "Copy \(address)"))
+            .accessibilityLabel(state.tr("复制代理地址", "Copy proxy address"))
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            LinearGradient(
+                colors: [
+                    proxyOnlyColor.opacity(0.11),
+                    proxyOnlyColor.opacity(0.035),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        }
+    }
+
     private var headerAccent: Color {
         if state.isConnected {
-            return successColor
+            return connectedColor
         }
         if state.isBusy {
             return progressColor
@@ -401,7 +504,13 @@ struct MainPopover: View {
                 )
         case .connected:
             Circle()
-                .stroke(successColor, lineWidth: 4)
+                .stroke(
+                    connectedColor,
+                    style: StrokeStyle(
+                        lineWidth: 4,
+                        dash: isProxyOnly ? [7, 4] : []
+                    )
+                )
         case .failed:
             Circle()
                 .trim(from: 0.06, to: 0.94)
@@ -928,7 +1037,7 @@ struct MainPopover: View {
                         .foregroundStyle(.tertiary)
                     Text(mapping.lineName)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(successColor)
+                        .foregroundStyle(connectedColor)
                         .lineLimit(1)
                         .frame(width: 90, alignment: .leading)
                     if let line = state.profile.lines.first(where: { $0.id == mapping.lineID }) {
@@ -1306,7 +1415,10 @@ struct MainPopover: View {
         case .connected:
             return hovered
                 ? ScenarioBadge(symbol: "power", color: dangerColor)
-                : ScenarioBadge(symbol: "checkmark", color: successColor)
+                : ScenarioBadge(
+                    symbol: isProxyOnly ? "powerplug.fill" : "checkmark",
+                    color: connectedColor
+                )
         case .failed:
             return hovered
                 ? ScenarioBadge(symbol: "arrow.clockwise", color: actionColor)
@@ -1354,7 +1466,7 @@ struct MainPopover: View {
     private func iconColor(for visualState: ScenarioVisualState) -> Color {
         switch visualState {
         case .connected:
-            successColor
+            connectedColor
         case .failed:
             dangerColor
         default:

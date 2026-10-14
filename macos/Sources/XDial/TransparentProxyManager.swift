@@ -53,6 +53,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
 
     var statusHandler: StatusHandler?
     var reportHandler: ReportHandler?
+    /// 完整连接开始时读取一次；场景切换不读取，沿用已提交连接的入口。
+    var connectionIngress: () -> ConnectionIngress = { .system }
     var scenarioSwitchHandler: ScenarioSwitchHandler?
     var activationStatusHandler: ActivationStatusHandler?
     var underlayChangeHandler: ((String, Bool) -> Void)?
@@ -326,7 +328,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         hostOwnedTransactionIDs.insert(targetTransactionID)
         let targetReport = ConnectionReport(
             transactionID: targetTransactionID,
-            plan: plan
+            plan: plan,
+            ingress: sourceReport.ingress
         )
         let targetReportJSON: String
         do {
@@ -2018,6 +2021,39 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
     }
 
+    /// 本机 SOCKS5 共享只改变 Provider 持有的回环监听，不改变当前事务的
+    /// 规则、出口或系统接管；响应携带 Provider 的实际监听结果。
+    func sendLocalSOCKSShare(_ request: LocalSOCKSShareRequest,
+        completion: @escaping (Result<LocalSOCKSShareResponse, Error>) -> Void) {
+        let gate = HostCompletionGate(completion)
+        guard request.isValid, diagnosticsTransactionIsCurrent(request.transactionID),
+              let data = try? JSONEncoder().encode(request) else {
+            gate.finish(.failure(ProviderDiagnosticsHostError.transactionMismatch)); return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            gate.finish(.failure(ProviderDiagnosticsHostError.timedOut))
+        }
+        withExistingManager(purpose: .diagnostics) { result in
+            guard case let .success(manager?) = result,
+                  manager.connection.status == .connected,
+                  self.diagnosticsTransactionIsCurrent(request.transactionID),
+                  let session = manager.connection as? NETunnelProviderSession else {
+                gate.finish(.failure(ProviderDiagnosticsHostError.notConnected)); return
+            }
+            do {
+                try session.sendProviderMessage(data) { raw in
+                    guard let raw, raw.count <= 4096,
+                          let response = try? JSONDecoder().decode(LocalSOCKSShareResponse.self, from: raw),
+                          response.requestID == request.requestID,
+                          response.transactionID == request.transactionID else {
+                        gate.finish(.failure(ProviderDiagnosticsHostError.invalidResponse)); return
+                    }
+                    gate.finish(.success(response))
+                }
+            } catch { gate.finish(.failure(ProviderDiagnosticsHostError.sendFailed)) }
+        }
+    }
+
     private func sendProviderDiagnostics(
         _ request: ProviderDiagnosticsRequest,
         timeout: TimeInterval,
@@ -2557,7 +2593,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         let transactionID = UUID().uuidString
         let report = ConnectionReport(
             transactionID: transactionID,
-            plan: plan
+            plan: plan,
+            ingress: connectionIngress()
         )
         let seedData = try ConnectionReportCodec.encode(report)
         guard let seedJSON = String(data: seedData, encoding: .utf8) else {

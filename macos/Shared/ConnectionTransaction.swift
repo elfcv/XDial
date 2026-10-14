@@ -628,6 +628,9 @@ struct ConnectionReport: Codable, Equatable {
     var rollbackError: ConnectionReportError?
     var rollbackComplete: Bool
     var systemTakeoverRemoved: Bool
+    /// 本笔连接的流量入口。宿主建立完整连接时按当时的设置写入，场景切换沿用
+    /// 原连接；旧报告没有该字段时视为接管系统。
+    let ingress: ConnectionIngress
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -644,9 +647,14 @@ struct ConnectionReport: Codable, Equatable {
         case rollbackError = "rollback_error"
         case rollbackComplete = "rollback_complete"
         case systemTakeoverRemoved = "system_takeover_removed"
+        case ingress
     }
 
-    init(transactionID: String, plan: ConnectionPlan) {
+    init(
+        transactionID: String,
+        plan: ConnectionPlan,
+        ingress: ConnectionIngress = .system
+    ) {
         let now = Date()
         schemaVersion = 3
         self.transactionID = transactionID
@@ -673,6 +681,7 @@ struct ConnectionReport: Codable, Equatable {
         rollbackError = nil
         rollbackComplete = false
         systemTakeoverRemoved = true
+        self.ingress = ingress
         appendEvent(
             type: "transaction",
             state: ConnectionTransactionState.planning.rawValue
@@ -731,6 +740,17 @@ struct ConnectionReport: Codable, Equatable {
             Bool.self,
             forKey: .systemTakeoverRemoved
         ) ?? false
+        ingress = try values.decodeIfPresent(
+            ConnectionIngress.self,
+            forKey: .ingress
+        ) ?? .system
+        guard ingress.isValid else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .ingress,
+                in: values,
+                debugDescription: "invalid connection ingress"
+            )
+        }
     }
 
     var currentTask: ConnectionTaskReport? {

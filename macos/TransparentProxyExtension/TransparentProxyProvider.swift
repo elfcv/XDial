@@ -172,9 +172,19 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
     private let applicationAttribution =
         ProviderApplicationAttributionLedger()
     private let traffic = ProviderTrafficLedger()
+    /// Only touched on `engineQueue`.
+    private lazy var localSOCKSShare = LocalSOCKSShareListener(
+        queueLabel: XDialBuildIdentity.queueLabelPrefix
+            + ".transparent-proxy.local-socks-share",
+        logger: logger
+    ) { [weak self] connection in
+        self?.acceptLocalSOCKSShareConnection(connection)
+    }
 
     private var runtime: EmbeddedSingBoxRuntime?
     private var session: EmbeddedSingBoxRuntime.Session?
+    /// 本 Provider 会话的入口，来自启动报告；场景切换不改变它。
+    private var ingress = ConnectionIngress.system
     private var reporter: ConnectionTransactionReporter?
     private var settingsCommitted = false
     private var settingsCommitInFlight = false
@@ -260,6 +270,8 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         cancellationLock.unlock()
         outboundProbeGate.invalidate()
         generation = transactionID
+        ingress = initialReport.ingress
+        let ingress = ingress
         traffic.reset(transactionID: transactionID)
         let generation = generation
         engineQueue.async { [weak self] in
@@ -364,6 +376,23 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
                     throw injected
                 }
 #endif
+                if case .localSOCKS = ingress.mode,
+                   let port = ingress.localSOCKSPort {
+                    // 仅 SOCKS5：端口是这笔连接唯一的入口，监听失败即连接失败。
+                    let status = self.startLocalSOCKSIngress(port: port)
+                    guard status == .listening(port) else {
+                        let failure = ProviderError.localSOCKSListenFailed(
+                            port: port,
+                            code: status.code ?? "listener-failed"
+                        )
+                        reporter.fail(
+                            failure,
+                            code: "local-socks-listen-failed",
+                            taskID: "ingress:transparent-proxy"
+                        )
+                        throw failure
+                    }
+                }
                 let settings = self.networkSettings(for: session)
                 self.logger.notice(
                     "dns-capture-rules count=\(session.dnsCaptureDomains.count, privacy: .public) tailscale-records=\(session.tailscaleDNSRecordCount, privacy: .public) interface-scoped-exclusions=\(TransparentProxyNetworkRulePlan.interfaceScopedRemoteNetworks.count, privacy: .public)"
@@ -557,6 +586,7 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         activeCancellation?.cancel()
         cancellationLock.unlock()
         engineQueue.async {
+            self.localSOCKSShare.stop()
             let runtime = self.runtime
             let reporter = self.reporter
             self.session = nil
@@ -635,15 +665,90 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
+    /// 在 engineQueue 上同步等待监听结果；超时由监听器自身的 ready 期限兜底。
+    private func startLocalSOCKSIngress(port: UInt16) -> LocalSOCKSShareStatus {
+        let done = DispatchSemaphore(value: 0)
+        var result = LocalSOCKSShareStatus.failed(port, code: "listener-timeout")
+        localSOCKSShare.configure(port: port) { status in
+            result = status
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 8)
+        return result
+    }
+
+    private func handleLocalSOCKSShare(_ data: Data, completion: @escaping (Data?) -> Void) {
+        guard data.count <= 4096,
+              let request = try? JSONDecoder().decode(LocalSOCKSShareRequest.self, from: data) else {
+            completion(nil)
+            return
+        }
+        engineQueue.async { [weak self] in
+            guard let self else { completion(nil); return }
+            func reply(_ code: String, _ status: LocalSOCKSShareStatus? = nil) {
+                completion(try? JSONEncoder().encode(LocalSOCKSShareResponse(
+                    requestID: request.requestID, transactionID: request.transactionID,
+                    code: code, status: status)))
+            }
+            if let code = LocalSOCKSSharePolicy.rejection(request: request,
+                transactionID: self.generation,
+                committed: self.settingsCommitted && !self.settingsCommitInFlight
+                    && !self.rollbackInProgress && self.runtime != nil && self.session != nil) {
+                reply(code)
+                return
+            }
+            // 仅 SOCKS5 的端口属于连接事务，只能经重连改变。
+            guard self.ingress.takesOverSystem else {
+                reply("local-socks-ingress")
+                return
+            }
+            self.localSOCKSShare.configure(port: request.port) { reply("ok", $0) }
+        }
+    }
+
+    /// 本机 SOCKS5 连接按接入时刻取得当前 generation 的会话入口，与系统 flow 一样
+    /// 登记在 relay registry 中：切换后旧连接有界排空，停止或回滚时一并关闭。
+    private func acceptLocalSOCKSShareConnection(_ connection: NWConnection) {
+        guard let reservation = relayRegistry.reserve() else {
+            connection.forceCancel()
+            return
+        }
+        let handle = LocalSOCKSShareRelay.makeHandle(
+            client: connection,
+            socksPort: reservation.endpoint.port,
+            credentials: reservation.endpoint.credentials,
+            trialID: reservation.generation,
+            traffic: traffic,
+            logger: logger
+        )
+        guard relayRegistry.attach(handle, to: reservation) else {
+            handle.cancel(with: AppProxyFlowCloseError.aborted)
+            return
+        }
+        if !handle.start(onFinish: { [weak self] in
+            self?.relayRegistry.finish(reservation)
+        }) {
+            relayRegistry.finish(reservation)
+            handle.cancel(with: AppProxyFlowCloseError.aborted)
+        }
+    }
+
     override func handleAppMessage(
         _ messageData: Data,
         completionHandler: ((Data?) -> Void)?
     ) {
         guard let completionHandler else { return }
-        if let header = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
-           header["kind"] as? String == "tailscale-control" {
-            handleTailscaleControl(messageData, completion: completionHandler)
-            return
+        if let header = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] {
+            switch header["kind"] as? String {
+            case "tailscale-control":
+                handleTailscaleControl(messageData, completion: completionHandler)
+                return
+            case LocalSOCKSShareRequest.kind:
+                handleLocalSOCKSShare(messageData, completion: completionHandler)
+                return
+            default:
+                break
+            }
         }
         if Self.isScenarioSwitchMessage(messageData) {
             handleScenarioSwitchMessage(
@@ -1161,6 +1266,7 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
             ),
             initialCandidate.transactionID == targetTransactionID,
             initialCandidate.state == .planning,
+            initialCandidate.ingress == ingress,
             let networkSnapshot = switchNetworkSnapshot(from: request),
             let runtime,
             let sourceSession = session,
@@ -1804,6 +1910,12 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         let settings = NETransparentProxyNetworkSettings(
             tunnelRemoteAddress: "127.0.0.1"
         )
+        guard ingress.takesOverSystem else {
+            // 仅 SOCKS5：不捕获任何系统 flow 或 DNS，流量只从本机端口进入。
+            settings.includedNetworkRules = []
+            settings.excludedNetworkRules = []
+            return settings
+        }
         settings.includedNetworkRules = session.dnsCaptureDomains.map {
             domain in
             NENetworkRule(
@@ -2516,6 +2628,7 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         completion: @escaping () -> Void
     ) {
         outboundProbeGate.invalidate()
+        localSOCKSShare.stop()
         let relayDrain =
             initialRelayDrain ?? relayRegistry.deactivateCurrent()
         guard !rollbackInProgress else {
@@ -2913,6 +3026,7 @@ private enum ProviderError: Error {
     case scenarioSwitchRestoreTimedOut
     case scenarioSwitchRestoreFailed
     case scenarioSwitchRetirementPending
+    case localSOCKSListenFailed(port: UInt16, code: String)
 #if DEBUG
     case debugInjected(String)
 #endif
@@ -2957,6 +3071,10 @@ extension ProviderError: LocalizedError {
             "无法恢复原场景的系统网络设置"
         case .scenarioSwitchRetirementPending:
             "上一场景仍在释放，暂不能准备下一次切换"
+        case let .localSOCKSListenFailed(port, code):
+            code == "address-in-use"
+                ? "本机 SOCKS5 端口 \(port) 已被其他程序占用"
+                : "无法监听本机 SOCKS5 端口 \(port)（\(code)）"
 #if DEBUG
         case let .debugInjected(stage):
             "Debug 注入失败（\(stage)）"

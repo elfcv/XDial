@@ -1,9 +1,7 @@
 import AppKit
 import SwiftUI
 
-private enum GeneralSettingsSection: CaseIterable, Hashable {
-    case startup, appearance, system, about
-
+private extension GeneralSettingsSection {
     @MainActor func title(_ state: AppState) -> String {
         switch self {
         case .startup: return state.tr("启动与连接", "Startup & Connection")
@@ -27,7 +25,7 @@ private enum GeneralSettingsSection: CaseIterable, Hashable {
 struct GeneralSettingsView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.openWindow) private var openWindow
-    @State private var section: GeneralSettingsSection = .startup
+    private var section: GeneralSettingsSection { state.editorPosition.generalSection }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -37,7 +35,7 @@ struct GeneralSettingsView: View {
                     .padding(.horizontal, 10)
                     .padding(.bottom, 12)
                 ForEach(GeneralSettingsSection.allCases, id: \.self) { item in
-                    Button { section = item } label: {
+                    Button { state.editorPosition.generalSection = item } label: {
                         Label(item.title(state), systemImage: item.symbol)
                             .font(.system(size: 12, weight: .medium))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -94,6 +92,8 @@ struct GeneralSettingsView: View {
                     "Connect to the last used Scenario on the next launch. Changing this option does not connect now."
                 ))
             }
+            Divider()
+            LocalSOCKSShareSettings(share: state.localSOCKSShare)
             Divider()
             note(state.tr(
                 "意外断线后会尝试恢复连接；手动断开后不会自动恢复。",
@@ -231,5 +231,162 @@ struct GeneralSettingsView: View {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         return "v\(version) · build \(build)"
+    }
+}
+
+/// 连接方式与本机 SOCKS5：接管系统时端口是可选的附加入口；仅 SOCKS5 时端口是唯一入口，
+/// 系统流量不经过 XDial。
+private struct LocalSOCKSShareSettings: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var share: LocalSOCKSShareController
+    @State private var portInvalid = false
+
+    private var proxyOnly: Bool { share.ingressMode == .localSOCKS }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(state.tr("连接方式", "Connection mode"))
+                Spacer()
+                Picker(state.tr("连接方式", "Connection mode"), selection: $share.ingressMode) {
+                    Text(state.tr("接管系统", "System-wide")).tag(ConnectionIngress.Mode.system)
+                    Text(state.tr("仅 SOCKS5", "SOCKS5 only")).tag(ConnectionIngress.Mode.localSOCKS)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+                .accessibilityLabel(state.tr("连接方式", "Connection mode"))
+            }
+            if proxyOnly {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "powerplug.fill")
+                    Text(state.tr(
+                        "不接管系统流量，也不改系统 DNS。只有把 SOCKS5 代理设为 127.0.0.1:\(share.port) 的程序按场景分流。",
+                        "System traffic and DNS are left untouched. Only apps using the SOCKS5 proxy 127.0.0.1:\(share.port) follow the Scenario."
+                    ))
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(XDialPalette.proxyOnly)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(XDialPalette.proxyOnly.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+            } else {
+                note(state.tr(
+                    "系统流量按当前场景分流。",
+                    "System traffic follows the current Scenario."
+                ))
+            }
+            if share.ingressRequiresReconnect {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(XDialPalette.warning)
+                    Text(state.tr("当前连接仍按原方式运行，重连后生效。", "The current connection keeps its mode until you reconnect."))
+                        .font(.system(size: 11))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button(state.tr("应用并重连", "Apply & Reconnect")) { state.reconnect() }
+                        .disabled(!state.canConnect)
+                }
+            }
+            if !proxyOnly {
+                Toggle(state.tr("同时开放本机 SOCKS5", "Also open local SOCKS5"), isOn: $share.isEnabled)
+                    .toggleStyle(.switch)
+            }
+            HStack(spacing: 8) {
+                Text(state.tr("SOCKS5 端口", "SOCKS5 port"))
+                SettingsDraftInput(portText, onCommit: {}) {
+                    TextField(state.tr("端口", "Port"), text: $0)
+                        .labelsHidden()
+                        .monospacedDigit()
+                        .frame(width: 72)
+                }
+                .accessibilityLabel(state.tr("本机 SOCKS5 端口", "Local SOCKS5 port"))
+                if portInvalid {
+                    Text(state.tr("端口需在 1024–65535 之间", "Use a port from 1024 to 65535"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(XDialPalette.danger)
+                }
+                Spacer(minLength: 0)
+            }
+            if let status {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: status.symbol)
+                        .foregroundStyle(status.color)
+                    Text(status.text)
+                        .font(.system(size: 11))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if status.retryable {
+                        Button(state.tr("重试", "Retry")) { share.retry() }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            note(state.tr(
+                "端口只接受本机连接，无需认证，仅支持 TCP。接管系统时开关与端口立即生效；切换连接方式或修改仅 SOCKS5 的端口需要重连。",
+                "The port accepts local connections only, without authentication, TCP only. While system-wide, the switch and port apply immediately; changing the mode or the SOCKS5-only port requires reconnecting."
+            ))
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var portText: Binding<String> {
+        Binding(
+            get: { String(share.port) },
+            set: { text in
+                let port = Int(text.trimmingCharacters(in: .whitespaces))
+                portInvalid = !(port.map { share.setPort($0) } ?? false)
+            }
+        )
+    }
+
+    private struct Status {
+        let symbol: String
+        let color: Color
+        let text: String
+        let retryable: Bool
+    }
+
+    private var status: Status? {
+        let committedProxyOnly = share.committedIngress?.mode == .localSOCKS
+        let port = committedProxyOnly
+            ? Int(share.committedIngress?.localSOCKSPort ?? UInt16(share.port))
+            : share.port
+        let address = "127.0.0.1:\(port)"
+        switch share.phase {
+        case .off:
+            return nil
+        case .waitingForConnection:
+            return Status(symbol: "clock", color: .secondary,
+                          text: state.tr("连接后开始监听 \(address)", "Starts listening on \(address) after connecting"),
+                          retryable: false)
+        case .applying:
+            return Status(symbol: "ellipsis.circle", color: XDialPalette.accent,
+                          text: state.tr("正在开启 \(address)", "Opening \(address)"), retryable: false)
+        case .listening:
+            return Status(symbol: "checkmark.circle.fill",
+                          color: committedProxyOnly ? XDialPalette.proxyOnly : XDialPalette.success,
+                          text: state.tr("正在监听 \(address)", "Listening on \(address)"), retryable: false)
+        case let .failed(code):
+            let text = code == "address-in-use"
+                ? state.tr("端口 \(port) 已被其他程序占用", "Port \(port) is already in use by another app")
+                : state.tr("无法监听 \(address)（\(code)）", "Cannot listen on \(address) (\(code))")
+            return Status(symbol: "exclamationmark.triangle.fill", color: XDialPalette.danger,
+                          text: text, retryable: true)
+        case .unavailable:
+            return Status(symbol: "questionmark.circle", color: XDialPalette.warning,
+                          text: state.tr("暂时无法确认监听状态", "Listening state is currently unavailable"),
+                          retryable: true)
+        }
     }
 }
