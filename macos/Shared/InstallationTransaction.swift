@@ -136,6 +136,12 @@ struct InstallationReport: Codable, Equatable {
         }
     }
 
+    /// Waiting for the user in System Settings changes nothing locally, so a quit
+    /// need not wait for the installation to stop; the next launch resumes it.
+    var allowsTermination: Bool {
+        state == .waitingForApproval
+    }
+
     mutating func updateTask(
         id: String,
         state: InstallationTaskState
@@ -256,13 +262,20 @@ enum SystemExtensionInstallationEvent: Equatable {
 enum InstallationBuildMarker {
     /// Replacement unregisters the outgoing helper before moving its bundle.
     /// A missing helper is therefore not evidence of a fresh installation.
+    /// The user's request to install outlives the process: quitting while
+    /// approval is pending, or an update replacing the app, unregisters nothing
+    /// the user asked for, so a requested installation resumes on next launch.
+    static let requestedInstallationKey = "xdial.installation.requested"
+
     static func shouldPrepareAtLaunch(
         serviceRegistered: Bool,
         registrationRecoveryPending: Bool,
         previousCompletedInstallation: String?,
-        bundleIdentifier: String
+        bundleIdentifier: String,
+        requestedInstallation: String? = nil
     ) -> Bool {
         if serviceRegistered || registrationRecoveryPending { return true }
+        if requestedInstallation == bundleIdentifier { return true }
         guard let marker = previousCompletedInstallation else { return false }
         let parts = marker.split(separator: ":", omittingEmptySubsequences: false)
         return parts.count == 3 && parts[0] == bundleIdentifier

@@ -745,24 +745,21 @@ enum ApplicationRelocator {
     ) throws {
         let currentProcessIdentifier =
             ProcessInfo.processInfo.processIdentifier
+        func runningCopy(_ processIdentifier: Int32) -> NSRunningApplication? {
+            otherRunningCopies(
+                bundleIdentifiers: bundleIdentifiers,
+                currentProcessIdentifier: currentProcessIdentifier
+            ).first { $0.processIdentifier == processIdentifier }
+        }
         let terminated =
-            ApplicationReplacementExitWaiter.wait(
+            ApplicationReplacementExitWaiter.terminate(
                 requestGracefulTermination: {
-                    processIdentifier in
-                    guard
-                        let application = otherRunningCopies(
-                            bundleIdentifiers:
-                                bundleIdentifiers,
-                            currentProcessIdentifier:
-                                currentProcessIdentifier
-                        ).first(where: {
-                            $0.processIdentifier
-                                == processIdentifier
-                        })
-                    else {
-                        return
-                    }
-                    _ = application.terminate()
+                    _ = runningCopy($0)?.terminate()
+                },
+                forceTermination: { processIdentifier in
+                    guard let application = runningCopy(processIdentifier) else { return }
+                    appLog("installation force-terminating previous copy pid=\(processIdentifier)")
+                    _ = application.forceTerminate()
                 },
                 remainingProcessIdentifiers: {
                     Set(
@@ -1082,9 +1079,8 @@ enum ApplicationRelocator {
                 "XDial 已复制到“应用程序”，但系统仍从下载隔离位置启动它。"
                     + "请退出此窗口，再从“应用程序”打开 XDial。"
             case .existingApplicationDidNotTerminate:
-                "旧版 XDial 仍在运行，无法安全替换。"
-                    + "XDial 不会强制结束它；请稍等后重试，"
-                    + "或从菜单栏退出旧版后再重试。"
+                "旧版 XDial 被强制结束后仍未退出，无法替换。"
+                    + "请在「强制退出应用程序」（⌥⌘⎋）中结束 XDial 后重试。"
             case .existingApplicationNotReplaceable:
                 "“应用程序”中的 XDial 与当前构建签名或标识不一致，"
                     + "已拒绝覆盖"

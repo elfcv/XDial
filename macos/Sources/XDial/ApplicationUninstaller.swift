@@ -47,6 +47,9 @@ enum ApplicationUninstaller {
                     xdialDefaults.removeObject(
                         forKey: "xdial.installation.ready"
                     )
+                    xdialDefaults.removeObject(
+                        forKey: InstallationBuildMarker.requestedInstallationKey
+                    )
                     try ApplicationRelocator
                         .moveInstalledApplicationToTrash()
                     completion(.success(()))

@@ -3420,6 +3420,10 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         guard request === activationRequest,
               activationPurpose == .installation else { return }
         activationStatusHandler?(.waitingForApproval)
+        Self.openExtensionApprovalSettings()
+    }
+
+    static func openExtensionApprovalSettings() {
         if let url = URL(
             string:
                 "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
