@@ -45,6 +45,10 @@ struct MainPopover: View {
                 Divider()
                 ssidAccessWarningBand
             }
+            if let blocker = state.connectionConfigurationBlocker {
+                Divider()
+                connectionBlockerBand(blocker)
+            }
             if let failure = scenarioSwitchFailureProjection {
                 Divider()
                 scenarioSwitchFailureBand(failure)
@@ -508,6 +512,49 @@ struct MainPopover: View {
                     endPoint: .trailing
                 )
             }
+        }
+    }
+
+    private func connectionBlockerBand(
+        _ blocker: ConnectionConfigurationBlocker
+    ) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(warningColor)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(blocker.title(state.tr))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.primary.opacity(0.82))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(blocker.detail(state.tr))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            Button(blocker.actionTitle(state.tr)) {
+                state.revealConnectionBlocker(blocker)
+                openSettingsWindow()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .fixedSize()
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            LinearGradient(
+                colors: [
+                    warningColor.opacity(0.075),
+                    warningColor.opacity(0.025),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
         }
     }
 

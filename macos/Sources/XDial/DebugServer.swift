@@ -141,6 +141,13 @@ final class DebugServer {
         dict["daemonBundledSHA256"] = PrivilegeManager.bundledDaemonSHA256() ?? ""
         dict["dataPlane"] = "transparent-proxy"
         dict["canConnect"] = s.canConnect
+        if let blocker = s.connectionConfigurationBlocker {
+            dict["connectionBlocker"] = [
+                "scenarioID": blocker.scenarioID,
+                "lineID": blocker.lineID ?? "",
+                "detail": blocker.detail(s.tr),
+            ]
+        }
         dict["statusText"] = s.statusText
         dict["language"] = s.language.rawValue
         dict["launchAtLogin"] = s.launchAtLogin
