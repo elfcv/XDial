@@ -114,6 +114,15 @@ final class InstallationCoordinator: ObservableObject {
         }
     }
 
+    func openApprovalSettings(for taskID: String) {
+        switch taskID {
+        case "helper":
+            PrivilegeManager.openApprovalSettings()
+        default:
+            TransparentProxyManager.openExtensionApprovalSettings()
+        }
+    }
+
     func retry() {
         let previousRun = runTask
         Task { [weak self] in

@@ -15,6 +15,65 @@ final class InstallationTransactionTests: XCTestCase {
         XCTAssertTrue(report.allowsTermination)
     }
 
+    func testReplacementForcesACopyThatRefusesToQuit() {
+        var now: TimeInterval = 0
+        var running: Set<Int32> = [81]
+        var graceful: [Int32] = []
+        var forced: [Int32] = []
+        XCTAssertTrue(
+            ApplicationReplacementExitWaiter.terminate(
+                gracefulTimeout: 20, forcedTimeout: 5, pollInterval: 1,
+                monotonicNow: { now }, sleep: { now += $0 },
+                requestGracefulTermination: { graceful.append($0) },
+                forceTermination: {
+                    forced.append($0)
+                    running.remove($0)
+                },
+                remainingProcessIdentifiers: { running }
+            )
+        )
+        XCTAssertEqual(graceful, [81])
+        XCTAssertEqual(forced, [81])
+        // One poll after forcing confirms the copy is gone.
+        XCTAssertEqual(now, 21, accuracy: 0.000_001)
+    }
+
+    func testReplacementDoesNotForceACopyThatQuits() {
+        var now: TimeInterval = 0
+        var running: Set<Int32> = [81]
+        var forced: [Int32] = []
+        XCTAssertTrue(
+            ApplicationReplacementExitWaiter.terminate(
+                pollInterval: 1,
+                monotonicNow: { now }, sleep: { now += $0 },
+                requestGracefulTermination: { _ in },
+                forceTermination: { forced.append($0) },
+                remainingProcessIdentifiers: {
+                    if now >= 3 { running = [] }
+                    return running
+                }
+            )
+        )
+        XCTAssertTrue(forced.isEmpty)
+        XCTAssertEqual(now, 3, accuracy: 0.000_001)
+    }
+
+    func testReplacementReportsACopyThatSurvivesForce() {
+        var now: TimeInterval = 0
+        var forced: [Int32] = []
+        XCTAssertFalse(
+            ApplicationReplacementExitWaiter.terminate(
+                gracefulTimeout: 2, forcedTimeout: 1, pollInterval: 0.5,
+                monotonicNow: { now }, sleep: { now += $0 },
+                requestGracefulTermination: { _ in },
+                forceTermination: { forced.append($0) },
+                remainingProcessIdentifiers: { [81] }
+            )
+        )
+        XCTAssertEqual(forced, [81])
+        XCTAssertEqual(now, 3, accuracy: 0.000_001)
+    }
+
     func testReplacementExitWaiterExcludesCurrentInvalidAndDuplicates() {
         XCTAssertEqual(
             ApplicationReplacementExitWaiter
