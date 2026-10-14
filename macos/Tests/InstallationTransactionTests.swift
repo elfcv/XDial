@@ -280,6 +280,19 @@ final class InstallationTransactionTests: XCTestCase {
         ))
     }
 
+    func testRequestedInstallationResumesAfterQuitOrReplacement() {
+        XCTAssertTrue(InstallationBuildMarker.shouldPrepareAtLaunch(
+            serviceRegistered: false, registrationRecoveryPending: false,
+            previousCompletedInstallation: nil, bundleIdentifier: "com.kafeifei.xdial",
+            requestedInstallation: "com.kafeifei.xdial"
+        ))
+        XCTAssertFalse(InstallationBuildMarker.shouldPrepareAtLaunch(
+            serviceRegistered: false, registrationRecoveryPending: false,
+            previousCompletedInstallation: nil, bundleIdentifier: "com.kafeifei.xdial.debug",
+            requestedInstallation: "com.kafeifei.xdial"
+        ), "another channel's request does not authorize registration")
+    }
+
     func testFreshOrExplicitlyUninstalledApplicationDoesNotRegisterAutomatically() {
         XCTAssertFalse(InstallationBuildMarker.shouldPrepareAtLaunch(
             serviceRegistered: false, registrationRecoveryPending: false,

@@ -167,13 +167,13 @@ struct InstallationView: View {
         switch task.id {
         case "helper":
             return state.tr(
-                "在「通用 → 登录项与扩展」的「允许在后台」中，打开 XDial。",
-                "In General → Login Items & Extensions, allow XDial in the background."
+                "在「通用 → 登录项与扩展」的「App 后台活动」中，打开 XDial。",
+                "In General → Login Items & Extensions, turn on XDial under App Background Activity."
             )
         case "system-extension":
             return state.tr(
-                "在「通用 → 登录项与扩展」中，点「网络扩展」右侧的 ⓘ，打开 XDial。",
-                "In General → Login Items & Extensions, click ⓘ beside Network Extensions and turn on XDial."
+                "在「通用 → 登录项与扩展」最下方的「扩展」里找到 XDial，点右侧的 ⓘ，打开「网络扩展」。",
+                "In General → Login Items & Extensions, find XDial under Extensions at the bottom, click ⓘ and turn on Network Extensions."
             )
         default:
             return nil

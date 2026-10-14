@@ -42,7 +42,10 @@ final class InstallationCoordinator: ObservableObject {
             serviceRegistered: PrivilegeManager.isInstalled,
             registrationRecoveryPending: PrivilegeManager.hasPendingRegistrationRecovery,
             previousCompletedInstallation: xdialDefaults.string(forKey: completionMarkerKey),
-            bundleIdentifier: XDialBuildIdentity.applicationIdentifier
+            bundleIdentifier: XDialBuildIdentity.applicationIdentifier,
+            requestedInstallation: xdialDefaults.string(
+                forKey: InstallationBuildMarker.requestedInstallationKey
+            )
         )
     }
 
@@ -92,6 +95,10 @@ final class InstallationCoordinator: ObservableObject {
             present()
         }
         isInstalling = true
+        xdialDefaults.set(
+            XDialBuildIdentity.applicationIdentifier,
+            forKey: InstallationBuildMarker.requestedInstallationKey
+        )
         runTask = Task { [weak self] in
             await self?.run()
         }
@@ -199,6 +206,9 @@ final class InstallationCoordinator: ObservableObject {
             xdialDefaults.set(
                 currentBuildMarker,
                 forKey: completionMarkerKey
+            )
+            xdialDefaults.removeObject(
+                forKey: InstallationBuildMarker.requestedInstallationKey
             )
             appLog(
                 "installation ready transaction=\(report.transactionID)"
