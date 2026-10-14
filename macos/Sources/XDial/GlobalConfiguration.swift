@@ -238,14 +238,14 @@ extension ProfileLibrary {
     }
 
     func refreshing(profileID: String, incoming original: Profile, at date: Date = Date()) throws -> ProfileLibrary {
-        guard original.subscriptions.isEmpty else {
-            throw ProfileLibraryError.invalid("订阅包含旧式嵌套订阅，原配置已保留")
-        }
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
-            throw ProfileLibraryError.invalid("订阅已不存在")
+            throw ProfileLibraryError.invalid("要更新的配置已不存在")
         }
         var candidate = self
         let record = profiles[index]
+        guard original.subscriptions.isEmpty else {
+            throw ProfileLibraryError.invalid(record.sourceTitle + "包含旧式嵌套订阅，原配置已保留")
+        }
         let previous = record.baseline ?? record.profile
         var mapping = record.resourceIDs ?? [:]
         let previousIDs = Set(Self.objectIDs(previous))
@@ -257,7 +257,7 @@ extension ProfileLibrary {
         let incoming = Self.remap(original, using: mapping)
         candidate.profiles[index].resourceIDs = mapping.isEmpty ? nil : mapping
         guard Set(incoming.importWarnings).isSubset(of: Set(previous.importWarnings)) else {
-            throw ProfileLibraryError.invalid("订阅新增了无法执行的规则，已保留原配置")
+            throw ProfileLibraryError.invalid(record.sourceTitle + "新增了无法执行的规则，已保留原配置")
         }
         var resources = Self.resourcesOnly(incoming)
         resources.tailscale = record.profile.tailscale
@@ -272,7 +272,7 @@ extension ProfileLibrary {
             let id = candidate.groups[groupIndex].id
             guard var source = candidate.groupSources[id], source.profileID == profileID, source.followsMembers else { continue }
             guard let updated = incoming.lines.first(where: { $0.id == source.groupID && $0.isGroup }) else {
-                throw ProfileLibraryError.invalid("订阅移除了正在跟随的线路组「\(candidate.groups[groupIndex].name)」，已保留原配置")
+                throw ProfileLibraryError.invalid(record.sourceTitle + "移除了正在跟随的线路组「\(candidate.groups[groupIndex].name)」，已保留原配置")
             }
             // A selector without an explicit default still fixes its first member.
             // Source reordering must not silently select another exit.
