@@ -193,14 +193,19 @@ struct SeedProfileLedger: Codable, Equatable {
     }
 }
 
-private extension Line {
+extension Line {
     /// Seeds never carry secrets; a value the user saved survives a seed refresh.
+    /// 用户提供的账号密码字段：预置配置刷新时保留，编辑界面对用户开放。
+    static let credentialFields: [WritableKeyPath<Line, String>] = [
+        \.vpnUsername, \.vpnPassword, \.trojanPassword, \.ssPassword, \.vmessUUID, \.anytlsPassword,
+    ]
+
     func keepingCredentials(of saved: Line) -> Line {
         var line = self
         func keep(_ field: WritableKeyPath<Line, String>) {
             if line[keyPath: field].isEmpty { line[keyPath: field] = saved[keyPath: field] }
         }
-        for field in [\Line.vpnUsername, \.vpnPassword, \.trojanPassword, \.ssPassword, \.vmessUUID, \.anytlsPassword] {
+        for field in Line.credentialFields {
             keep(field)
         }
         return line
