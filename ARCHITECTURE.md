@@ -139,7 +139,8 @@ Home DERP 重选是显式维护能力，不是连接准备条件。
 
 sslcon 是进程级单例；active Scenario 的有效依赖中至多有一条 AnyConnect Line，多条直接生成失败。
 同配置的运行能力可以被新旧 Box 共享，认证与恢复由 Line 自己持有，不因 Scenario 切换重做。
-不同配置的单例不能并发准备，切换保留旧场景并明确需要重建线路。
+不同配置的单例不能并发准备：Switch 候选拒绝后，宿主断开旧连接并完整连接目标场景，
+期间短暂断流，不伪装成无中断切换。
 
 入口：[AnyConnect 运行能力](core/libbox/anyconnect_runtime.go)。
 
@@ -254,6 +255,8 @@ journal 无法可靠写入时不能 Commit。入口：[事务处置](macos/Share
   无法证明旧 generation 健康时才进入全局回滚。报告同时保留 from、to、候选与仍承载流量的事务。
 - 任意时刻最多一个候选，latest-wins；相同目标与配置指纹为 no-op。显式断开优先取消候选
   和恢复意图，再释放全部租约与系统接管。单例身份变化不能伪装成可复用的无中断切换。
+- 原理上无法保留旧连接的候选（AnyConnect 单例身份不同、规则需冷获取）不停在原场景：
+  宿主放弃 Switch，持久化目标场景后完整重连。其他候选失败仍保留原场景。
 
 入口：[Line 能力池](core/libbox/line_runtime_pool.go)、[Switch 测试](core/libbox/switch_test.go)。
 
