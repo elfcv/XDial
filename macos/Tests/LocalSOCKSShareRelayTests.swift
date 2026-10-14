@@ -128,16 +128,13 @@ private final class FakeSessionEntry: @unchecked Sendable {
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
         let listener = try NWListener(using: parameters)
         let port: UInt16 = try await withCheckedThrowingContinuation { continuation in
-            var resumed = false
+            let once = ResumeOnce()
             listener.stateUpdateHandler = { state in
-                guard !resumed else { return }
                 switch state {
                 case .ready:
-                    resumed = true
-                    continuation.resume(returning: listener.port!.rawValue)
+                    if once.take() { continuation.resume(returning: listener.port!.rawValue) }
                 case let .failed(error):
-                    resumed = true
-                    continuation.resume(throwing: error)
+                    if once.take() { continuation.resume(throwing: error) }
                 default:
                     break
                 }
@@ -156,8 +153,16 @@ private final class FakeSessionEntry: @unchecked Sendable {
         listener.cancel()
     }
 
-    private func serve(_ connection: NWConnection, credentials: SOCKSCredentials) async {
+    private func noteAccepted() {
         lock.lock(); accepted += 1; lock.unlock()
+    }
+
+    private func record(_ destination: LocalSOCKSHandshake.Destination) {
+        lock.lock(); recorded.append(destination); lock.unlock()
+    }
+
+    private func serve(_ connection: NWConnection, credentials: SOCKSCredentials) async {
+        noteAccepted()
         do {
             try await TCPFlowSOCKSRelay.start(connection)
             let read: LocalSOCKSHandshake.Read = { try await TCPFlowSOCKSRelay.receiveExactly($0, from: connection) }
@@ -172,7 +177,7 @@ private final class FakeSessionEntry: @unchecked Sendable {
             }
             try await TCPFlowSOCKSRelay.send(Data([0x01, 0x00]), to: connection)
             let destination = try await LocalSOCKSHandshake.readRequest(read)
-            lock.lock(); recorded.append(destination); lock.unlock()
+            record(destination)
             try await TCPFlowSOCKSRelay.send(LocalSOCKSHandshake.reply(0x00), to: connection)
             while true {
                 let result = try await TCPFlowSOCKSRelay.receive(from: connection)
@@ -183,5 +188,17 @@ private final class FakeSessionEntry: @unchecked Sendable {
             }
         } catch {}
         connection.forceCancel()
+    }
+}
+
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taken = false
+
+    func take() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !taken else { return false }
+        taken = true
+        return true
     }
 }

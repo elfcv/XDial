@@ -151,6 +151,9 @@ enum LocalSOCKSShareRelay {
             shutdown: shutdown,
             operation: {
                 var stage = "client-connect"
+                // 已经给客户端回过失败应答时要正常关闭（FIN），强制重置会让
+                // 客户端在读到应答前就收到 RST，看不到失败原因。
+                var answered = false
                 await withTaskCancellationHandler {
                     do {
                         try await TCPFlowSOCKSRelay.start(client)
@@ -165,6 +168,7 @@ enum LocalSOCKSShareRelay {
                                 LocalSOCKSHandshake.rejectAllMethods,
                                 to: client
                             )
+                            answered = true
                             throw LocalSOCKSHandshake.Failure.noAcceptableMethod
                         }
                         try await TCPFlowSOCKSRelay.send(
@@ -176,11 +180,12 @@ enum LocalSOCKSShareRelay {
                         do {
                             destination = try await LocalSOCKSHandshake.readRequest(read)
                         } catch let failure as LocalSOCKSHandshake.Failure {
-                            if let code = failure.replyCode {
-                                try? await TCPFlowSOCKSRelay.send(
-                                    LocalSOCKSHandshake.reply(code),
-                                    to: client
-                                )
+                            if let code = failure.replyCode,
+                               (try? await TCPFlowSOCKSRelay.send(
+                                   LocalSOCKSHandshake.reply(code),
+                                   to: client
+                               )) != nil {
+                                answered = true
                             }
                             throw failure
                         }
@@ -202,10 +207,12 @@ enum LocalSOCKSShareRelay {
                             } else {
                                 code = LocalSOCKSHandshake.generalFailure
                             }
-                            try? await TCPFlowSOCKSRelay.send(
+                            if (try? await TCPFlowSOCKSRelay.send(
                                 LocalSOCKSHandshake.reply(code),
                                 to: client
-                            )
+                            )) != nil {
+                                answered = true
+                            }
                             throw error
                         }
                         try await TCPFlowSOCKSRelay.send(
@@ -225,7 +232,7 @@ enum LocalSOCKSShareRelay {
                         logger.debug(
                             "local-socks-share closed trial=\(trialID, privacy: .public) stage=\(stage, privacy: .public) code=\(diagnosticCode(error), privacy: .public)"
                         )
-                        shutdown.finish(with: error)
+                        shutdown.finish(with: answered ? nil : error)
                     }
                 } onCancel: {
                     shutdown.finish(with: CancellationError())
