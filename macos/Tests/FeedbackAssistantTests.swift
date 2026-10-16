@@ -23,7 +23,14 @@ final class FeedbackAssistantTests: XCTestCase {
         XCTAssertEqual(discovered.first?.applicationURL, app)
     }
 
-    @MainActor func testHandoffCopiesFileAndTextAndRemembersOnlySuccessfulOpen() throws {
+    func testDiscoveryNeverResolvesDevelopmentIdentities() {
+        var resolved: [String] = []
+        _ = FeedbackAssistant.discover { resolved.append($0); return nil }
+        XCTAssertTrue(resolved.contains("com.xd.cindy"))
+        XCTAssertFalse(resolved.contains("com.xd.cindydev"))
+    }
+
+    @MainActor func testHandoffCopiesFileAndShortPromptAndRemembersOnlySuccessfulOpen() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let suite = "xdial-feedback-test-" + UUID().uuidString
@@ -45,7 +52,10 @@ final class FeedbackAssistantTests: XCTestCase {
         XCTAssertTrue(coordinator.isOpening)
         coordinator.continueInAssistant(english: false, pasteboard: pasteboard)
         XCTAssertEqual(opened.count, 1)
-        XCTAssertTrue(pasteboard.string(forType: .string)?.contains("现场说明") == true)
+        XCTAssertFalse(pasteboard.string(forType: .string)?.contains("现场说明") == true)
+        let file = try XCTUnwrap(coordinator.fileURL)
+        XCTAssertTrue(pasteboard.string(forType: .string)?.contains(file.path) == true)
+        XCTAssertTrue(try String(contentsOf: file).contains("现场说明"))
         XCTAssertNotNil(pasteboard.string(forType: .fileURL))
         XCTAssertNotNil(coordinator.fileURL)
         XCTAssertNil(defaults.string(forKey: "xdial.feedback.assistant"))

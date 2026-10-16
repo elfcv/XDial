@@ -17,7 +17,6 @@ struct FeedbackAssistant: Identifiable, Equatable {
     // ~/Applications. Only interactive assistants belong in this list.
     static let catalog: [(id: String, fallback: String)] = [
         ("com.xd.cindy", "Cindy"),
-        ("com.xd.cindydev", "CindyDev"),
         ("com.openai.codex", "Codex"),
         ("com.openai.chat", "ChatGPT"),
         ("com.anthropic.claudefordesktop", "Claude"),
@@ -39,7 +38,7 @@ struct FeedbackAssistant: Identifiable, Equatable {
             let protocols = bundle.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
             let schemes = protocols.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
             let entry: ConversationEntry
-            if ["com.xd.cindy", "com.xd.cindydev"].contains(item.id),
+            if item.id == "com.xd.cindy",
                documents.contains(where: { ($0["LSItemContentTypes"] as? [String])?.contains("public.folder") == true }) {
                 // Cindy's open-file handler maps directories to new-session.
                 entry = .folder
@@ -177,8 +176,7 @@ final class FeedbackCoordinator: ObservableObject {
                         context: includeDiagnostics ? context : .general)
     }
 
-    /// A file URL and a plain-text representation allow either attachment paste
-    /// or text paste. Also retained as fallback for conversation handoffs.
+    /// Keep evidence in the attachment; text-only paste carries a short file reference.
     @discardableResult
     func copyPackage(english: Bool, pasteboard: NSPasteboard = .general) -> Bool {
         do {
@@ -186,7 +184,7 @@ final class FeedbackCoordinator: ObservableObject {
             let text = try package.text(english: english)
             let file = try package.write(text: text, under: directory)
             pasteboard.clearContents()
-            guard pasteboard.writeObjects([file as NSURL]), pasteboard.setString(text, forType: .string) else {
+            guard pasteboard.writeObjects([file as NSURL]), pasteboard.setString(package.openingPrompt(english: english, file: file), forType: .string) else {
                 outcome = .exportFailed
                 return false
             }

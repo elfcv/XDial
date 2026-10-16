@@ -18,13 +18,6 @@ struct FeedbackView: View {
                 : feedback.context.origin == .scenarioSwitchFailure ? "intro.switch" : "intro.connection"))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Picker(text("kind"), selection: $feedback.kind) {
-                ForEach(FeedbackKind.allCases, id: \.self) { kind in
-                    Text(text("kind." + kind.rawValue)).tag(kind)
-                }
-            }
-            .pickerStyle(.menu)
-
             if feedback.context.origin != .general {
                 HStack(alignment: .top) {
                     Text(text(!feedback.includeDiagnostics ? "context.omitted"
@@ -52,7 +45,7 @@ struct FeedbackView: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .frame(height: 90)
+                .frame(height: 110)
                 .background(XDialPalette.elevated, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.secondary.opacity(0.25)))
                 .onChange(of: feedback.description) {
@@ -63,13 +56,17 @@ struct FeedbackView: View {
             }
             Toggle(text("includeDiagnostics"), isOn: $feedback.includeDiagnostics)
                 .toggleStyle(.switch)
-            Text(text("privacy"))
-                .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
             DisclosureGroup(text("preview"), isExpanded: $showsPreview) {
-                SettingsReadOnlyText(text: (try? feedback.package().text(english: state.language == .en)) ?? "", multiline: true)
-                    .frame(height: 160)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(text("privacy"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if showsPreview {
+                        SettingsReadOnlyText(text: (try? feedback.package().text(english: state.language == .en)) ?? "", multiline: true)
+                            .frame(height: 160)
+                    }
+                }
+                .padding(.top, 6)
             }
             Divider()
             assistantSection
@@ -80,11 +77,9 @@ struct FeedbackView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("feedback.outcome")
             }
-            HStack {
-                Button(text("copy")) { feedback.copyPackage(english: state.language == .en) }
-                if feedback.fileURL != nil {
-                    Button(text("reveal")) { feedback.revealFile() }
-                }
+            if feedback.fileURL != nil {
+                Button(text("reveal")) { feedback.revealFile() }
+                    .buttonStyle(.link)
             }
         }
         .onAppear { refresh() }
