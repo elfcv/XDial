@@ -461,43 +461,43 @@ struct LinesTab: View {
             }
             Divider()
             AddBar {
-                Menu {
-                    if groupsOnly {
-                    lineTypeButton("新建线路组", type: "urltest", icon: "square.stack.3d.up")
-                    } else {
-                    lineTypeButton("AnyConnect", type: "vpn", icon: "lock.shield")
-                    lineTypeButton(
-                        "Trojan",
-                        type: "trojan",
-                        icon: "shield.lefthalf.filled"
-                    )
-                    lineTypeButton(
-                        "Shadowsocks",
-                        type: "shadowsocks",
-                        icon: "eye.slash"
-                    )
-                    lineTypeButton(
-                        "VMess",
-                        type: "vmess",
-                        icon: "point.3.connected.trianglepath.dotted"
-                    )
-                    lineTypeButton(
-                        "AnyTLS",
-                        type: "anytls",
-                        icon: "lock.square"
-                    )
-                    lineTypeButton(
-                        "Tailscale",
-                        type: "tailscale",
-                        icon: "circle.grid.3x3.fill"
-                    )
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Label(groupsOnly ? state.tr("添加线路组", "Add Line Group") : state.tr("添加线路", "Add Line"), systemImage: "plus")
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                            .accessibilityHidden(true)
+                if groupsOnly {
+                    lineTypeButton(state.tr("添加线路组", "Add Line Group"), type: "urltest", icon: "plus")
+                } else {
+                    Menu {
+                        lineTypeButton("AnyConnect", type: "vpn", icon: "lock.shield")
+                        lineTypeButton(
+                            "Trojan",
+                            type: "trojan",
+                            icon: "shield.lefthalf.filled"
+                        )
+                        lineTypeButton(
+                            "Shadowsocks",
+                            type: "shadowsocks",
+                            icon: "eye.slash"
+                        )
+                        lineTypeButton(
+                            "VMess",
+                            type: "vmess",
+                            icon: "point.3.connected.trianglepath.dotted"
+                        )
+                        lineTypeButton(
+                            "AnyTLS",
+                            type: "anytls",
+                            icon: "lock.square"
+                        )
+                        lineTypeButton(
+                            "Tailscale",
+                            type: "tailscale",
+                            icon: "circle.grid.3x3.fill"
+                        )
+                    } label: {
+                        HStack(spacing: 6) {
+                            Label(state.tr("添加线路", "Add Line"), systemImage: "plus")
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                                .accessibilityHidden(true)
+                        }
                     }
                 }
             }
