@@ -125,7 +125,8 @@ extension AppState {
                 }
             } catch {
                 profileLibrary = original
-                profileOperationError = "未能加入预置配置「\(seed.name)」：\(error.localizedDescription)"
+                profileOperationError = (entry == nil ? "未能加入预置配置「\(seed.name)」：" : "未能更新「\(seed.name)」：")
+                    + error.localizedDescription
                 return
             }
             guard persistProfileLibrary() else { profileLibrary = original; return }

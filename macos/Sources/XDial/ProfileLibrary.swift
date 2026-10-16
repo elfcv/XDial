@@ -20,6 +20,10 @@ struct ProfileRecord: Codable, Identifiable, Hashable {
     /// 配置（有基线、无订阅来源）不带凭据，由用户填写，刷新时保留。
     var lineCredentialsBelongToUser: Bool { source == nil }
 
+    /// 刷新报错里对来源的称呼：订阅和企业预置配置共用同一套刷新逻辑，
+    /// 但员工从没订阅过什么，不能看到订阅的说法。
+    var sourceTitle: String { source == nil ? "预置配置" : "订阅" }
+
     static func empty(named name: String) -> ProfileRecord {
         var profile = Profile()
         profile.lines = [Line(id: "direct", name: "直连", type: "direct", verified: true)]
@@ -37,7 +41,7 @@ struct ProfileRecord: Codable, Identifiable, Hashable {
         var result = self
         let old = baseline ?? profile
         guard Set(incoming.importWarnings).isSubset(of: Set(old.importWarnings)) else {
-            throw ProfileLibraryError.invalid("订阅新增了无法执行的规则，已保留原配置；请重新导入并查看兼容提示")
+            throw ProfileLibraryError.invalid(sourceTitle + "新增了无法执行的规则，已保留原配置" + (source == nil ? "" : "；请重新导入并查看兼容提示"))
         }
         var merged = incoming
         merged.lines += profile.lines.filter { item in !old.lines.contains { $0.id == item.id } }
@@ -51,10 +55,10 @@ struct ProfileRecord: Codable, Identifiable, Hashable {
             guard current.type != previous.type || current.groupDefault != previous.groupDefault else { continue }
             let member = current.type == "urltest" ? nil : (current.groupDefault.isEmpty ? current.groupMembers.first : current.groupDefault)
             if current.type == "selector" && member == nil {
-                throw ProfileLibraryError.invalid("订阅更新无法保留空组的选线，已保留原配置")
+                throw ProfileLibraryError.invalid(sourceTitle + "更新无法保留空组的选线，已保留原配置")
             }
             do { try merged.selectLineGroupMember(member, in: item.id) }
-            catch { throw ProfileLibraryError.invalid("订阅更新无法保留所选线路：" + error.localizedDescription) }
+            catch { throw ProfileLibraryError.invalid(sourceTitle + "更新无法保留所选线路：" + error.localizedDescription) }
         }
         merged.ruleSets += profile.ruleSets.filter { item in !old.ruleSets.contains { $0.id == item.id } }
         merged.scenarios += profile.scenarios.filter { item in !old.scenarios.contains { $0.id == item.id } }
@@ -71,7 +75,7 @@ struct ProfileRecord: Codable, Identifiable, Hashable {
                 guard let original = previous.bindings.first(where: { $0.ruleSetID == binding.ruleSetID }),
                       binding.lineID != original.lineID || binding.subscriptionID != original.subscriptionID else { continue }
                 guard let target = merged.scenarios[index].bindings.firstIndex(where: { $0.ruleSetID == binding.ruleSetID }) else {
-                    throw ProfileLibraryError.invalid("订阅更新移除了已单独设置出口的规则，已保留原配置")
+                    throw ProfileLibraryError.invalid(sourceTitle + "更新移除了已单独设置出口的规则，已保留原配置")
                 }
                 merged.scenarios[index].bindings[target].lineID = binding.lineID
                 merged.scenarios[index].bindings[target].subscriptionID = binding.subscriptionID
@@ -91,7 +95,7 @@ struct ProfileRecord: Codable, Identifiable, Hashable {
                   scenario.bindings.allSatisfy({
                       rules.contains($0.ruleSetID) && lines.contains($0.lineID) && $0.subscriptionID.isEmpty
                   }) else {
-                throw ProfileLibraryError.invalid("订阅更新使场景引用失效，已保留原配置")
+                throw ProfileLibraryError.invalid(sourceTitle + "更新使场景引用失效，已保留原配置")
             }
             var selected = Set<String>()
             for binding in scenario.bindings {
@@ -99,12 +103,12 @@ struct ProfileRecord: Codable, Identifiable, Hashable {
                 let members = Set(rule.matchingResources.map(\.id))
                 let scoped = Set(binding.conditionIDs)
                 guard scoped.isSubset(of: members) else {
-                    throw ProfileLibraryError.invalid("订阅更新移除了场景使用的部分匹配内容，已保留原配置")
+                    throw ProfileLibraryError.invalid(sourceTitle + "更新移除了场景使用的部分匹配内容，已保留原配置")
                 }
                 selected.formUnion(scoped.isEmpty ? members : scoped)
             }
             guard Set(scenario.matchOrder).isSubset(of: selected), Set(scenario.matchOrder).count == scenario.matchOrder.count else {
-                throw ProfileLibraryError.invalid("订阅更新使原匹配顺序失效，已保留原配置")
+                throw ProfileLibraryError.invalid(sourceTitle + "更新使原匹配顺序失效，已保留原配置")
             }
         }
         result.profile = merged

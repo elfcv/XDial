@@ -306,6 +306,25 @@ final class ProfileLibraryMigrationTests: XCTestCase {
         }
     }
 
+    /// Seed and subscription share the refresh merge; employees never subscribed to anything.
+    func testSeedRefreshErrorsNameThePresetNotASubscription() throws {
+        let library = try ProfileLibraryMigration.merging(seededProfile(id: "seed"), named: "公司", id: "seed",
+                                                          into: existingLibrary(claiming: []))
+        let warning = try JSONDecoder().decode(SubRule.self, from: Data(#"{"type":"USER-AGENT","value":"Example*","group":"Proxy"}"#.utf8))
+        var incoming = refreshedSeed(id: "seed")
+        incoming.importWarnings = [warning]
+        XCTAssertThrowsError(try ProfileLibraryMigration.refreshingSeed(incoming, profileID: "seed", named: "公司", in: library)) {
+            XCTAssertEqual($0.localizedDescription, "预置配置新增了无法执行的规则，已保留原配置")
+        }
+
+        var subscribed = library
+        let index = try XCTUnwrap(subscribed.profiles.firstIndex { $0.id == "seed" })
+        subscribed.profiles[index].source = ProfileSource(url: "https://example.com/sub")
+        XCTAssertThrowsError(try subscribed.refreshing(profileID: "seed", incoming: incoming)) {
+            XCTAssertEqual($0.localizedDescription, "订阅新增了无法执行的规则，已保留原配置")
+        }
+    }
+
     func testSeedRefreshCanDropARuleItsScenarioUsed() throws {
         let library = try ProfileLibraryMigration.merging(refreshedSeed(id: "seed"), named: "公司", id: "seed",
                                                           into: existingLibrary(claiming: []))
