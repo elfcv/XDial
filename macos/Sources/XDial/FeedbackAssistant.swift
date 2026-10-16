@@ -1,0 +1,157 @@
+import AppKit
+import Combine
+
+struct FeedbackAssistant: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let applicationURL: URL
+
+    // Bundle identities, not filenames: apps may be renamed or installed in
+    // ~/Applications. Only interactive assistants belong in this list.
+    static let catalog: [(id: String, fallback: String)] = [
+        ("com.xd.cindy", "Cindy"),
+        ("com.xd.cindydev", "CindyDev"),
+        ("com.openai.codex", "Codex"),
+        ("com.openai.chat", "ChatGPT"),
+        ("com.anthropic.claudefordesktop", "Claude"),
+        ("com.todesktop.230313mzl4w4u92", "Cursor"),
+        ("com.google.antigravity", "Antigravity"),
+        ("ai.opencode.desktop", "OpenCode"),
+    ]
+
+    static func discover(resolve: (String) -> URL? = NSWorkspace.shared.urlForApplication(withBundleIdentifier:)) -> [Self] {
+        catalog.compactMap { item in
+            guard let url = resolve(item.id),
+                  FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/MacOS").path),
+                  let bundle = Bundle(url: url), bundle.bundleIdentifier == item.id,
+                  let executable = bundle.executableURL,
+                  FileManager.default.isExecutableFile(atPath: executable.path) else { return nil }
+            let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? item.fallback
+            return Self(id: item.id, name: name, applicationURL: url)
+        }
+    }
+}
+
+@MainActor
+final class FeedbackCoordinator: ObservableObject {
+    static let cindyDownloadURL = URL(string: "https://cindy.app/download/")!
+    @Published var kind: FeedbackKind = .problem {
+        didSet {
+            if kind != oldValue { includeDiagnostics = kind != .suggestion }
+        }
+    }
+    @Published var description = ""
+    @Published var includeDiagnostics = true
+    @Published private(set) var assistants: [FeedbackAssistant] = []
+    @Published var selectedAssistantID = ""
+    @Published var snapshot: FeedbackRuntimeSnapshot?
+    @Published private(set) var fileURL: URL?
+    @Published private(set) var isOpening = false
+    @Published private(set) var outcome: Outcome?
+    private let defaults: UserDefaults
+    private let discover: () -> [FeedbackAssistant]
+    private let open: (URL, @escaping (Bool) -> Void) -> Void
+    private let directory: URL
+    private var requiresAssistantSelection = false
+
+    enum Outcome: Equatable {
+        case copied, opened(String), assistantUnavailable, openFailed, exportFailed, downloadFailed
+    }
+
+    init(defaults: UserDefaults = xdialDefaults,
+         directory: URL = ScenarioSwitchFeedbackRecorder.directoryURL.deletingLastPathComponent()
+            .appendingPathComponent("Feedback", isDirectory: true),
+         discover: @escaping () -> [FeedbackAssistant] = { FeedbackAssistant.discover() },
+         open: @escaping (URL, @escaping (Bool) -> Void) -> Void = { url, completion in
+             let configuration = NSWorkspace.OpenConfiguration()
+             configuration.activates = true
+             NSWorkspace.shared.openApplication(at: url, configuration: configuration) { application, error in
+                 DispatchQueue.main.async { completion(application != nil && error == nil) }
+             }
+         }) {
+        self.defaults = defaults
+        self.directory = directory
+        self.discover = discover
+        self.open = open
+    }
+
+    var selectedAssistant: FeedbackAssistant? {
+        assistants.first { $0.id == selectedAssistantID }
+    }
+
+    func refreshAssistants() {
+        let previousID = selectedAssistantID
+        assistants = discover()
+        if selectedAssistant == nil {
+            if !previousID.isEmpty {
+                requiresAssistantSelection = true
+                selectedAssistantID = ""
+                outcome = .assistantUnavailable
+            } else if !requiresAssistantSelection {
+                let preferred = defaults.string(forKey: "xdial.feedback.assistant")
+                selectedAssistantID = assistants.first { $0.id == preferred }?.id ?? assistants.first?.id ?? ""
+            }
+        } else {
+            requiresAssistantSelection = false
+        }
+    }
+
+    func package() -> FeedbackPackage {
+        FeedbackPackage(kind: kind, description: description,
+                        runtime: includeDiagnostics ? snapshot : nil)
+    }
+
+    /// A file URL and a plain-text representation allow either attachment paste
+    /// or text paste. No undocumented deep link, CLI execution or automatic send.
+    @discardableResult
+    func copyPackage(english: Bool, pasteboard: NSPasteboard = .general) -> Bool {
+        do {
+            let package = package()
+            let text = try package.text(english: english)
+            let file = try package.write(text: text, under: directory)
+            pasteboard.clearContents()
+            guard pasteboard.writeObjects([file as NSURL]), pasteboard.setString(text, forType: .string) else {
+                outcome = .exportFailed
+                return false
+            }
+            fileURL = file
+            outcome = .copied
+            return true
+        } catch {
+            outcome = .exportFailed
+            return false
+        }
+    }
+
+    func continueInAssistant(english: Bool, pasteboard: NSPasteboard = .general) {
+        guard !isOpening else { return }
+        let requestedID = selectedAssistantID
+        refreshAssistants()
+        guard let assistant = selectedAssistant, assistant.id == requestedID else {
+            outcome = .openFailed
+            return
+        }
+        guard copyPackage(english: english, pasteboard: pasteboard) else { return }
+        isOpening = true
+        open(assistant.applicationURL) { [weak self] success in
+            guard let self else { return }
+            self.isOpening = false
+            if success {
+                self.defaults.set(assistant.id, forKey: "xdial.feedback.assistant")
+                self.outcome = .opened(assistant.name)
+            } else {
+                self.outcome = .openFailed
+                self.refreshAssistants()
+            }
+        }
+    }
+
+    func downloadCindy() {
+        if !NSWorkspace.shared.open(Self.cindyDownloadURL) { outcome = .downloadFailed }
+    }
+
+    func revealFile() {
+        if let fileURL { NSWorkspace.shared.activateFileViewerSelecting([fileURL]) }
+    }
+}

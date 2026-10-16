@@ -98,6 +98,9 @@ struct MainPopover: View {
             Button(state.tr("安装状态…", "Installation Status…")) {
                 state.installation.present()
             }
+            Button(state.tr("反馈与诊断…", "Feedback & Diagnosis…")) {
+                presentFeedback()
+            }
             Divider()
             Button(state.tr("退出 XDial", "Quit XDial")) {
                 MenuBarRecoveryController.shared.requestQuit()
@@ -337,6 +340,16 @@ struct MainPopover: View {
             .prepareToPresentSettingsWindow()
         openWindow(id: "settings")
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func presentFeedback(diagnosis: Bool = false) {
+        if diagnosis {
+            state.feedback.kind = .diagnosis
+            state.feedback.includeDiagnostics = true
+        }
+        state.refreshFeedbackSnapshot()
+        state.editorPosition.showGeneral(.feedback)
+        openSettingsWindow()
     }
 
     private func presentUpdateWindow() {
@@ -777,6 +790,10 @@ struct MainPopover: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                Button(state.tr("AI 排查…", "Diagnose with AI…")) {
+                    presentFeedback(diagnosis: true)
+                }
+                .font(.system(size: 10.5))
             }
             Spacer(minLength: 6)
             Button {
@@ -1151,6 +1168,10 @@ struct MainPopover: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
+                Button(state.tr("AI 排查…", "Diagnose with AI…")) {
+                    presentFeedback(diagnosis: true)
+                }
+                .font(.system(size: 11))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

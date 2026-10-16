@@ -132,7 +132,10 @@ enum SettingsLayoutPreview {
         library.groups = [group]
         library.scenarios = [Scenario(id: "daily", name: "日常", bindings: [RuleBinding(ruleSetID: "media", lineID: "shared")], defaultLineID: "direct"), Scenario(id: "work-scene", name: "办公", bindings: [RuleBinding(ruleSetID: "work", lineID: "company-line")], defaultLineID: "shared")]
         library.activeScenarioID = "daily"
-        state = AppState(previewLibrary: library)
+        let emptyAssistants = CommandLine.arguments.contains("--feedback-empty")
+            ? FeedbackCoordinator(discover: { [] }) : nil
+        let language: Lang = CommandLine.arguments.contains("--preview-english") ? .en : .zh
+        state = AppState(previewLibrary: library, previewLanguage: language, feedbackCoordinator: emptyAssistants)
         state.editorPosition.expandedLineIDs.insert("shared")
         state.editorPosition.expandedScenarioID = "work-scene"
         SettingsLayoutPreviewApp.main()
@@ -145,8 +148,12 @@ enum SettingsLayoutPreview {
             try await Task.sleep(for: .milliseconds(700))
             let window = try NSApp.windows.first(where: { $0.contentView != nil }).unwrap()
             let initialWindow = window.windowNumber
-            for (tab, name) in [(0, "lines"), (3, "groups"), (1, "rules"), (2, "scenarios"), (4, "general")] {
+            for (tab, name) in [(0, "lines"), (3, "groups"), (1, "rules"), (2, "scenarios"), (4, "general"),
+                                (4, "feedback"), (4, "feedback-configuration"), (4, "feedback-suggestion")] {
                 state.editorPosition.tab = tab
+                if name.hasPrefix("feedback") { state.editorPosition.showGeneral(.feedback) }
+                if name == "feedback-configuration" { state.feedback.kind = .configuration }
+                if name == "feedback-suggestion" { state.feedback.kind = .suggestion }
                 try await Task.sleep(for: .milliseconds(400))
                 guard window.windowNumber == initialWindow else { throw CocoaError(.validationMissingMandatoryProperty) }
                 let view = try window.contentView?.superview.unwrap()
@@ -157,7 +164,8 @@ enum SettingsLayoutPreview {
                 let png = try bitmap.representation(using: .png, properties: [:]).unwrap()
                 try png.write(to: URL(fileURLWithPath: outputDirectory).appendingPathComponent(name + ".png"))
             }
-            print("Rendered five settings pages in one native window: \(outputDirectory)")
+            print("Detected feedback assistants: \(state.feedback.assistants.map(\.id).joined(separator: ", "))")
+            print("Rendered settings pages in one native window: \(outputDirectory)")
             exit(0)
         } catch {
             fputs("Layout preview failed: \(error)\n", stderr)
