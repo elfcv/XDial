@@ -2,7 +2,7 @@
 
 macOS 菜单栏网络分流工具；iOS / tvOS 共用 Go 核心。
 
-修复后合入最新 main，验证并覆盖安装 Debug；未经要求不重启。
+修改完成后合入最新 main，验证后直接覆盖安装并重启 Debug。
 XDial Next 是独立身份的测试通道，从远程 `xdial-next` 分支发布 GitHub prerelease，见 [Next 发布](docs/agent/next-releases.md)。
 
 ## 核心边界
