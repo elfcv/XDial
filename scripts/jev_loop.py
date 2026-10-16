@@ -387,13 +387,34 @@ def repair(card, issue_url, repository, state_dir):
     run(["git", "switch", "-c", branch], cwd=worktree)
     run(["git", "commit", "-m", "fix: investigate scenario switch " + card["fingerprint"]], cwd=worktree)
     run(["git", "push", "origin", "HEAD:refs/heads/" + branch], cwd=worktree, timeout=120)
+    # Persist the verified pushed commit before the separate, retryable GitHub
+    # write. A temporary PR error must never start a second coding attempt.
+    return {"status": "awaiting_pr", "head": run(["git", "rev-parse", "HEAD"], cwd=worktree),
+            "base": base, "pr_attempts": 0, "retry_after": 0}
+
+
+def complete_repair_pr(fingerprint, candidate, repository, state_dir):
+    branch = "jev/scenario-switch/" + fingerprint
+    existing = json.loads(run(["gh", "pr", "list", "--repo", repository, "--head", branch,
+                               "--state", "all", "--json", "url", "--limit", "100"]))
+    if existing:
+        return {"status": "pr_exists", "url": github_url(existing[0]["url"], repository, "pull"),
+                "base": candidate["base"]}
+    expected = candidate.get("head")
+    if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{40}", expected):
+        raise RuntimeError("Missing verified repair commit")
+    remote = run(["git", "ls-remote", "--heads", "origin", "refs/heads/" + branch], timeout=120)
+    if remote.split() != [expected, "refs/heads/" + branch]:
+        raise RuntimeError("Remote repair branch changed after validation")
     url = run(["gh", "pr", "create", "--repo", repository, "--base", "main", "--head", branch,
-               "--draft", "--title", "fix: scenario switch " + card["fingerprint"],
-               "--body-file", str(body)], cwd=worktree)
-    return {"status": "draft_created", "url": github_url(url, repository, "pull"), "base": base}
+               "--draft", "--title", "fix: scenario switch " + fingerprint,
+               "--body-file", str(state_dir / (fingerprint + "-pr.md"))])
+    return {"status": "draft_created", "url": github_url(url, repository, "pull"),
+            "base": candidate["base"]}
 
 
-def process_once(args, state, decision_fn=decide, publish_fn=publish_card, repair_fn=repair):
+def process_once(args, state, decision_fn=decide, publish_fn=publish_card, repair_fn=repair,
+                 complete_pr_fn=complete_repair_pr):
     document = read_json(args.observations, {"schemaVersion": 1, "observations": []})
     if not isinstance(document, dict) or document.get("schemaVersion") != 1:
         raise ValueError("Unsupported observation schema")
@@ -499,6 +520,25 @@ def process_once(args, state, decision_fn=decide, publish_fn=publish_card, repai
                 group["repair"] = repair_fn(card, group["issue_url"], args.repo, state_dir)
             except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
                 group["repair"] = {"status": "needs_developer_review"}
+            atomic_json(state_dir / "state.json", state)
+    # Finish partially published candidates even after their input observations
+    # have rotated out of the app's journal. Never spawn the coding agent again.
+    if args.repair:
+        for fingerprint, group in groups.items():
+            candidate = group.get("repair", {})
+            if candidate.get("status") != "awaiting_pr" or time.time() < candidate.get("retry_after", 0):
+                continue
+            if candidate["pr_attempts"] >= 3:
+                candidate["status"] = "needs_developer_review"
+                continue
+            candidate["pr_attempts"] += 1
+            atomic_json(state_dir / "state.json", state)
+            try:
+                group["repair"] = complete_pr_fn(fingerprint, candidate, args.repo, state_dir)
+            except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+                candidate["retry_after"] = time.time() + 120
+                if candidate["pr_attempts"] >= 3:
+                    candidate["status"] = "needs_developer_review"
             atomic_json(state_dir / "state.json", state)
     # Keep local input records bounded even when the producer rotates history.
     state["observations"] = {key: value for key, value in records.items() if key in retained}

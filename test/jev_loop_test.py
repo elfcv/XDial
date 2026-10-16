@@ -114,6 +114,7 @@ class WorkerTests(unittest.TestCase):
         self.decision = Mock(return_value=jev.parse_decision(response()))
         self.publisher = Mock(return_value=dict(url="https://github.com/owner/repo/issues/1", closed=False))
         self.repairer = Mock(return_value=dict(status="draft_created", url="https://github.com/owner/repo/pull/2"))
+        self.complete_pr = Mock(return_value=dict(status="draft_created", url="https://github.com/owner/repo/pull/2"))
         self.environment = patch.dict(os.environ, {"OPENAI_API_KEY": "TEST_KEY"})
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -121,7 +122,7 @@ class WorkerTests(unittest.TestCase):
     def process(self, values, state=None):
         jev.atomic_json(self.args.observations, dict(schemaVersion=1, observations=values))
         return jev.process_once(self.args, state if state is not None else {},
-                                self.decision, self.publisher, self.repairer)
+                                self.decision, self.publisher, self.repairer, self.complete_pr)
 
     def test_complete_pipeline_deduplicates_but_retains_occurrences(self):
         self.args.publish = self.args.repair = True
@@ -218,6 +219,23 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(len(state["groups"]), 2)
         self.assertEqual(next(iter(state["observations"].values()))["disposition"], "group_limit_reached")
 
+    def test_pushed_candidate_resumes_pr_creation_after_restart_without_agent(self):
+        self.args.publish = self.args.repair = True
+        self.repairer.return_value = dict(status="awaiting_pr", head="a" * 40, base="b" * 40,
+                                          pr_attempts=0, retry_after=0)
+        self.complete_pr.side_effect = RuntimeError("temporary GitHub failure")
+        state = self.process([observation()])
+        candidate = next(iter(state["groups"].values()))["repair"]
+        self.assertEqual(candidate["status"], "awaiting_pr")
+        self.assertEqual(candidate["pr_attempts"], 1)
+        disk = json.loads((self.args.state_dir / "state.json").read_text())
+        self.complete_pr.side_effect = None
+        with patch.object(jev.time, "time", return_value=candidate["retry_after"] + 1):
+            state = self.process([], disk)
+        self.repairer.assert_called_once()
+        self.assertEqual(self.complete_pr.call_count, 2)
+        self.assertEqual(next(iter(state["groups"].values()))["repair"]["status"], "draft_created")
+
     def test_private_acceptance_is_excluded_from_public_cards(self):
         jev.atomic_json(self.args.acceptance, dict(schema_version=1, status="defined", criteria=["PRIVATE_STANDARD"]))
         self.process([observation()])
@@ -225,6 +243,14 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("PRIVATE_STANDARD", jev.card_markdown(card))
         self.assertNotIn("PRIVATE_STANDARD", jev.card_markdown(card, public=True))
         self.assertNotIn("PRIVATE_STANDARD", json.dumps(self.decision.call_args.args))
+
+    def test_interrupted_last_pr_attempt_cannot_exceed_retry_budget(self):
+        self.args.publish = self.args.repair = True
+        self.repairer.return_value = dict(status="awaiting_pr", head="a" * 40, base="b" * 40,
+                                          pr_attempts=3, retry_after=0)
+        state = self.process([observation()])
+        self.complete_pr.assert_not_called()
+        self.assertEqual(next(iter(state["groups"].values()))["repair"]["status"], "needs_developer_review")
 
 
 class RepairBoundaryTests(unittest.TestCase):
@@ -299,6 +325,8 @@ class RepairBoundaryTests(unittest.TestCase):
                 return "[]"
             if args[:2] == ["git", "rev-parse"]:
                 return "a" * 40
+            if args[:2] == ["git", "ls-remote"]:
+                return "a" * 40 + "\trefs/heads/jev/scenario-switch/" + card["fingerprint"]
             if args[:2] == ["codex", "exec"]:
                 self.assertNotIn("OPENAI_API_KEY", kwargs["env"])
                 self.assertNotIn("GH_TOKEN", kwargs["env"])
@@ -310,7 +338,15 @@ class RepairBoundaryTests(unittest.TestCase):
             return ""
         with patch.object(jev, "run", side_effect=fake_run), patch.object(jev, "prepare_candidate", return_value=True):
             result = jev.repair(card, "https://github.com/owner/repo/issues/1", "owner/repo", self.root)
+            self.assertEqual(result["status"], "awaiting_pr")
+            result = jev.complete_repair_pr(card["fingerprint"], result, "owner/repo", self.root)
         self.assertEqual(result["status"], "draft_created")
+
+    def test_changed_remote_candidate_is_never_published(self):
+        with patch.object(jev, "run", side_effect=["[]", "b" * 40 + "\trefs/heads/jev/scenario-switch/" + "c" * 16]) as run:
+            with self.assertRaisesRegex(RuntimeError, "changed after validation"):
+                jev.complete_repair_pr("c" * 16, dict(head="a" * 40, base="d" * 40), "owner/repo", self.root)
+        self.assertFalse(any(call.args[0][:3] == ["gh", "pr", "create"] for call in run.call_args_list))
 
 
 if __name__ == "__main__":

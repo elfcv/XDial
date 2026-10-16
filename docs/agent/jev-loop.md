@@ -93,10 +93,12 @@ python3 scripts/jev_loop.py --watch --publish --repair \
 通过差异格式与公开内容检查后推送 `jev/scenario-switch/<signature>` 并创建 Draft，完整 CI
 随后由现有 PR 流程执行。系统不自动合并、关闭问题、安装或发布修复。
 
+推送成功但 PR 创建暂时失败时，保留 `awaiting_pr` 状态，核对远端仍是已验证的提交后，
+每隔 120 秒重试补建 Draft，最多三次，不重新运行修复 Agent。
 修复失败、进程中断或已有工作区时保留现场，状态为 `needs_developer_review` 或 `running`，
 不会无限重试。查看对应工作区、修复摘要及 `state.json`；确认现场已处理后，才清除该分组的
-`repair` 状态并归档/移除旧工作区以重新尝试。推送成功但 PR 创建失败时，先检查远端分支，
-可人工补建 Draft PR。不要直接删除所有状态，否则会丢失预算和去重记录。
+`repair` 状态并归档/移除旧工作区以重新尝试。补建 PR 重试耗尽时可检查远端分支后人工补建。
+不要直接删除所有状态，否则会丢失预算和去重记录。
 
 ## 验证
 
