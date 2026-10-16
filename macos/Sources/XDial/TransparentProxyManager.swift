@@ -2496,8 +2496,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             ? nil
             : incidentID
         appLog(
-            "Transparent Proxy launch auto-connect failed; "
-                + "entering bounded retry code=\(reasonCode)"
+            "Transparent Proxy launch auto-connect failed "
+                + "transaction=\(report.transactionID) code="
+                + ReconnectIncidentFailureCode.recordable(reasonCode)
         )
         return true
     }
@@ -3091,6 +3092,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         ) {
             scheduleAutomaticReconnectRetry(
                 failedTransactionID: report.transactionID,
+                failureCode: report.error?.code,
                 delay: delay
             )
             publishRuntimeStatus("reconnecting", error: nil)
@@ -3105,6 +3107,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
 
     private func scheduleAutomaticReconnectRetry(
         failedTransactionID: String,
+        failureCode: String? = nil,
         delay: TimeInterval,
         recordSchedule: Bool = true
     ) {
@@ -3122,18 +3125,20 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             return
         }
         if recordSchedule, let incidentID = activeReconnectIncidentID {
-            ReconnectIncidentJournal.append(
+            ReconnectIncidentJournal.recordRetryScheduled(
                 incidentID: incidentID,
-                type: "retry-scheduled",
                 attempt: retryNumber,
-                transactionID: failedTransactionID,
-                message: "Retry scheduled after \(delay)s"
+                failedTransactionID: failedTransactionID,
+                failureCode: failureCode,
+                delay: delay
             )
         }
         if recordSchedule {
             appLog(
                 "Transparent Proxy automatic reconnect retry "
-                    + "\(retryNumber) scheduled after \(delay)s"
+                    + "\(retryNumber) scheduled after \(delay)s "
+                    + "failed-transaction=\(failedTransactionID) code="
+                    + ReconnectIncidentFailureCode.recordable(failureCode)
             )
         }
         let token = UUID()
@@ -3368,9 +3373,26 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         report: ConnectionReport?,
         message: String?
     ) {
+        // Exhausted only when the last failure would still have qualified; a
+        // terminal or unknown code stops the recovery even on the last attempt.
+        let failureQualified = report.map { report in
+            automaticReconnectTrigger.map {
+                automaticReconnectRetryPolicy.qualifies(report, trigger: $0)
+            } ?? false
+        } ?? true
         let exhausted =
             automaticReconnectAttemptBudget.attemptsUsed
                 >= automaticReconnectRetryPolicy.maxAttempts
+                && failureQualified
+        let failureCode = report?.error?.code ?? ""
+        appLog(
+            "Transparent Proxy automatic reconnect "
+                + (exhausted ? "exhausted" : "stopped")
+                + " attempts=\(automaticReconnectAttemptBudget.attemptsUsed)"
+                + " transaction=\(report?.transactionID ?? "")"
+                + " code="
+                + ReconnectIncidentFailureCode.recordable(failureCode)
+        )
         automaticReconnectInProgress = false
         automaticReconnectTrigger = nil
         automaticReconnectTransactionID = nil
@@ -3382,7 +3404,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 incidentID: incidentID,
                 outcome: exhausted ? "exhausted" : "failed",
                 transactionID: report?.transactionID ?? "",
-                code: report?.error?.code ?? "",
+                code: failureCode,
                 message: message ?? ""
             )
         }
@@ -3607,8 +3629,7 @@ private struct HostUnderlayCaptureError: LocalizedError {
 private final class HostUnderlayCapture {
     private let monitor = NWPathMonitor()
     private let completion: (Result<HostUnderlaySnapshot, Error>) -> Void
-    private var finished = false
-    private var latestEvidence: HostUnderlayCaptureEvidence?
+    private var resolution = HostUnderlayCaptureResolution()
 
     private init(
         completion: @escaping (
@@ -3635,12 +3656,12 @@ private final class HostUnderlayCapture {
         }
         monitor.start(queue: .global(qos: .userInitiated))
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in
-            let evidence = latestEvidence ?? .missingPathUpdate
+            guard let evidence = resolution.expire() else { return }
             appLog(
                 "Transparent Proxy host Underlay capture timed out "
                     + evidence.logSummary
             )
-            finish(.failure(HostUnderlayCaptureError(
+            deliver(.failure(HostUnderlayCaptureError(
                 evidence: evidence
             )))
         }
@@ -3649,7 +3670,7 @@ private final class HostUnderlayCapture {
     private func consume(_ path: Network.NWPath) {
         let evaluation = Self.evaluateSnapshot(for: path)
         if let evidence = evaluation.evidence {
-            latestEvidence = evidence
+            resolution.observe(evidence)
         }
         guard let result = evaluation.result else { return }
         finish(result)
@@ -3772,10 +3793,15 @@ private final class HostUnderlayCapture {
     private func finish(
         _ result: Result<HostUnderlaySnapshot, Error>
     ) {
-        guard !finished else {
+        guard resolution.resolve() else {
             return
         }
-        finished = true
+        deliver(result)
+    }
+
+    private func deliver(
+        _ result: Result<HostUnderlaySnapshot, Error>
+    ) {
         monitor.pathUpdateHandler = nil
         monitor.cancel()
         completion(result)
