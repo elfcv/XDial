@@ -37,6 +37,48 @@ def response(investigate=0.9):
 
 
 class InputTests(unittest.TestCase):
+    def test_subscription_uses_saved_login_and_isolates_analysis(self):
+        payload = dict(needs_investigation=True, confidence=0.8, suspected_layer="host", severity="medium")
+        def fake_run(arguments, **kwargs):
+            self.assertIn('forced_login_method="chatgpt"', arguments)
+            self.assertIn("read-only", arguments)
+            self.assertNotIn("--model", arguments)
+            self.assertNotEqual(kwargs["cwd"], jev.ROOT)
+            for secret in ("OPENAI_API_KEY", "CODEX_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"):
+                self.assertNotIn(secret, kwargs["env"])
+            output = Path(arguments[arguments.index("--output-last-message") + 1])
+            jev.atomic_json(output, payload)
+            return json.dumps(dict(type="turn.completed", usage=dict(input_tokens=123)))
+        with patch.dict(os.environ, {"CODEX_API_KEY": "DO_NOT_USE", "OPENAI_API_KEY": "DO_NOT_USE"}):
+            with patch.object(jev, "run", side_effect=fake_run):
+                result = jev.decide_with_codex(jev.sanitized_observation(observation()))
+        self.assertEqual(result["provider"], "codex")
+        self.assertEqual(result["score_kind"], "model_self_reported_confidence")
+        self.assertEqual(result["input_tokens"], 123)
+        self.assertNotIn("probabilities", json.dumps(result))
+        self.assertTrue(jev.warrants_repair(result))
+        result["confidence"] = 0.6
+        self.assertFalse(jev.warrants_repair(result))
+        result.update(needs_investigation=False, confidence=1.0)
+        self.assertFalse(jev.warrants_repair(result))
+
+    def test_subscription_rejects_non_boolean_or_missing_judgment(self):
+        def fake_run(arguments, **_):
+            output = Path(arguments[arguments.index("--output-last-message") + 1])
+            jev.atomic_json(output, dict(needs_investigation=1, confidence=0.9,
+                                         suspected_layer="host", severity="medium"))
+            return ""
+        with patch.object(jev, "run", side_effect=fake_run), self.assertRaises(ValueError):
+            jev.decide_with_codex(jev.sanitized_observation(observation()))
+
+    def test_subscription_login_status_can_be_on_stderr(self):
+        with patch.object(jev.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout="", stderr="Logged in using ChatGPT\n")):
+            self.assertTrue(jev.subscription_ready())
+        with patch.object(jev.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout="", stderr="Logged in using an API key\n")):
+            self.assertFalse(jev.subscription_ready())
+
     def test_only_allowlisted_facts_leave_the_worker(self):
         raw = observation(profileJSON="PRIVATE_PROFILE", message="PRIVATE_PASSWORD",
                           scenarioName="PRIVATE_NAME", underlay={"ssid": "PRIVATE_SSID"},
@@ -109,6 +151,7 @@ class WorkerTests(unittest.TestCase):
         root = Path(self.temporary.name)
         self.args = SimpleNamespace(observations=root / "input.json", state_dir=root / "state",
                                     acceptance=root / "acceptance.json", repo="owner/repo",
+                                    decision_provider="api",
                                     publish=False, repair=False, max_decisions=100, max_repairs=3, max_cards=10)
         jev.atomic_json(self.args.acceptance, dict(schema_version=1, status="pending", criteria=[]))
         self.decision = Mock(return_value=jev.parse_decision(response()))
@@ -147,6 +190,27 @@ class WorkerTests(unittest.TestCase):
         card = json.loads(next((self.args.state_dir / "cards").glob("*.json")).read_text())
         self.assertIsNone(card["decision"])
         self.assertIn("等待", card["decision_status"])
+
+    def test_subscription_runs_without_api_key_and_changes_provider_cache(self):
+        raw = observation()
+        state = self.process([raw])
+        self.args.decision_provider = "codex"
+        self.decision.return_value = dict(provider="codex", needs_investigation=False, confidence=0.9)
+        with patch.dict(os.environ, {}, clear=True):
+            state = self.process([raw], state)
+            self.process([raw], state)
+        self.assertEqual(self.decision.call_count, 2)
+        self.assertIsNone(self.decision.call_args.args[1])
+        self.assertEqual(state["observations"][raw["id"]]["decision_provider"], "codex")
+        self.assertEqual(len(state["groups"]), 1)
+
+    def test_subscription_login_pending_keeps_cards_without_spending_budget(self):
+        self.args.decision_provider = "codex"
+        self.args.codex_ready = False
+        state = self.process([observation()])
+        self.decision.assert_not_called()
+        self.assertEqual(state["decision_calls"], 0)
+        self.assertEqual(len(state["groups"]), 1)
 
     def test_success_and_cancel_negative_samples_do_not_create_issues(self):
         self.decision.return_value = jev.parse_decision(response(0.1))

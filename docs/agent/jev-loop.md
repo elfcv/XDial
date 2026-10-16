@@ -1,8 +1,9 @@
 # 场景切换的 jev 改进闭环
 
-这里的 jev 指便宜、快速、供软件调用的决策模型。第一版用
-[`gpt-6-luna` Decisions API](https://developers.openai.com/api/docs/guides/decisions)
-判断一次场景切换是否值得调查、可能属于哪个层、调查优先级。
+这里的 jev 指便宜、快速、供软件调用的决策模型。默认通过 Codex CLI 的 ChatGPT 订阅登录，
+使用 CLI 默认模型判断一次场景切换是否值得调查、可能属于哪个层、调查优先级。
+使用官方 [非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode) 的结构化输出，
+也可显式选择 [`gpt-6-luna` Decisions API](https://developers.openai.com/api/docs/guides/decisions)。
 模型不参与 DNS、路由、连接、取消或提交裁决。
 
 ```mermaid
@@ -20,10 +21,14 @@ flowchart LR
 App 自动记录观察；云端模型和 GitHub 操作由开发机上的独立 worker 执行。先构建、按正常安装流程
 安装含此改动的 Debug。worker 不会安装、启动、重启 App，也不更改系统网络。
 
-需要 Python 3.9+、已认证的 `gh` 和已通过 `codex login` 配置的 Codex CLI。
-将 `OPENAI_API_KEY` 通过启动终端的环境提供给 worker；不要把密钥写入仓库、验收文件或聊天。
-修复 Agent 使用 Codex 自己的登录，不继承此 API key 或 GitHub token；不加载用户 Codex 配置，
-执行环境为 `workspace-write`，工具网络关闭。
+需要 Python 3.9+、已认证的 `gh` 和已通过 `codex login` 登录 ChatGPT 的 Codex CLI。
+默认不需要 `OPENAI_API_KEY`，判断和修复均消耗现有订阅额度，受账号的模型权限和用量限制约束，
+参见官方 [授权说明](https://learn.chatgpt.com/docs/auth) 和 [额度说明](https://learn.chatgpt.com/docs/pricing)。
+worker 强制使用 ChatGPT 登录，并移除子进程环境内的 API key 和 GitHub token，不自动切换到 API 计费。
+判断在临时空目录里执行，使用 `read-only`；修复在独立工作区使用 `workspace-write`，工具网络关闭。
+两者均不加载用户 Codex 配置，登录凭据只由 CLI 自己管理。
+订阅模型权限以账号的实际请求结果为准：当前账号无法在 Codex 中使用 `gpt-6-luna`，
+因此订阅路径不强制指定它。CLI 默认模型不保证与 Decisions API 有相同的成本或延迟。
 
 在仓库根目录运行：
 
@@ -35,9 +40,17 @@ python3 scripts/jev_loop.py
 make jev-loop
 ```
 
-退出 worker 用 Ctrl-C。没有安装开机任务或云端服务。没有 API key 时仍保留本地问题卡片，
-`--publish` 仍可发布脱敏事实，但不生成模型判断或自动修复。不要为测试闭环制造公开事故；
-离线测试已使用模拟服务覆盖模型、卡片和修复调度。
+退出 worker 用 Ctrl-C。没有安装开机任务或云端服务。订阅登录不可用时仍保留本地问题卡片，
+worker 每 60 秒重新检查登录；`--publish` 仍可发布脱敏事实。额度耗尽或请求失败会保留证据并退避，
+不会自动改用 API key。不要为测试闭环制造公开事故；离线测试覆盖模型、卡片和修复调度。
+
+如需独立 API，先通过终端环境提供 `OPENAI_API_KEY`，再显式选择（单独按 API 计费）：
+
+```sh
+python3 scripts/jev_loop.py --watch --publish --repair --decision-provider api
+```
+
+不要把密钥写入仓库、验收文件或聊天。切换 provider 会重新分析当前观察；预算和问题去重继续保留。
 
 默认读取 `~/Library/Logs/XDial Debug/jev/scenario-switch-observations.json`。
 Next、正式版分别使用 `XDial Next`、`XDial` 日志目录，可显式指定：
@@ -71,9 +84,12 @@ python3 scripts/jev_loop.py --watch --publish --repair \
 - `reconciling`、取消确认、超时不会被推断成回滚成功。长时间没有新终态的记录可以生成
   “结果未知”的卡片；它不证明连接已断，也不证明旧连接仍可用。
 - 成功与正常取消同样进入模型观察。失败、超时、拒绝、中断和超过 120 秒未更新的未决事务
-  即使暂时无法调用模型，也有本地卡片。模型概率至少 `0.7` 才会触发自动修复尝试。
-- `build/jev-loop/state.json` 保存输入摘要、分类、概率分布、模型版本、问题版本及摘要、
+  即使暂时无法调用模型，也有本地卡片。订阅模式要求模型判断值得调查且自评置信度至少 `0.7`；
+  API 模式要求调查概率至少 `0.7`，才触发修复尝试。订阅置信度未经概率校准，不伪造概率分布。
+- `build/jev-loop/state.json` 保存输入摘要、分类、provider、分数含义、模型、问题版本及摘要、
   延迟、输入 token 数、预算、Issue 和 PR 状态；`cards/` 保存 JSON 和 Markdown。
+  API 记录响应里的模型版本和概率分布；订阅记录 `codex-default`、自评置信度及 CLI 报告的 token 数。
+  CLI 未报告的模型版本明确标为未报告，不由模型自己填写。
   这些均为开发机产物，不提交入库。观察文件损坏时不会覆盖原文件；单条格式异常不会挡住其余记录。
 
 ## 去重、预算与修复范围
