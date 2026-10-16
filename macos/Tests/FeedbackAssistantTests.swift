@@ -160,7 +160,8 @@ final class FeedbackAssistantTests: XCTestCase {
         let assistant = FeedbackAssistant(id: "com.openai.codex", name: "Codex",
             applicationURL: URL(fileURLWithPath: "/Applications/Renamed.app"), conversationEntry: .codex)
         let file = URL(fileURLWithPath: "/tmp/诊断 + & context?#/XDial-feedback.txt")
-        let request = assistant.launchRequest(file: file, english: false)
+        let prompt = FeedbackPackage(kind: .problem, description: "", runtime: nil).openingPrompt(english: false)
+        let request = assistant.launchRequest(file: file, prompt: prompt)
         XCTAssertEqual(request.applicationURL, assistant.applicationURL)
         XCTAssertEqual(request.urls.count, 1)
         let parts = try XCTUnwrap(URLComponents(url: request.urls[0], resolvingAgainstBaseURL: false))
@@ -173,7 +174,8 @@ final class FeedbackAssistantTests: XCTestCase {
         XCTAssertEqual(query["path"], file.deletingLastPathComponent().path)
         XCTAssertEqual(query["mode"], "work")
         XCTAssertTrue(query["prompt"]?.contains("XDial-feedback.txt") == true)
-        XCTAssertLessThan(request.urls[0].absoluteString.count, 1_000)
+        XCTAssertEqual(query["prompt"], prompt)
+        XCTAssertLessThan(request.urls[0].absoluteString.count, 2_000)
         XCTAssertEqual(Set(query.keys), ["path", "prompt", "mode"])
     }
 
@@ -202,5 +204,56 @@ final class FeedbackAssistantTests: XCTestCase {
         XCTAssertEqual(assistants.count, 2)
         XCTAssertEqual(assistants.first { $0.id == "com.xd.cindy" }?.conversationEntry, .folder)
         XCTAssertEqual(assistants.first { $0.id == "com.openai.codex" }?.conversationEntry, .codex)
+    }
+
+    private func clickedFailure() -> ConnectionReport {
+        let plan = ConnectionPlan(schemaVersion: 3, scenario: .init(id: "PRIVATE_ID", name: "PRIVATE_NAME"),
+                                  configurationFingerprint: "PRIVATE_FINGERPRINT", tasks: [])
+        var report = ConnectionReport(transactionID: "PRIVATE_TRANSACTION", plan: plan)
+        report.fail(code: "engine-start-failed", message: "PRIVATE_RAW_ERROR")
+        report.setState(.failed)
+        return report
+    }
+
+    @MainActor func testClickedFailureSurvivesSnapshotRefreshAndHonorsDiagnosticOptOut() throws {
+        let coordinator = FeedbackCoordinator(discover: { [] })
+        coordinator.begin(context: .connectionFailure(clickedFailure()))
+        coordinator.snapshot = FeedbackRuntimeSnapshot(connectionStatus: "connected", installationState: .ready,
+            hasUnappliedChanges: false, connection: nil, scenarioSwitch: nil)
+        XCTAssertEqual(coordinator.kind, .diagnosis)
+        var text = try coordinator.package().text(english: false)
+        XCTAssertTrue(text.contains("engine-start-failed"))
+        XCTAssertTrue(text.contains("事务状态=failed"))
+        XCTAssertTrue(text.contains("connected"))
+        XCTAssertFalse(text.contains("PRIVATE"))
+
+        coordinator.includeDiagnostics = false
+        text = try coordinator.package().text(english: false)
+        XCTAssertFalse(text.contains("操作：建立 XDial 连接"))
+        XCTAssertEqual(coordinator.package().context.origin, .general)
+        XCTAssertFalse(coordinator.package().openingPrompt(english: false).contains("建立连接时出错"))
+        XCTAssertFalse(text.contains("engine-start-failed"))
+        XCTAssertFalse(text.contains("rollback_complete"))
+        XCTAssertFalse(text.contains("connected"))
+        coordinator.includeDiagnostics = true
+        XCTAssertTrue(try coordinator.package().text(english: false).contains("engine-start-failed"))
+    }
+
+    @MainActor func testOrdinaryEntryAndSuggestionClearOldFailureWithoutLosingUserText() throws {
+        let coordinator = FeedbackCoordinator(discover: { [] })
+        coordinator.description = "我想聊其他建议"
+        coordinator.begin(context: .connectionFailure(clickedFailure()))
+        coordinator.begin()
+        XCTAssertEqual(coordinator.context.origin, .general)
+        XCTAssertEqual(coordinator.kind, .problem)
+        XCTAssertFalse(try coordinator.package().text(english: false).contains("engine-start-failed"))
+        XCTAssertEqual(coordinator.description, "我想聊其他建议")
+
+        coordinator.begin(context: .connectionFailure(clickedFailure()))
+        coordinator.kind = .suggestion
+        XCTAssertEqual(coordinator.context.origin, .general)
+        XCTAssertFalse(coordinator.includeDiagnostics)
+        XCTAssertFalse(coordinator.package().openingPrompt(english: false).contains("建立连接时出错"))
+        XCTAssertTrue(coordinator.package().openingPrompt(english: false).contains("产品建议"))
     }
 }

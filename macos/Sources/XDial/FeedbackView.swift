@@ -14,7 +14,8 @@ struct FeedbackView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(text("intro"))
+            Text(text(feedback.context.origin == .general ? "intro"
+                : feedback.context.origin == .scenarioSwitchFailure ? "intro.switch" : "intro.connection"))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Picker(text("kind"), selection: $feedback.kind) {
@@ -24,8 +25,20 @@ struct FeedbackView: View {
             }
             .pickerStyle(.menu)
 
+            if feedback.context.origin != .general {
+                HStack(alignment: .top) {
+                    Text(text(!feedback.includeDiagnostics ? "context.omitted"
+                        : feedback.context.origin == .scenarioSwitchFailure ? "context.switch" : "context.connection"))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button(text("context.clear")) { feedback.begin() }
+                }
+                .font(.system(size: 11))
+            }
+
             VStack(alignment: .leading, spacing: 6) {
-                Text(text("description")).fontWeight(.medium)
+                Text(text(feedback.context.origin == .general ? "description" : "description.additional")).fontWeight(.medium)
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: $feedback.description)
                         .font(.system(size: 12))
@@ -33,7 +46,7 @@ struct FeedbackView: View {
                         .padding(4)
                         .accessibilityLabel(text("description"))
                     if feedback.description.isEmpty {
-                        Text(text("placeholder." + feedback.kind.rawValue))
+                        Text(text(feedback.context.origin == .general ? "placeholder." + feedback.kind.rawValue : "placeholder.additional"))
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 9).padding(.vertical, 7)
                             .allowsHitTesting(false)

@@ -1,7 +1,7 @@
 import XCTest
 
 final class FeedbackPackageTests: XCTestCase {
-    private func snapshot() -> FeedbackRuntimeSnapshot {
+    private func failureReport(message: String = "PRIVATE_PASSWORD") -> ConnectionReport {
         let plan = ConnectionPlan(schemaVersion: 3,
             scenario: ConnectionPlanScenario(id: "PRIVATE_SCENARIO_ID", name: "PRIVATE_SCENARIO_NAME"),
             configurationFingerprint: "PRIVATE_FINGERPRINT", tasks: [
@@ -10,9 +10,15 @@ final class FeedbackPackageTests: XCTestCase {
                     resourceType: "PRIVATE_RESOURCE_TYPE")
             ])
         var report = ConnectionReport(transactionID: "PRIVATE_TRANSACTION", plan: plan)
-        report.fail(code: "PRIVATE_CODE", message: "PRIVATE_PASSWORD", taskID: "PRIVATE_TASK")
+        report.fail(code: "PRIVATE_CODE", message: message, taskID: "PRIVATE_TASK")
+        report.setState(.failed)
         report.events.append(ConnectionReportEvent(sequence: 2, timestamp: Date(), type: "PRIVATE_TYPE",
             state: "PRIVATE_STATE", taskID: "PRIVATE_TASK", code: "PRIVATE_CODE", message: "PRIVATE_ERROR", facts: ["PRIVATE_KEY": true]))
+        return report
+    }
+
+    private func snapshot() -> FeedbackRuntimeSnapshot {
+        let report = failureReport()
         let projection = HostScenarioSwitchProjection(status: "PRIVATE_STATUS", fromScenarioID: "PRIVATE_SOURCE",
             toScenarioID: "PRIVATE_TARGET", sourceCommittedTransactionID: "source", candidateTransactionID: "target",
             activeCommittedTransactionID: "source", inFlight: false, candidateReport: report,
@@ -75,5 +81,55 @@ final class FeedbackPackageTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: second), "second")
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: first.path)[.posixPermissions] as? Int, 0o600)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: first.deletingLastPathComponent().path)[.posixPermissions] as? Int, 0o700)
+    }
+
+    func testOrdinaryHelpInvitesConversationAndRespondsToExistingDescription() throws {
+        let blank = FeedbackPackage(kind: .problem, description: " \n ", runtime: snapshot())
+        let text = try blank.text(english: false)
+        XCTAssertFalse(blank.hasDescription)
+        XCTAssertTrue(text.contains("使用 XDial 时遇到什么麻烦了？"))
+        XCTAssertTrue(text.contains("等待用户说明；暂不根据快照展开故障诊断"))
+        XCTAssertFalse(text.contains("已捕获的错误现场："))
+        XCTAssertFalse(text.contains("用户描述（用户自行填写）："))
+        XCTAssertFalse(text.contains("用户尚未补充文字说明"))
+        XCTAssertTrue(try blank.text(english: true).contains("What would you like help with in XDial?"))
+
+        let supplied = FeedbackPackage(kind: .problem, description: "PRIVATE_USER_TEXT", runtime: nil)
+        XCTAssertTrue(try supplied.text(english: false).contains("先回应具体内容"))
+        XCTAssertFalse(try supplied.text(english: false).contains("先用下面这样简短的邀请开场"))
+        XCTAssertFalse(supplied.openingPrompt(english: false).contains("PRIVATE_USER_TEXT"))
+        let suggestion = FeedbackPackage(kind: .suggestion, description: "", runtime: nil)
+        XCTAssertTrue(try suggestion.text(english: false).contains("你希望 XDial 哪些地方更好用？"))
+    }
+
+    func testErrorContextCarriesOperationExpectedResultAndSafeSymptom() throws {
+        let report = failureReport(message: "lookup PRIVATE_HOST: SERVFAIL PRIVATE_PASSWORD")
+        let projection = HostScenarioSwitchProjection(status: "failed", fromScenarioID: "PRIVATE_SOURCE",
+            toScenarioID: "PRIVATE_TARGET", sourceCommittedTransactionID: "source", candidateTransactionID: "target",
+            activeCommittedTransactionID: "source", inFlight: false, candidateReport: report,
+            reusedLineIDs: [], code: "switch-failed", message: "PRIVATE_MESSAGE")
+        for context in [FeedbackContext.connectionFailure(report), .scenarioSwitchFailure(projection)] {
+            let package = FeedbackPackage(kind: .diagnosis, description: "", runtime: nil, context: context)
+            let text = try package.text(english: false)
+            XCTAssertTrue(text.contains("预期："))
+            XCTAssertTrue(text.contains("服务器域名解析失败"))
+            XCTAssertTrue(text.contains("事务状态=failed"))
+            XCTAssertTrue(text.contains("不要让用户重新讲一遍"))
+            XCTAssertFalse(text.contains("PRIVATE"))
+            XCTAssertFalse(package.openingPrompt(english: false).contains("PRIVATE"))
+        }
+        let text = try XCTUnwrap(FeedbackContext.scenarioSwitchFailure(projection).text(english: false))
+        XCTAssertTrue(text.contains("旧连接仍在使用"))
+        XCTAssertTrue(text.contains("switch-failed"))
+    }
+
+    func testUnknownActiveConnectionDoesNotClaimOldConnectionWasRetained() throws {
+        let projection = HostScenarioSwitchProjection(status: "failed", fromScenarioID: "source-scenario",
+            toScenarioID: "target-scenario", sourceCommittedTransactionID: "source", candidateTransactionID: "target",
+            activeCommittedTransactionID: "", inFlight: false, candidateReport: failureReport(),
+            reusedLineIDs: [], code: "switch-failed", message: "PRIVATE_MESSAGE")
+        let text = try XCTUnwrap(FeedbackContext.scenarioSwitchFailure(projection).text(english: false))
+        XCTAssertTrue(text.contains("当前承载连接的关系尚未确认"))
+        XCTAssertFalse(text.contains("切换报告显示：旧连接仍在使用"))
     }
 }

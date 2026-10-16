@@ -342,11 +342,8 @@ struct MainPopover: View {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func presentFeedback(diagnosis: Bool = false) {
-        if diagnosis {
-            state.feedback.kind = .diagnosis
-            state.feedback.includeDiagnostics = true
-        }
+    private func presentFeedback(context: FeedbackContext = .general) {
+        state.feedback.begin(context: context)
         state.refreshFeedbackSnapshot()
         state.editorPosition.showGeneral(.feedback)
         openSettingsWindow()
@@ -791,7 +788,7 @@ struct MainPopover: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 Button(state.tr("AI 排查…", "Diagnose with AI…")) {
-                    presentFeedback(diagnosis: true)
+                    presentFeedback(context: .scenarioSwitchFailure(projection))
                 }
                 .font(.system(size: 10.5))
             }
@@ -1125,7 +1122,7 @@ struct MainPopover: View {
     private func failedDetails(_ report: ConnectionReport) -> some View {
         let failure = failurePresentation(report)
         return VStack(spacing: 0) {
-            failureBlock(failure)
+            failureBlock(failure, report: report)
             Divider().padding(.leading, 24)
 
             let ingress = report.tasks.first { $0.kind == "ingress" }
@@ -1150,7 +1147,7 @@ struct MainPopover: View {
     }
 
     private func failureBlock(
-        _ failure: FailurePresentation
+        _ failure: FailurePresentation, report: ConnectionReport
     ) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Circle()
@@ -1169,7 +1166,7 @@ struct MainPopover: View {
                         .textSelection(.enabled)
                 }
                 Button(state.tr("AI 排查…", "Diagnose with AI…")) {
-                    presentFeedback(diagnosis: true)
+                    presentFeedback(context: .connectionFailure(report))
                 }
                 .font(.system(size: 11))
             }

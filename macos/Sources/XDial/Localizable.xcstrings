@@ -126,13 +126,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Report a problem, diagnose a failure, adjust configuration, or refine a suggestion with an AI assistant on this Mac."
+            "value": "What would you like help with in XDial? Your AI assistant can troubleshoot, help configure it, or discuss product suggestions."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "反馈问题、排查故障、调整配置或整理建议，交给你本机的 AI 助手。"
+            "value": "使用 XDial 遇到什么麻烦了？让 AI 助手帮你解决，也可以一起调整配置、聊聊产品建议。"
           }
         }
       }
@@ -160,13 +160,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Report a problem"
+            "value": "Get help or give feedback"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "报告问题"
+            "value": "使用帮助与反馈"
           }
         }
       }
@@ -245,13 +245,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "What happened, and what did you expect?"
+            "value": "Tell us what you need help with, or leave this blank and start a conversation with your assistant."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "发生了什么？你原本期望怎样？"
+            "value": "说说你遇到的麻烦，也可以留空，到 AI 助手中直接聊。"
           }
         }
       }
@@ -330,13 +330,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The automatic snapshot includes versions and connection/task states, without configuration, credentials, addresses, or raw logs. Your own description is shared as written."
+            "value": "Automatic diagnostics include only version, connection/task states, and known error categories, without configuration, credentials, addresses, or raw logs. Your description is shared as written."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "自动快照仅含版本、连接与任务状态，不含配置、凭据、地址或原始日志。你填写的内容会原样交给助手。"
+            "value": "自动资料仅含版本、连接与任务状态、已分类的错误，不含配置、凭据、地址或原始日志。你填写的内容会原样交给助手。"
           }
         }
       }
@@ -694,6 +694,142 @@
           "stringUnit": {
             "state": "translated",
             "value": "已请求在 %@ 中新建对话。请检查预填说明后发送；若未出现，可粘贴已复制的内容。"
+          }
+        }
+      }
+    },
+    "feedback.context.connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection failure and expected behavior are included. Add any other observations if you wish."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已带入连接失败的现场与预期，AI 会接着排查。你可以补充其他现象。"
+          }
+        }
+      }
+    },
+    "feedback.context.switch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Scenario switch failure and expected behavior are included. Add any other observations if you wish."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已带入场景切换失败的现场与预期，AI 会接着排查。你可以补充其他现象。"
+          }
+        }
+      }
+    },
+    "feedback.context.clear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discuss something else"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聊其他问题"
+          }
+        }
+      }
+    },
+    "feedback.description.additional": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Additional details (optional)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "补充说明（可选）"
+          }
+        }
+      }
+    },
+    "feedback.placeholder.additional": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "For example: whether this happens every time, or which apps are affected. No need to repeat the error above."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "例如：是否每次都会发生，或哪些应用受影响。不必重新描述已经记录的错误。"
+          }
+        }
+      }
+    },
+    "feedback.context.omitted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic diagnostics are off. The error context will not be shared with the assistant; add any details you want to discuss below."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已关闭自动诊断资料，错误现场不会交给 AI；请在下方补充你想聊的内容。"
+          }
+        }
+      }
+    },
+    "feedback.intro.connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Let your AI assistant pick up from this connection failure and help restore your connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让 AI 助手接着排查这次连接失败，帮你恢复连接。"
+          }
+        }
+      }
+    },
+    "feedback.intro.switch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Let your AI assistant pick up from this Scenario switch failure and help get the target Scenario working."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让 AI 助手接着排查这次场景切换失败，帮你让目标场景正常生效。"
           }
         }
       }

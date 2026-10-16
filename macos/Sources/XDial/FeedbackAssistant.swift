@@ -54,7 +54,7 @@ struct FeedbackAssistant: Identifiable, Equatable {
         }
     }
 
-    func launchRequest(file: URL, english: Bool) -> FeedbackLaunchRequest {
+    func launchRequest(file: URL, prompt: String) -> FeedbackLaunchRequest {
         switch conversationEntry {
         case .unsupported:
             return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [], conversationEntry: .unsupported)
@@ -68,9 +68,7 @@ struct FeedbackAssistant: Identifiable, Equatable {
             components.queryItems = [
                 URLQueryItem(name: "mode", value: "work"),
                 URLQueryItem(name: "path", value: file.deletingLastPathComponent().path),
-                URLQueryItem(name: "prompt", value: english
-                    ? "Read XDial-feedback.txt in this working directory and help me with the task described there."
-                    : "请读取工作目录中的 XDial-feedback.txt，按照其中的任务目标协助我。"),
+                URLQueryItem(name: "prompt", value: prompt),
             ]
             // Electron reads these with URLSearchParams, which treats a bare
             // plus as a space even though URLComponents allows it unescaped.
@@ -92,6 +90,7 @@ final class FeedbackCoordinator: ObservableObject {
     @Published var kind: FeedbackKind = .problem {
         didSet {
             if kind != oldValue { includeDiagnostics = kind != .suggestion }
+            if kind != .diagnosis { context = .general }
         }
     }
     @Published var description = ""
@@ -99,6 +98,7 @@ final class FeedbackCoordinator: ObservableObject {
     @Published private(set) var assistants: [FeedbackAssistant] = []
     @Published var selectedAssistantID = ""
     @Published var snapshot: FeedbackRuntimeSnapshot?
+    @Published private(set) var context: FeedbackContext = .general
     @Published private(set) var fileURL: URL?
     @Published private(set) var isOpening = false
     @Published private(set) var outcome: Outcome?
@@ -142,6 +142,18 @@ final class FeedbackCoordinator: ObservableObject {
         assistants.first { $0.id == selectedAssistantID }
     }
 
+    func begin(context: FeedbackContext = .general) {
+        if context.origin != .general {
+            kind = .diagnosis
+            includeDiagnostics = true
+        } else if self.context.origin != .general {
+            kind = .problem
+        }
+        self.context = context
+        outcome = nil
+        fileURL = nil
+    }
+
     func refreshAssistants() {
         let previousID = selectedAssistantID
         assistants = discover()
@@ -161,7 +173,8 @@ final class FeedbackCoordinator: ObservableObject {
 
     func package() -> FeedbackPackage {
         FeedbackPackage(kind: kind, description: description,
-                        runtime: includeDiagnostics ? snapshot : nil)
+                        runtime: includeDiagnostics ? snapshot : nil,
+                        context: includeDiagnostics ? context : .general)
     }
 
     /// A file URL and a plain-text representation allow either attachment paste
@@ -196,7 +209,7 @@ final class FeedbackCoordinator: ObservableObject {
         }
         guard copyPackage(english: english, pasteboard: pasteboard) else { return }
         guard let fileURL else { return }
-        let request = assistant.launchRequest(file: fileURL, english: english)
+        let request = assistant.launchRequest(file: fileURL, prompt: package().openingPrompt(english: english))
         isOpening = true
         open(request) { [weak self] success in
             guard let self else { return }
