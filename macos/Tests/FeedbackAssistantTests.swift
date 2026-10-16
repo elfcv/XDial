@@ -30,7 +30,7 @@ final class FeedbackAssistantTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let assistant = FeedbackAssistant(id: "com.xd.cindy", name: "Cindy", applicationURL: URL(fileURLWithPath: "/Applications/Cindy.app"))
-        var opened: [URL] = []
+        var opened: [FeedbackLaunchRequest] = []
         var finish: ((Bool) -> Void)?
         let coordinator = FeedbackCoordinator(defaults: defaults, directory: root, discover: { [assistant] }, open: {
             opened.append($0); finish = $1
@@ -40,7 +40,8 @@ final class FeedbackAssistantTests: XCTestCase {
         coordinator.refreshAssistants()
         coordinator.description = "现场说明"
         coordinator.continueInAssistant(english: false, pasteboard: pasteboard)
-        XCTAssertEqual(opened, [assistant.applicationURL])
+        XCTAssertEqual(opened.first?.applicationURL, assistant.applicationURL)
+        XCTAssertTrue(opened.first?.urls.isEmpty == true)
         XCTAssertTrue(coordinator.isOpening)
         coordinator.continueInAssistant(english: false, pasteboard: pasteboard)
         XCTAssertEqual(opened.count, 1)
@@ -132,5 +133,74 @@ final class FeedbackAssistantTests: XCTestCase {
         XCTAssertFalse(opened)
         XCTAssertEqual(coordinator.outcome, .exportFailed)
         XCTAssertEqual(pasteboard.string(forType: .string), "previous contents")
+    }
+
+    @MainActor func testCindyOpensTheNewFeedbackDirectoryAsAConversation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let assistant = FeedbackAssistant(id: "com.xd.cindy", name: "Cindy", applicationURL: root,
+                                          conversationEntry: .folder)
+        var request: FeedbackLaunchRequest?
+        let coordinator = FeedbackCoordinator(directory: root, discover: { [assistant] }, open: { value, done in
+            request = value
+            done(true)
+        })
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        coordinator.refreshAssistants()
+        coordinator.description = "新对话现场"
+        coordinator.continueInAssistant(english: false, pasteboard: pasteboard)
+        XCTAssertEqual(request?.applicationURL, assistant.applicationURL)
+        XCTAssertEqual(request?.urls, [coordinator.fileURL!.deletingLastPathComponent()])
+        XCTAssertEqual(coordinator.outcome, .conversationRequested("Cindy", .folder))
+        XCTAssertTrue(try String(contentsOf: coordinator.fileURL!).contains("新对话现场"))
+    }
+
+    func testCodexNewConversationEncodesWorkspaceAndOnlyPrefillsShortFileInstruction() throws {
+        let assistant = FeedbackAssistant(id: "com.openai.codex", name: "Codex",
+            applicationURL: URL(fileURLWithPath: "/Applications/Renamed.app"), conversationEntry: .codex)
+        let file = URL(fileURLWithPath: "/tmp/诊断 + & context?#/XDial-feedback.txt")
+        let request = assistant.launchRequest(file: file, english: false)
+        XCTAssertEqual(request.applicationURL, assistant.applicationURL)
+        XCTAssertEqual(request.urls.count, 1)
+        let parts = try XCTUnwrap(URLComponents(url: request.urls[0], resolvingAgainstBaseURL: false))
+        XCTAssertEqual(parts.scheme, "codex")
+        XCTAssertEqual(parts.host, "threads")
+        XCTAssertEqual(parts.path, "/new")
+        XCTAssertFalse(parts.percentEncodedQuery?.contains("+") == true)
+        XCTAssertTrue(parts.percentEncodedQuery?.contains("%2B") == true)
+        let query = Dictionary(uniqueKeysWithValues: (parts.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(query["path"], file.deletingLastPathComponent().path)
+        XCTAssertEqual(query["mode"], "work")
+        XCTAssertTrue(query["prompt"]?.contains("XDial-feedback.txt") == true)
+        XCTAssertLessThan(request.urls[0].absoluteString.count, 1_000)
+        XCTAssertEqual(Set(query.keys), ["path", "prompt", "mode"])
+    }
+
+    func testDiscoveryEnablesOnlyAdvertisedConversationTransports() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var bundles: [String: URL] = [:]
+        for (id, extra) in [
+            ("com.xd.cindy", ["CFBundleDocumentTypes": [["LSItemContentTypes": ["public.folder"]]]] as [String: Any]),
+            ("com.openai.codex", ["CFBundleURLTypes": [["CFBundleURLSchemes": ["codex"]]]] as [String: Any]),
+        ] {
+            let app = root.appendingPathComponent(id + ".app")
+            let executable = app.appendingPathComponent("Contents/MacOS/Assistant")
+            try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("test".utf8).write(to: executable)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+            var info = extra
+            info["CFBundleIdentifier"] = id
+            info["CFBundleExecutable"] = "Assistant"
+            info["CFBundlePackageType"] = "APPL"
+            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+                .write(to: app.appendingPathComponent("Contents/Info.plist"))
+            bundles[id] = app
+        }
+        let assistants = FeedbackAssistant.discover(resolve: { bundles[$0] })
+        XCTAssertEqual(assistants.count, 2)
+        XCTAssertEqual(assistants.first { $0.id == "com.xd.cindy" }?.conversationEntry, .folder)
+        XCTAssertEqual(assistants.first { $0.id == "com.openai.codex" }?.conversationEntry, .codex)
     }
 }

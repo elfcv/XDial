@@ -612,6 +612,91 @@
           }
         }
       }
+    },
+    "feedback.newConversation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New conversation in %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 中新建对话"
+          }
+        }
+      }
+    },
+    "feedback.folderHint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens a new conversation in this diagnostic directory, where the text file is saved. Paste the copied contents into the new conversation and send."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将打开本次诊断目录并进入新对话，文本文件已放在该目录中。请在新对话中粘贴已复制的内容后发送。"
+          }
+        }
+      }
+    },
+    "feedback.codexHint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens a new conversation with an instruction to read the diagnostic file. Review it and send. The feedback text and file are also copied for manual use."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将打开新对话并预填读取诊断文件的说明，确认后点击发送。反馈文字与文件也会复制，便于手动使用。"
+          }
+        }
+      }
+    },
+    "feedback.folderRequested": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requested a new conversation in %@ with this diagnostic directory. Paste the copied contents and send."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已请求在 %@ 中新建对话，并打开本次诊断目录。请粘贴已复制的内容后发送。"
+          }
+        }
+      }
+    },
+    "feedback.codexRequested": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requested a new conversation in %@. Review the prefilled instruction and send; if it did not appear, paste the copied contents."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已请求在 %@ 中新建对话。请检查预填说明后发送；若未出现，可粘贴已复制的内容。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

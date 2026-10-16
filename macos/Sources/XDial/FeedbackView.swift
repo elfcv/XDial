@@ -119,13 +119,14 @@ struct FeedbackView: View {
                         HStack(spacing: 7) {
                             Image(nsImage: NSWorkspace.shared.icon(forFile: assistant.applicationURL.path))
                                 .resizable().frame(width: 18, height: 18)
-                            Text(String(format: text("continue"), assistant.name))
+                            Text(String(format: text(assistant.supportsNewConversation ? "newConversation" : "continue"), assistant.name))
                         }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(feedback.isOpening)
                 }
-                Text(text("handoffHint"))
+                Text(text(feedback.selectedAssistant?.conversationEntry == .codex ? "codexHint"
+                    : feedback.selectedAssistant?.conversationEntry == .folder ? "folderHint" : "handoffHint"))
                     .font(.system(size: 10.5)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -141,6 +142,8 @@ struct FeedbackView: View {
         switch outcome {
         case .copied: return text("copied")
         case .opened(let name): return String(format: text("opened"), name)
+        case .conversationRequested(let name, let entry):
+            return String(format: text(entry == .codex ? "codexRequested" : "folderRequested"), name)
         case .assistantUnavailable: return text("assistantUnavailable")
         case .openFailed: return text("openFailed")
         case .exportFailed: return text("exportFailed")
