@@ -153,6 +153,13 @@ prepare-patched-go: $(PATCHED_WORKFILE)
 public-content-gate:
 	bash scripts/check-public-content.sh
 
+.PHONY: test-jev-loop jev-loop
+test-jev-loop:
+	python3 -m unittest discover -s test -p 'jev_loop_test.py'
+
+jev-loop:
+	python3 scripts/jev_loop.py --watch --publish --repair
+
 go-vet: $(PATCHED_WORKFILE)
 	$(PATCHED_GO_ENV) go vet ./...
 
@@ -284,11 +291,13 @@ app: cli-$(DEVELOPMENT_CHANNEL) libbox-macos-xcframework macos/AppIcon.icns maco
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath $(DEVELOPMENT_DERIVED_DATA) \
 		CURRENT_PROJECT_VERSION=$(DEBUG_BUILD_VERSION) \
+		XDIAL_SOURCE_REVISION=$$(git rev-parse HEAD) \
 		$(MACOS_DEBUG_XCODEBUILD_FLAGS) build
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDial -configuration $(DEVELOPMENT_CONFIGURATION) \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath $(DEVELOPMENT_DERIVED_DATA) \
 		CURRENT_PROJECT_VERSION=$(DEBUG_BUILD_VERSION) \
+		XDIAL_SOURCE_REVISION=$$(git rev-parse HEAD) \
 		$(MACOS_DEBUG_XCODEBUILD_FLAGS) build
 	@test "$$(plutil -extract LSUIElement raw '$(DEVELOPMENT_PRODUCT)/Contents/Info.plist')" = true
 	@test "$$(plutil -extract LSUIElement raw '$(DEVELOPMENT_PRODUCT)/Contents/Helpers/XDial Settings UI.app/Contents/Info.plist')" = false
