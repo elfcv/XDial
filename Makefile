@@ -198,6 +198,7 @@ test-release-contract:
 	bash test/release_contract_test.sh
 	bash test/next_release_contract_test.sh
 	python3 -m unittest discover -s test -p 'publish*release_test.py'
+	python3 -m unittest discover -s test -p 'restart_macos_test.py'
 
 # Opt-in macOS login-session check: launches only isolated fixture apps.
 .PHONY: test-installation-launch

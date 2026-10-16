@@ -29,13 +29,15 @@ restart_started_at = float(sys.argv[2])
 transaction_id = str(report.get("transaction_id", ""))
 report_is_new = False
 if transaction_id:
-    if baseline_transaction_id:
-        report_is_new = transaction_id != baseline_transaction_id
-    else:
-        try:
-            report_is_new = float(report.get("started_at", 0)) >= restart_started_at
-        except (TypeError, ValueError):
-            report_is_new = False
+    try:
+        started_after_restart = float(report.get("started_at", 0)) >= restart_started_at
+    except (TypeError, ValueError):
+        started_after_restart = False
+    # A new Host initially reads the shared journal. A different transaction
+    # can still be historical; the predecessor can also fail during teardown.
+    report_is_new = started_after_restart and (
+        not baseline_transaction_id or transaction_id != baseline_transaction_id
+    )
 values = [
     installation.get("state", ""),
     d.get("desiredConnectionState", ""),
@@ -92,7 +94,6 @@ target_is_running() {
 restart_started_at="$(( $(date +%s) - 978307200 - 1 ))"
 baseline_reconnect_attempts=0
 baseline_transaction_id=""
-baseline_report_failed=0
 
 # 所有会影响当前实例的动作之前，先完整验证构建产物。
 /usr/bin/codesign --verify --deep --strict "${source_bundle}" \
@@ -116,13 +117,9 @@ if health_json="$(curl -fsS --max-time 2 "${health_url}" 2>/dev/null)"; then
 		printf '%s' "${old_state_json}" \
 			| state_fields "" "${restart_started_at}"
 	)"
-	IFS='|' read -r _ _ _ _ baseline_report_state \
-		baseline_has_error baseline_reconnect_attempts \
+	IFS='|' read -r _ _ _ _ _ \
+		_ baseline_reconnect_attempts \
 		baseline_transaction_id _ <<< "${baseline_fields}"
-	if [[ "${baseline_report_state}" == "failed" \
-		|| "${baseline_has_error}" == "1" ]]; then
-		baseline_report_failed=1
-	fi
 	curl -fsS --max-time 5 -X POST "${action_url}" \
 		-d '{"action":"quit"}' >/dev/null || true
 elif target_is_running; then
@@ -190,11 +187,7 @@ for _ in {1..120}; do
 			report_failed=1
 		fi
 		if [[ "${report_failed}" == "1" \
-			&& ( "${report_is_new}" == "1" \
-				|| ( -n "${baseline_transaction_id}" \
-					&& "${transaction_id}" == \
-						"${baseline_transaction_id}" \
-					&& "${baseline_report_failed}" == "0" ) ) ]]; then
+			&& "${report_is_new}" == "1" ]]; then
 			saw_failed_connection=1
 		fi
 		# attempts_used 是尚未稳定五分钟的预算使用量，不是本次命令的
@@ -211,7 +204,8 @@ for _ in {1..120}; do
 		if [[ "${installation_state}" == "ready" ]]; then
 			if [[ "${desired_state}" == "connected" \
 				&& "${engine_state}" == "connected" \
-				&& "${report_state}" == "committed" ]]; then
+				&& "${report_state}" == "committed" \
+				&& "${report_is_new}" == "1" ]]; then
 				ready_state="connected"
 				break
 			fi
