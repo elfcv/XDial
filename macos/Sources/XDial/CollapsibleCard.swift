@@ -143,7 +143,7 @@ private struct ListRowSwitchStyle: ToggleStyle {
     }
 }
 
-/// 底部添加栏，三个 Tab 统一样式
+/// 资源页底部添加栏，菜单与普通按钮共用同一触发器样式。
 struct AddBar<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
@@ -151,25 +151,36 @@ struct AddBar<Content: View>: View {
         HStack {
             Spacer()
             content()
-                .menuStyle(.borderlessButton)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(XDialPalette.primaryAction)
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(
-                    XDialPalette.primaryAction.opacity(0.09),
-                    in: Capsule()
-                )
-                .overlay {
-                    Capsule().stroke(
-                        XDialPalette.primaryAction.opacity(0.16),
-                        lineWidth: 0.5
-                    )
-                }
+                .menuStyle(.button)
+                .buttonStyle(AddBarButtonStyle())
         }
         .padding(.horizontal, 12)
         .frame(height: 44)
         .background(Color.primary.opacity(0.015))
+    }
+}
+
+private struct AddBarButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(XDialPalette.primaryAction)
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(
+                XDialPalette.primaryAction.opacity(configuration.isPressed ? 0.16 : 0.09),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule().stroke(
+                    XDialPalette.primaryAction.opacity(0.16),
+                    lineWidth: 0.5
+                )
+            }
+            .contentShape(Capsule())
+            .opacity(isEnabled ? 1 : 0.45)
     }
 }
 

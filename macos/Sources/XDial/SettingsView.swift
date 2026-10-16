@@ -493,7 +493,12 @@ struct LinesTab: View {
                     )
                     }
                 } label: {
-                    Label(groupsOnly ? state.tr("添加线路组", "Add Line Group") : state.tr("添加线路", "Add Line"), systemImage: "plus")
+                    HStack(spacing: 6) {
+                        Label(groupsOnly ? state.tr("添加线路组", "Add Line Group") : state.tr("添加线路", "Add Line"), systemImage: "plus")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .accessibilityHidden(true)
+                    }
                 }
             }
         }
