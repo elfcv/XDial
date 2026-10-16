@@ -1937,14 +1937,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             )
         }
         publishReport(report)
-        recordScenarioSwitch(
-            active,
-            status: "committed",
-            activeTransactionID: report.transactionID,
-            code: nil,
-            message: nil,
-            reusedLineIDs:
-                ConnectionReportRuntimeFacts.reusedLineIDs(report: report)
+        lastScenarioSwitchProjection = .committed(
+            sourceReport: active.sourceReport,
+            report: report
         )
         active.completionGate.finish(.success(report))
     }
@@ -4126,27 +4121,6 @@ private final class HostCompletionGate<Value> {
             completion(result)
         }
     }
-}
-
-/// Separate host-side Switch fact projection. It deliberately does not replace
-/// the authoritative committed ConnectionReport while a candidate is pending
-/// or when that candidate fails.
-struct HostScenarioSwitchProjection: Equatable {
-    let status: String
-    let fromScenarioID: String
-    let toScenarioID: String
-    let sourceCommittedTransactionID: String
-    let candidateTransactionID: String
-    let activeCommittedTransactionID: String
-    let inFlight: Bool
-    /// Credential-free task state for the candidate generation. It is a
-    /// presentation sidecar, never the committed runtime fact.
-    let candidateReport: ConnectionReport
-    /// Public Line IDs only. Opaque runtime identities never leave Provider
-    /// memory or enter this host/Debug projection.
-    let reusedLineIDs: [String]
-    let code: String?
-    let message: String?
 }
 
 private struct HostScenarioSwitch {
