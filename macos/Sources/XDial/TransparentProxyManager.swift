@@ -116,6 +116,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
     private var automaticReconnectRetryAttempt: Int?
     private var automaticReconnectRetryFailedTransactionID: String?
     private var powerLifecycleGate = SystemSleepNetworkEpochGate()
+    private let lineRecoveryConditions = LineRecoveryConditionsPublisher()
     private var automaticReconnectUnderlayWaitEvidence:
         HostUnderlayCaptureEvidence?
     private var stableConnectionResetWorkItem: DispatchWorkItem?
@@ -137,6 +138,10 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
 
     private override init() {
         super.init()
+        lineRecoveryConditions.start { [weak self] conditions, completion in
+            guard let self else { return completion(false) }
+            self.sendLineRecoveryConditions(conditions, completion: completion)
+        }
     }
 
     var automaticReconnectState: AutomaticReconnectRuntimeState {
@@ -1026,12 +1031,14 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
 
     func noteSystemWake() {
         powerLifecycleGate.noteSystemDidWake()
+        lineRecoveryConditions.noteSystemDidWake()
         underlayMonitor?.noteSystemWake()
         resumeAutomaticReconnectRetryAfterWake()
     }
 
     func noteSystemSleep() {
         powerLifecycleGate.noteSystemWillSleep()
+        lineRecoveryConditions.noteSystemWillSleep()
         underlayMonitor?.noteSystemSleep()
         automaticReconnectRetryWorkItem?.cancel()
         automaticReconnectRetryWorkItem = nil
@@ -2081,6 +2088,47 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                     gate.finish(.success(response))
                 }
             } catch { gate.finish(.failure(ProviderDiagnosticsHostError.sendFailed)) }
+        }
+    }
+
+    /// 电源与 Underlay 条件不属于某笔事务，只发给当前已连接的 Provider；未连接或未确认
+    /// 视为未送达，由发布者有界重试或续约。Provider 据此决定 Line 局部恢复能否消耗预算。
+    private func sendLineRecoveryConditions(
+        _ conditions: ProviderLineRecoveryConditions,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard conditions.isValid,
+              let data = try? JSONEncoder().encode(conditions) else {
+            completion(false); return
+        }
+        if let manager, manager.connection.status != .connected {
+            completion(false); return
+        }
+        let gate = HostCompletionGate<Bool> { result in
+            completion((try? result.get()) ?? false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            gate.finish(.success(false))
+        }
+        withExistingManager(purpose: .diagnostics) { result in
+            guard case let .success(manager?) = result,
+                  manager.connection.status == .connected,
+                  let session = manager.connection as? NETunnelProviderSession else {
+                gate.finish(.success(false)); return
+            }
+            do {
+                try session.sendProviderMessage(data) { raw in
+                    guard let raw,
+                          raw.count <= ProviderLineRecoveryConditions.maxMessageBytes,
+                          let response = try? JSONDecoder().decode(
+                            ProviderLineRecoveryConditionsResponse.self, from: raw),
+                          response.source == conditions.source,
+                          response.sequence == conditions.sequence else {
+                        gate.finish(.success(false)); return
+                    }
+                    gate.finish(.success(response.delivered))
+                }
+            } catch { gate.finish(.success(false)) }
         }
     }
 

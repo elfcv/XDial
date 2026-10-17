@@ -451,6 +451,8 @@ type anyConnectRuntimeCapability struct {
 	revision             uint64
 	networkManaged       bool
 	networkEpoch         string
+	networkUnderlay      string // default route of the latest observed epoch
+	sessionUnderlay      string // default route the current session was established on
 	lastRecoveryEpoch    string
 	lastRecoveryRevision uint64
 	lastRecoveryError    error
@@ -496,6 +498,7 @@ func (c *anyConnectRuntimeCapability) deactivate(
 	}
 	c.bridge = nil
 	c.session = nil
+	c.sessionUnderlay = ""
 	c.dnsJSON = "[]"
 	c.revision++
 	return true
