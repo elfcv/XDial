@@ -173,6 +173,10 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
     private let applicationAttribution =
         ProviderApplicationAttributionLedger()
     private let traffic = ProviderTrafficLedger()
+    /// Host-reported power / Underlay gate for Line-local recovery. Applied
+    /// outside `engineQueue` so a sleep report is never queued behind a start
+    /// or a Switch preparation.
+    private let lineRecoveryConditions = LineRecoveryConditionsRelay()
     /// Only touched on `engineQueue`.
     private lazy var localSOCKSShare = LocalSOCKSShareListener(
         queueLabel: XDialBuildIdentity.queueLabelPrefix
@@ -311,6 +315,7 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
             }
             let runtime = EmbeddedSingBoxRuntime(
                 logger: self.logger,
+                lineRecoveryConditions: self.lineRecoveryConditions,
                 onFatalError: { [weak self] error in
                     self?.handleFatalError(error)
                 }
@@ -724,6 +729,18 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
+    private func handleLineRecoveryConditions(_ data: Data, completion: @escaping (Data?) -> Void) {
+        guard let receipt = lineRecoveryConditions.receive(data) else {
+            completion(nil)
+            return
+        }
+        let conditions = receipt.conditions
+        logger.notice(
+            "line-recovery-conditions asleep=\(conditions.systemAsleep, privacy: .public) underlay-usable=\(conditions.underlayUsable, privacy: .public) sequence=\(conditions.sequence, privacy: .public) code=\(receipt.response.code, privacy: .public)"
+        )
+        completion(try? JSONEncoder().encode(receipt.response))
+    }
+
     /// 本机 SOCKS5 连接按接入时刻取得当前 generation 的会话入口，与系统 flow 一样
     /// 登记在 relay registry 中：切换后旧连接有界排空，停止或回滚时一并关闭。
     private func acceptLocalSOCKSShareConnection(_ connection: NWConnection) {
@@ -763,6 +780,9 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
                 return
             case LocalSOCKSShareRequest.kind:
                 handleLocalSOCKSShare(messageData, completion: completionHandler)
+                return
+            case ProviderLineRecoveryConditions.kind:
+                handleLineRecoveryConditions(messageData, completion: completionHandler)
                 return
             default:
                 break

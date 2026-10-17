@@ -50,16 +50,36 @@ func (c *anyConnectRuntimeCapability) cancelOwner() {
 	c.mu.Unlock()
 }
 
-func (c *anyConnectRuntimeCapability) observeNetwork(epoch string, config *engine.VPNConfig) {
+// observeNetwork records the epoch and its default-route identity. A session
+// established before the first observation was established on that network.
+func (c *anyConnectRuntimeCapability) observeNetwork(epoch, underlay string, config *engine.VPNConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.networkEpoch != epoch {
 		c.networkEpoch = epoch
 		c.lastRecoveryError = nil
 	}
+	if underlay != "" {
+		c.networkUnderlay = underlay
+		if c.sessionUnderlay == "" && c.session != nil {
+			c.sessionUnderlay = underlay
+		}
+	}
 	if config != nil {
 		c.config = *config
 	}
+}
+
+// The sslcon sockets are unbound and follow the kernel's choice when they
+// connect. Once the default route moved to another interface, the session
+// still rides the interface of the previous Underlay (or a vanished one, which
+// only DPD would notice). That session no longer belongs to the observed
+// network and is re-established on it. A change limited to other members of
+// the interface set leaves the carrying route intact and keeps the session.
+func (c *anyConnectRuntimeCapability) transportUnderlayStaleLocked() bool {
+	return c.networkManaged && c.session != nil &&
+		c.sessionUnderlay != "" && c.networkUnderlay != "" &&
+		c.sessionUnderlay != c.networkUnderlay
 }
 
 func (c *anyConnectRuntimeCapability) ensureTransport(ctx context.Context, force bool, expectedRevision ...uint64) error {
@@ -88,7 +108,12 @@ func (c *anyConnectRuntimeCapability) ensureTransport(ctx context.Context, force
 			c.mu.Unlock()
 			return nil
 		}
-		if !force && c.bridge != nil && c.line != nil && c.line.available() && preparedAnyConnectSessionAlive(c.session) {
+		// A live session on a superseded default route is re-established on
+		// the observed network once, through this same owner, instead of
+		// waiting for a probe timeout or DPD. While the host reports no usable
+		// network the working session is kept: replacing it could only wait.
+		stale := c.transportUnderlayStaleLocked() && c.owner != nil && c.owner.recoveryGate.state().open
+		if !force && !stale && c.bridge != nil && c.line != nil && c.line.available() && preparedAnyConnectSessionAlive(c.session) {
 			c.mu.Unlock()
 			return nil
 		}
@@ -123,17 +148,49 @@ func (c *anyConnectRuntimeCapability) runRecovery(work *anyConnectRecovery) {
 	if c.vpn != nil {
 		c.vpn.Disconnect()
 	}
+	// The budget is spent only on a network the host reports usable. While the
+	// system sleeps (including Dark Wake) or has no usable Underlay, the Line
+	// stays unavailable and this owner waits instead of exhausting its budget
+	// and tearing down the transaction. A new epoch is a new network.
+	budget := owner.newAnyConnectRecoveryBudget(
+		func(reason string, used int) {
+			owner.notifyAnyConnectCapabilityWaiting(c, reason, used)
+		},
+		func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if c.networkEpoch == epoch {
+				return false
+			}
+			epoch = c.networkEpoch
+			return true
+		},
+	)
 	var lastErr error
-	for attempt := 1; attempt <= maxAnyConnectReconnectAttempts; attempt++ {
-		if !waitForAnyConnectReconnect(ctx, owner.anyConnectReconnectDelay(attempt)) {
-			lastErr = ctx.Err()
+	for {
+		attempt, err := budget.next(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				lastErr = ctx.Err()
+			} else if lastErr == nil {
+				lastErr = err
+			}
 			break
 		}
+		// A later epoch may carry a freshly resolved dial address for the
+		// same identity; each attempt dials with what the owner observed last.
+		c.mu.Lock()
+		attemptUnderlay := c.networkUnderlay
+		config = c.config
+		c.mu.Unlock()
 		owner.notifyAnyConnectCapability(c, "line_reconnecting", attempt)
 		info, err := c.vpn.Connect(config)
 		if err != nil {
 			lastErr = err
 			c.vpn.Disconnect()
+			if !budget.settle() {
+				continue
+			}
 			if strict && !transientLineReadinessError(err) {
 				break
 			}
@@ -161,6 +218,7 @@ func (c *anyConnectRuntimeCapability) runRecovery(work *anyConnectRecovery) {
 			lastErr = io.EOF
 			bridge.Close()
 			c.vpn.Disconnect()
+			budget.settle()
 			continue
 		}
 		bridge.Start(sess)
@@ -171,6 +229,9 @@ func (c *anyConnectRuntimeCapability) runRecovery(work *anyConnectRecovery) {
 			lastErr = context.Canceled
 			break
 		}
+		c.mu.Lock()
+		c.sessionUnderlay = attemptUnderlay
+		c.mu.Unlock()
 		owner.syncAnyConnectCapability(c)
 		owner.notifyAnyConnectCapability(c, "line_connected", attempt)
 		lastErr = nil
@@ -239,6 +300,28 @@ func (l *Libbox) notifyAnyConnectCapability(c *anyConnectRuntimeCapability, stat
 	if active {
 		l.notifyStatus(anyConnectLineStatusJSON(state, attempt, maxAnyConnectReconnectAttempts))
 	}
+}
+
+func (l *Libbox) notifyAnyConnectCapabilityWaiting(c *anyConnectRuntimeCapability, reason string, used int) {
+	l.mu.Lock()
+	active := l.running && !l.cleaning && l.activeAnyConnectCapability == c
+	l.mu.Unlock()
+	if active {
+		l.notifyStatus(anyConnectLineWaitingStatusJSON(reason, used, maxAnyConnectReconnectAttempts))
+	}
+}
+
+func (l *Libbox) newAnyConnectRecoveryBudget(
+	onWait func(reason string, used int),
+	freshEpoch func() bool,
+) *lineRecoveryBudget {
+	return newLineRecoveryBudget(
+		&l.recoveryGate,
+		maxAnyConnectReconnectAttempts,
+		l.anyConnectReconnectDelay,
+		onWait,
+		freshEpoch,
+	)
 }
 
 func (l *Libbox) monitorRecoveredCapability(c *anyConnectRuntimeCapability, sess *session.ConnSession) {

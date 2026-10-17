@@ -144,7 +144,20 @@ sslcon 是进程级单例；active Scenario 的有效依赖中至多有一条 An
 不同配置的单例不能并发准备：Switch 候选拒绝后，宿主断开旧连接并完整连接目标场景，
 期间短暂断流，不伪装成无中断切换。
 
-入口：[AnyConnect 运行能力](core/libbox/anyconnect_runtime.go)。
+局部恢复的三次预算只计宿主报告“已完整唤醒且 Underlay 可用”时的尝试。系统休眠
+（含 Dark Wake）或宿主 NWPath 不可用期间，线路保持不可用（REJECT / SERVFAIL）并等待，
+不尝试、不计次、不提升为完整恢复；跨越关闭期的尝试不计次，其失败也不按终止错误归类。
+门由宿主经 Provider IPC 报告，Provider 不自行判断；关闭态是有界租约（休眠 15 分钟、
+无 Underlay 5 分钟，按不计休眠的单调时钟），宿主在条件持续期间续约，宿主消失则租约
+到期后恢复正常计数。宿主报告重新可用或新 epoch 是新的网络条件，重新获得预算；
+可用网络上耗尽预算或凭据、配置等终止错误仍提升为完整恢复。
+
+sslcon 的 socket 不绑定接口，跟随连接时的内核默认路由。新 epoch 的默认路由与会话
+建立时不同，就绪证明经同一恢复 owner 在新网络上重建会话，不等探测超时或 DPD；仅接口
+集合其他成员变化时保留会话，门关闭时也不替换仍可用的会话。
+
+入口：[AnyConnect 运行能力](core/libbox/anyconnect_runtime.go)、
+[恢复门](core/libbox/line_recovery_gate.go)、[宿主报告](macos/Shared/LineRecoveryConditionsIPC.swift)。
 
 ## 4. DNS
 
@@ -283,7 +296,8 @@ NWPath 更新与 configd 对相应键的只读通知都触发重新采样；日�
 Line 自己处理协议恢复，不能仅凭路径不可用 / 恢复边沿重复连接。
 
 同代 Line 局部恢复保持其他 Line、Ingress、Box 与 transaction ID 不变；局部预算耗尽、
-Provider 掉线或共享组件失败才提升为完整恢复。完整恢复在 Rollback 与系统接管移除后进行，
+Provider 掉线或共享组件失败才提升为完整恢复。休眠或无可用 Underlay 期间局部恢复只等待，
+不消耗预算、不提升（见 [AnyConnect](#33-anyconnectd30)）。完整恢复在 Rollback 与系统接管移除后进行，
 预算属于恢复 epoch `(desired Scenario, Underlay 指纹, 连通性代数)`：每个 epoch 按
 2 / 5 / 10 / 20 / 30 秒最多五次，等待可用 Underlay 不计次；短暂连上不重置，同一事务
 稳定五分钟后才清零。只看结构化失败码：凭据、登录、认证、配置引用与未分类错误立即结束。

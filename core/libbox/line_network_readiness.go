@@ -56,6 +56,7 @@ type lineNetworkGeneration struct {
 	mu             sync.Mutex
 	libbox         *Libbox
 	epoch          string
+	underlay       string
 	generation     uint64
 	requirements   []lineNetworkRequirement
 	proofs         map[string]lineNetworkProof
@@ -120,7 +121,7 @@ func (g *lineNetworkGeneration) install(generation uint64, vpn *anyConnectRuntim
 	g.mu.Unlock()
 	if vpn != nil {
 		vpn.attachOwner(g.libbox, true)
-		vpn.observeNetwork(g.epoch, nil)
+		vpn.observeNetwork(g.epoch, g.underlay, nil)
 	}
 	if tailscale != nil {
 		if platform := tailscale.platformInterface(); platform != nil {
@@ -148,6 +149,9 @@ func (l *Libbox) decodeNetworkSession(sessionJSON, contextJSON string) (*transpa
 	if network.Epoch == "" || network.DefaultName == "" || network.DefaultIndex <= 0 || len(network.Interfaces) == 0 {
 		return nil, nil, g, fmt.Errorf("network context is incomplete")
 	}
+	// The default route is what an unbound protocol socket follows when it
+	// connects; it identifies the network a Line transport was established on.
+	g.underlay = fmt.Sprintf("%d:%s", network.DefaultIndex, network.DefaultName)
 	if err := stdjson.Unmarshal([]byte(sessionJSON), &envelope); err != nil {
 		return nil, nil, g, err
 	}
