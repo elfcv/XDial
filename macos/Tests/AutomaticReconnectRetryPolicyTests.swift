@@ -1,7 +1,7 @@
 import XCTest
 
 final class AutomaticReconnectRetryPolicyTests: XCTestCase {
-    func testRetriesOnlyCompletedUnderlayEgressFailure() {
+    func testUnderlayEgressFailureUsesTheFiveAttemptSchedule() {
         let policy = AutomaticReconnectRetryPolicy(
             delays: [2, 5, 10, 20, 30]
         )
@@ -58,23 +58,47 @@ final class AutomaticReconnectRetryPolicyTests: XCTestCase {
         )
     }
 
-    func testUnderlayRecoveryDoesNotRetryLineOrHandshakeFailures() {
+    /// `.underlayChange` now names a parked recovery resumed by a settled
+    /// network change. Its budget follows the same structured classification
+    /// as every other full recovery instead of the removed egress-only rule.
+    func testParkedRecoveryResumedByNetworkChangeUsesSharedClassification() {
         let policy = AutomaticReconnectRetryPolicy()
 
-        XCTAssertNil(policy.delay(
+        XCTAssertEqual(policy.delay(
             after: failedReport(
                 code: "tailscale-peer-handshake-failed"
             ),
             attemptsUsed: 0,
             trigger: .underlayChange
-        ))
-        XCTAssertNil(policy.delay(
+        ), 2)
+        XCTAssertEqual(policy.delay(
             after: failedReport(
-                code: "tailscale-exit-node-unavailable"
+                code: "line-address-family-unavailable"
             ),
             attemptsUsed: 0,
             trigger: .underlayChange
-        ))
+        ), 2)
+        for code in [
+            "tailscale-exit-node-unavailable",
+            "tailscale-login-required",
+            "prepare-failed",
+        ] {
+            XCTAssertNil(policy.delay(
+                after: failedReport(code: code),
+                attemptsUsed: 0,
+                trigger: .underlayChange
+            ), code)
+        }
+    }
+
+    func testLegacyUnderlayChangeTriggerStillDecodes() throws {
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                AutomaticReconnectTrigger.self,
+                from: Data(#""underlay-change""#.utf8)
+            ),
+            .underlayChange
+        )
     }
 
     func testLaunchAutoConnectCanRetryACompletedLineFailure() {

@@ -22,6 +22,32 @@ enum ReconnectIncidentFailureCode {
     }
 }
 
+/// Event and outcome names written to the incident journal. Types are plain
+/// strings, so readers that predate an event type still decode the record.
+enum ReconnectIncidentEventType {
+    static let parked = "parked"
+    static let budgetGranted = "budget-granted"
+    static let grantDeferred = "grant-deferred"
+    static let wakeAttemptStarted = "wake-attempt-started"
+    static let tailAttemptStarted = "tail-attempt-started"
+    static let attemptFailed = "attempt-failed"
+
+    static func singleAttemptStarted(
+        _ kind: AutomaticRecoveryAttemptKind
+    ) -> String {
+        switch kind {
+        case .budget: "retry-started"
+        case .wake: wakeAttemptStarted
+        case .tail: tailAttemptStarted
+        }
+    }
+}
+
+enum ReconnectIncidentOutcome {
+    static let recovering = "recovering"
+    static let parked = "parked"
+}
+
 struct ReconnectIncidentEvent: Codable, Equatable, Identifiable {
     let sequence: Int
     let timestamp: Date
@@ -128,6 +154,11 @@ struct ReconnectIncident: Codable, Equatable, Identifiable {
         events = try values.decode([ReconnectIncidentEvent].self, forKey: .events)
     }
 
+    /// A parked recovery can stay open across many wakes. Keep the opening
+    /// disconnect event and the most recent history rather than growing
+    /// without bound.
+    static let eventLimit = 200
+
     mutating func append(
         type: String,
         at timestamp: Date = Date(),
@@ -145,6 +176,9 @@ struct ReconnectIncident: Codable, Equatable, Identifiable {
             code: code,
             message: message
         ))
+        if events.count > Self.eventLimit {
+            events.removeSubrange(1 ..< (events.count - Self.eventLimit + 1))
+        }
     }
 }
 
@@ -238,6 +272,115 @@ struct ReconnectIncidentHistory: Codable, Equatable {
             code: ReconnectIncidentFailureCode.recordable(failureCode),
             message: "Retry scheduled after \(delay)s"
         )
+    }
+
+    /// The budget ended with a network-related failure. The incident stays
+    /// open: later grants, wake / tail attempts and the final outcome are
+    /// appended to it, and no further "exhausted" record is written.
+    mutating func recordParked(
+        incidentID: String,
+        at timestamp: Date = Date(),
+        attemptsUsed: Int,
+        transactionID: String,
+        failureCode: String?
+    ) {
+        setOutcome(
+            incidentID: incidentID,
+            outcome: ReconnectIncidentOutcome.parked
+        )
+        append(
+            incidentID: incidentID,
+            type: ReconnectIncidentEventType.parked,
+            at: timestamp,
+            attempt: attemptsUsed,
+            transactionID: transactionID,
+            code: ReconnectIncidentFailureCode.recordable(failureCode),
+            message: "Automatic reconnect paused until the network changes"
+        )
+    }
+
+    mutating func recordBudgetGranted(
+        incidentID: String,
+        at timestamp: Date = Date(),
+        reason: AutomaticRecoveryGrantReason
+    ) {
+        setOutcome(
+            incidentID: incidentID,
+            outcome: ReconnectIncidentOutcome.recovering
+        )
+        append(
+            incidentID: incidentID,
+            type: ReconnectIncidentEventType.budgetGranted,
+            at: timestamp,
+            code: reason.rawValue,
+            message: "New automatic reconnect budget granted"
+        )
+    }
+
+    mutating func recordGrantDeferred(
+        incidentID: String,
+        at timestamp: Date = Date(),
+        reason: AutomaticRecoveryGrantReason,
+        until notBefore: Date
+    ) {
+        append(
+            incidentID: incidentID,
+            type: ReconnectIncidentEventType.grantDeferred,
+            at: timestamp,
+            code: reason.rawValue,
+            message: "Deferred until "
+                + ISO8601DateFormatter().string(from: notBefore)
+        )
+    }
+
+    /// A wake or slow-tail attempt runs inside the parked epoch; the
+    /// incident keeps its parked outcome while it runs.
+    mutating func recordSingleAttemptStarted(
+        incidentID: String,
+        at timestamp: Date = Date(),
+        kind: AutomaticRecoveryAttemptKind,
+        transactionID: String
+    ) {
+        let attempt: Int
+        switch kind {
+        case let .budget(number), let .tail(number):
+            attempt = number
+        case .wake:
+            attempt = 0
+        }
+        append(
+            incidentID: incidentID,
+            type: ReconnectIncidentEventType.singleAttemptStarted(kind),
+            at: timestamp,
+            attempt: attempt,
+            transactionID: transactionID
+        )
+    }
+
+    mutating func recordAttemptFailed(
+        incidentID: String,
+        at timestamp: Date = Date(),
+        attempt: Int,
+        transactionID: String,
+        failureCode: String?
+    ) {
+        append(
+            incidentID: incidentID,
+            type: ReconnectIncidentEventType.attemptFailed,
+            at: timestamp,
+            attempt: attempt,
+            transactionID: transactionID,
+            code: ReconnectIncidentFailureCode.recordable(failureCode)
+        )
+    }
+
+    private mutating func setOutcome(incidentID: String, outcome: String) {
+        guard let index = incidents.firstIndex(where: {
+            $0.id == incidentID
+        }) else {
+            return
+        }
+        incidents[index].outcome = outcome
     }
 
     mutating func recordSystemDisconnectReason(
@@ -357,6 +500,78 @@ enum ReconnectIncidentJournal {
                 failedTransactionID: failedTransactionID,
                 failureCode: failureCode,
                 delay: delay
+            )
+        }
+    }
+
+    static func recordParked(
+        incidentID: String,
+        attemptsUsed: Int,
+        transactionID: String,
+        failureCode: String?
+    ) {
+        _ = mutate { history in
+            history.recordParked(
+                incidentID: incidentID,
+                attemptsUsed: attemptsUsed,
+                transactionID: transactionID,
+                failureCode: failureCode
+            )
+        }
+    }
+
+    static func recordBudgetGranted(
+        incidentID: String,
+        reason: AutomaticRecoveryGrantReason
+    ) {
+        _ = mutate { history in
+            history.recordBudgetGranted(
+                incidentID: incidentID,
+                reason: reason
+            )
+        }
+    }
+
+    static func recordGrantDeferred(
+        incidentID: String,
+        reason: AutomaticRecoveryGrantReason,
+        until notBefore: Date
+    ) {
+        _ = mutate { history in
+            history.recordGrantDeferred(
+                incidentID: incidentID,
+                reason: reason,
+                until: notBefore
+            )
+        }
+    }
+
+    static func recordSingleAttemptStarted(
+        incidentID: String,
+        kind: AutomaticRecoveryAttemptKind,
+        transactionID: String
+    ) {
+        _ = mutate { history in
+            history.recordSingleAttemptStarted(
+                incidentID: incidentID,
+                kind: kind,
+                transactionID: transactionID
+            )
+        }
+    }
+
+    static func recordAttemptFailed(
+        incidentID: String,
+        attempt: Int,
+        transactionID: String,
+        failureCode: String?
+    ) {
+        _ = mutate { history in
+            history.recordAttemptFailed(
+                incidentID: incidentID,
+                attempt: attempt,
+                transactionID: transactionID,
+                failureCode: failureCode
             )
         }
     }
