@@ -7,7 +7,6 @@ private extension GeneralSettingsSection {
         case .startup: return state.tr("启动与连接", "Startup & Connection")
         case .appearance: return state.tr("外观与语言", "Appearance & Language")
         case .system: return state.tr("系统与权限", "System & Permissions")
-        case .feedback: return state.tr("反馈与诊断", "Feedback & Diagnosis")
         case .about: return state.tr("关于与更新", "About & Updates")
         }
     }
@@ -17,7 +16,6 @@ private extension GeneralSettingsSection {
         case .startup: return "power"
         case .appearance: return "circle.lefthalf.filled"
         case .system: return "checkmark.shield"
-        case .feedback: return "bubble.left.and.text.bubble.right"
         case .about: return "info.circle"
         }
     }
@@ -68,7 +66,6 @@ struct GeneralSettingsView: View {
                     case .startup: startup
                     case .appearance: appearance
                     case .system: system
-                    case .feedback: FeedbackView(feedback: state.feedback)
                     case .about: about
                     }
                 }
