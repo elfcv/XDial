@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kafeifei/xdial/core/engine"
+	"github.com/sagernet/sing-box/adapter"
 	"sslcon/session"
 )
 
@@ -405,31 +406,45 @@ func TestLineRecoveryStopCancelsGatedWait(t *testing.T) {
 	}
 }
 
-const gateMovedNetworkInterfaces = `[{"name":"test0","index":1,"type":"wifi"},{"name":"test1","index":2,"type":"ethernet"}]`
+const (
+	gateBothNetworkInterfaces = `[{"name":"test0","index":1,"type":"wifi"},{"name":"test1","index":2,"type":"ethernet"}]`
+	gateDockOnlyInterfaces    = `[{"name":"test1","index":2,"type":"ethernet"}]`
+)
 
 func gateNetworkContext(epoch, defaultName string, defaultIndex int, interfaces string) string {
 	data, _ := json.Marshal(lineNetworkContext{Epoch: epoch, Interfaces: json.RawMessage(interfaces), DefaultName: defaultName, DefaultIndex: defaultIndex, SystemDNS: []string{"192.0.2.53"}})
 	return string(data)
 }
 
-func TestLineRecoveryChangedDefaultRouteReestablishesSessionOnceThroughOwner(t *testing.T) {
-	entered, hold := make(chan struct{}), make(chan struct{})
-	vpn := &gatedRecoveryVPNClient{hold: map[int]chan struct{}{2: hold}, entered: map[int]chan struct{}{2: entered}}
-	l, _ := startGatedAnyConnect(t, vpn)
+func TestLineNetworkUnderlayUnknownInterfaceSetNeverProvesTransportDead(t *testing.T) {
+	for _, interfaces := range []string{`[]`, `{}`, `[{"name":"","index":1}]`, `[{"name":"x","index":0}]`} {
+		network := lineNetworkContext{Interfaces: json.RawMessage(interfaces), DefaultName: "test1", DefaultIndex: 2}
+		underlay := decodeLineNetworkUnderlay(&network)
+		c := &anyConnectRuntimeCapability{networkManaged: true, session: newStartTestSession(), sessionInterface: "1:test0"}
+		c.observeNetwork("A", underlay, nil)
+		if c.transportCarrierGoneLocked() {
+			t.Fatalf("unreadable interface set %s proved the session dead", interfaces)
+		}
+	}
+}
+
+// Wi-Fi carries the AnyConnect session; an Ethernet dock that cannot reach the
+// VPN becomes the default route. The committed generation keeps carrying
+// traffic on Wi-Fi: no proactive reconnect, no teardown.
+func TestLineRecoveryMovedDefaultRouteKeepsCommittedSession(t *testing.T) {
+	vpn := &gatedRecoveryVPNClient{results: map[int]error{1: nil}, fallback: syscall.ECONNREFUSED}
+	l, cb := startGatedAnyConnect(t, vpn)
 	capability := l.activeAnyConnectCapability
 	original := capability.snapshot().session
+	line := capability.snapshot().line
 	envelope := networkReadinessTestEnvelope(t, switchAnyConnectConfig, map[string]string{"company": "vpn"}, true)
 
-	// Same default route, another member of the interface set: the session's
-	// carrying route is intact and is kept.
-	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("B", "test0", 1, gateMovedNetworkInterfaces), "192.0.2.1"); err != nil {
+	// Another member joined the interface set; the default route is unchanged.
+	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("B", "test0", 1, gateBothNetworkInterfaces), "192.0.2.1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := l.EnsurePreparedSwitchLinesReady(1000); err != nil {
 		t.Fatal(err)
-	}
-	if vpn.count() != 1 || capability.snapshot().session != original {
-		t.Fatalf("interface-set-only change replaced the session: connects=%d", vpn.count())
 	}
 	if err := l.CommitPreparedSwitch(); err != nil {
 		t.Fatal(err)
@@ -438,14 +453,49 @@ func TestLineRecoveryChangedDefaultRouteReestablishesSessionOnceThroughOwner(t *
 		t.Fatal(err)
 	}
 
-	// The default route moved: re-establish proactively, before any DPD.
-	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("C", "test1", 2, gateMovedNetworkInterfaces), "192.0.2.1"); err != nil {
+	// The dock becomes the default route while Wi-Fi stays in the Underlay.
+	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("C", "test1", 2, gateBothNetworkInterfaces), "192.0.2.1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.EnsurePreparedSwitchLinesReady(1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := capability.ensureTransport(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	stays(t, "committed session untouched", 50*time.Millisecond, func() bool {
+		return vpn.count() == 1 && capability.snapshot().session == original &&
+			line.available() && l.IsRunning() && cb.errorCount() == 0
+	})
+	if err := l.CommitPreparedSwitch(); err != nil {
+		t.Fatal(err)
+	}
+	if vpn.count() != 1 || capability.snapshot().session != original {
+		t.Fatal("moving the default route replaced the working session")
+	}
+}
+
+// The interface the session was established on left the Underlay: the session
+// is provably dead and is re-established once, by the single owner.
+func TestLineRecoveryVanishedCarrierReestablishesSessionOnceThroughOwner(t *testing.T) {
+	entered, hold := make(chan struct{}), make(chan struct{})
+	vpn := &gatedRecoveryVPNClient{hold: map[int]chan struct{}{2: hold}, entered: map[int]chan struct{}{2: entered}}
+	l, _ := startGatedAnyConnect(t, vpn)
+	capability := l.activeAnyConnectCapability
+	original := capability.snapshot().session
+	envelope := networkReadinessTestEnvelope(t, switchAnyConnectConfig, map[string]string{"company": "vpn"}, true)
+
+	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("B", "test1", 2, gateDockOnlyInterfaces), "192.0.2.1"); err != nil {
 		t.Fatal(err)
 	}
 	probeDone := make(chan error, 1)
 	go func() { _, err := l.EnsurePreparedSwitchLinesReady(2000); probeDone <- err }()
-	<-entered
-	// A concurrent waiter (e.g. the committed generation noticing the closed
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("vanished carrier did not re-establish the session")
+	}
+	// A concurrent waiter (the committed generation noticing the closed
 	// session) joins the same owner instead of starting a second handshake.
 	joined := make(chan error, 1)
 	go func() { joined <- capability.ensureTransport(context.Background(), false) }()
@@ -457,11 +507,19 @@ func TestLineRecoveryChangedDefaultRouteReestablishesSessionOnceThroughOwner(t *
 	if err := <-joined; err != nil {
 		t.Fatal(err)
 	}
-	if vpn.count() != 2 {
-		t.Fatalf("changed default route connects=%d want exactly one reconnect", vpn.count())
+	if vpn.count() != 2 || capability.snapshot().session == original || !capability.available() {
+		t.Fatalf("vanished carrier connects=%d want exactly one reconnect", vpn.count())
 	}
-	if capability.snapshot().session == original || !capability.available() {
-		t.Fatal("session was not re-established on the new default route")
+	if err := l.CommitPreparedSwitch(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.RetireCommittedSwitch(); err != nil {
+		t.Fatal(err)
+	}
+	// The new session rides the dock. Wi-Fi returning as the default route
+	// while the dock stays present is again no reason to replace it.
+	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("C", "test0", 1, gateBothNetworkInterfaces), "192.0.2.1"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := l.EnsurePreparedSwitchLinesReady(1000); err != nil {
 		t.Fatal(err)
@@ -469,18 +527,48 @@ func TestLineRecoveryChangedDefaultRouteReestablishesSessionOnceThroughOwner(t *
 	if vpn.count() != 2 {
 		t.Fatalf("re-established session was replaced again: connects=%d", vpn.count())
 	}
-	if err := l.CommitPreparedSwitch(); err != nil {
+}
+
+// Same interface name and index on a new network (e.g. Wi-Fi joined another
+// SSID and changed address): the snapshot cannot prove the session dead, so
+// only the readiness probe through the existing session may force a reconnect,
+// and only on a structured transient failure.
+func TestLineRecoveryReaddressedInterfaceReliesOnReadinessProbe(t *testing.T) {
+	vpn := &gatedRecoveryVPNClient{}
+	l, _ := startGatedAnyConnect(t, vpn)
+	capability := l.activeAnyConnectCapability
+	original := capability.snapshot().session
+	l.probeOutboundTLSCapabilitiesFunc = func(ctx context.Context, outbound adapter.Outbound) outboundTLSCapabilities {
+		if capability.snapshot().session == original {
+			return outboundTLSCapabilities{IPv4: outboundTLSFamilyCapability{FailureClass: lineReadinessTransient}}
+		}
+		return successfulNetworkProof(ctx, outbound)
+	}
+	envelope := networkReadinessTestEnvelope(t, switchAnyConnectConfig, map[string]string{"company": "vpn"}, true)
+	if err := l.PrepareSwitchForNetwork(envelope, networkReadinessTestContext("B"), "192.0.2.1"); err != nil {
 		t.Fatal(err)
+	}
+	capability.mu.Lock()
+	carrierGone := capability.transportCarrierGoneLocked()
+	capability.mu.Unlock()
+	if carrierGone {
+		t.Fatal("an unchanged interface identity was treated as a vanished carrier")
+	}
+	if _, err := l.EnsurePreparedSwitchLinesReady(2000); err != nil {
+		t.Fatal(err)
+	}
+	if vpn.count() != 2 || capability.snapshot().session == original {
+		t.Fatalf("transient probe failure connects=%d want one forced reconnect", vpn.count())
 	}
 }
 
-func TestLineRecoveryChangedDefaultRouteKeepsSessionWhileGateClosed(t *testing.T) {
+func TestLineRecoveryVanishedCarrierKeepsSessionWhileGateClosed(t *testing.T) {
 	vpn := &gatedRecoveryVPNClient{}
 	l, _ := startGatedAnyConnect(t, vpn)
 	capability := l.activeAnyConnectCapability
 	original := capability.snapshot().session
 	envelope := networkReadinessTestEnvelope(t, switchAnyConnectConfig, map[string]string{"company": "vpn"}, true)
-	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("B", "test1", 2, gateMovedNetworkInterfaces), "192.0.2.1"); err != nil {
+	if err := l.PrepareSwitchForNetwork(envelope, gateNetworkContext("B", "test1", 2, gateDockOnlyInterfaces), "192.0.2.1"); err != nil {
 		t.Fatal(err)
 	}
 	setGate(t, l, false, false, 0)
@@ -488,6 +576,6 @@ func TestLineRecoveryChangedDefaultRouteKeepsSessionWhileGateClosed(t *testing.T
 		t.Fatal(err)
 	}
 	if vpn.count() != 1 || capability.snapshot().session != original {
-		t.Fatal("a working session was torn down while no usable network was reported")
+		t.Fatal("a session was replaced while no usable network was reported")
 	}
 }

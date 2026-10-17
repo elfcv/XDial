@@ -163,7 +163,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             object: nil
         )
         lineRecoveryConditions.start { [weak self] conditions, completion in
-            guard let self else { return completion(false) }
+            guard let self else { return completion(.providerNotConnected) }
             self.sendLineRecoveryConditions(conditions, completion: completion)
         }
     }
@@ -2178,30 +2178,30 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
     }
 
-    /// 电源与 Underlay 条件不属于某笔事务，只发给当前已连接的 Provider；未连接或未确认
-    /// 视为未送达，由发布者有界重试或续约。Provider 据此决定 Line 局部恢复能否消耗预算。
+    /// 电源与 Underlay 条件不属于某笔事务，只发给当前已连接的 Provider；结果区分未连接
+    /// 与未确认，由发布者重发或续约。Provider 据此决定 Line 局部恢复能否消耗预算。
     private func sendLineRecoveryConditions(
         _ conditions: ProviderLineRecoveryConditions,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (LineRecoveryConditionsDeliveryResult) -> Void
     ) {
         guard conditions.isValid,
               let data = try? JSONEncoder().encode(conditions) else {
-            completion(false); return
+            completion(.unacknowledged); return
         }
         if let manager, manager.connection.status != .connected {
-            completion(false); return
+            completion(.providerNotConnected); return
         }
-        let gate = HostCompletionGate<Bool> { result in
-            completion((try? result.get()) ?? false)
+        let gate = HostCompletionGate<LineRecoveryConditionsDeliveryResult> { result in
+            completion((try? result.get()) ?? .unacknowledged)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-            gate.finish(.success(false))
+            gate.finish(.success(.unacknowledged))
         }
         withExistingManager(purpose: .diagnostics) { result in
             guard case let .success(manager?) = result,
                   manager.connection.status == .connected,
                   let session = manager.connection as? NETunnelProviderSession else {
-                gate.finish(.success(false)); return
+                gate.finish(.success(.providerNotConnected)); return
             }
             do {
                 try session.sendProviderMessage(data) { raw in
@@ -2210,12 +2210,13 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                           let response = try? JSONDecoder().decode(
                             ProviderLineRecoveryConditionsResponse.self, from: raw),
                           response.source == conditions.source,
-                          response.sequence == conditions.sequence else {
-                        gate.finish(.success(false)); return
+                          response.sequence == conditions.sequence,
+                          response.delivered else {
+                        gate.finish(.success(.unacknowledged)); return
                     }
-                    gate.finish(.success(response.delivered))
+                    gate.finish(.success(.acknowledged))
                 }
-            } catch { gate.finish(.success(false)) }
+            } catch { gate.finish(.success(.unacknowledged)) }
         }
     }
 
@@ -2398,6 +2399,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
     }
 
     private func publishStatus(for manager: NETransparentProxyManager) {
+        lineRecoveryConditions.noteProviderConnected(
+            manager.connection.status == .connected
+        )
         publishLatestReport()
         switch manager.connection.status {
         case .invalid, .disconnected:

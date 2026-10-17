@@ -170,37 +170,118 @@ final class LineRecoveryConditionsIPCTests: XCTestCase {
 
     func testPublisherStateReportsOnlyProviderVisibleChanges() {
         var state = LineRecoveryConditionsPublisherState(source: "host")
-        // The first observation always reports, clearing a gate a previous
-        // host instance may have left closed.
-        XCTAssertTrue(state.observeUnderlay(usable: true))
-        XCTAssertFalse(state.observeUnderlay(usable: true))
+        // Nothing is sent before a Provider is connected; conditions are kept.
+        XCTAssertEqual(state.observeUnderlay(usable: true), .unchanged)
+        XCTAssertEqual(state.noteSystemWillSleep(), .unchanged)
+        XCTAssertEqual(state.noteSystemDidWake(underlayUsable: true), .unchanged)
+
+        // A connected Provider immediately gets the current conditions under
+        // this host's source, clearing a gate a previous host left closed.
+        XCTAssertEqual(state.noteProviderConnected(true), .sendNow)
+        XCTAssertEqual(state.noteProviderConnected(true), .unchanged)
         var message = state.makeMessage()
         XCTAssertEqual(message.sequence, 1)
         XCTAssertFalse(message.gated)
 
-        XCTAssertTrue(state.noteSystemWillSleep())
-        XCTAssertFalse(state.noteSystemWillSleep())
+        XCTAssertEqual(state.noteSystemWillSleep(), .sendNow)
+        XCTAssertEqual(state.noteSystemWillSleep(), .unchanged)
         message = state.makeMessage()
         XCTAssertTrue(message.systemAsleep)
-        XCTAssertEqual(message.sequence, 2)
 
         // Path changes during sleep (including Dark Wake) do not reopen the gate.
-        XCTAssertFalse(state.observeUnderlay(usable: false))
-        XCTAssertFalse(state.observeUnderlay(usable: true))
+        XCTAssertEqual(state.observeUnderlay(usable: false), .unchanged)
+        XCTAssertEqual(state.observeUnderlay(usable: true), .unchanged)
         XCTAssertTrue(state.gated)
 
         // Only the full wake reopens it, with the freshly sampled path.
-        XCTAssertTrue(state.noteSystemDidWake(underlayUsable: false))
+        XCTAssertEqual(state.noteSystemDidWake(underlayUsable: false), .sendNow)
         message = state.makeMessage()
         XCTAssertFalse(message.systemAsleep)
         XCTAssertFalse(message.underlayUsable)
-        XCTAssertTrue(message.gated)
 
-        XCTAssertTrue(state.observeUnderlay(usable: true))
+        XCTAssertEqual(state.observeUnderlay(usable: true), .sendNow)
         message = state.makeMessage()
         XCTAssertFalse(message.gated)
-        XCTAssertEqual(message.sequence, 4)
         XCTAssertTrue(message.isValid)
+    }
+
+    func testPublisherRecoversALostWakeReport() {
+        var state = LineRecoveryConditionsPublisherState(source: "host")
+        XCTAssertEqual(state.noteProviderConnected(true), .sendNow)
+        let initial = state.makeMessage()
+        XCTAssertEqual(
+            state.finishDelivery(sequence: initial.sequence, result: .acknowledged),
+            .wait(LineRecoveryConditionsPublisherState.renewInterval)
+        )
+        XCTAssertEqual(state.noteSystemWillSleep(), .sendNow)
+        let sleep = state.makeMessage()
+        XCTAssertEqual(
+            state.finishDelivery(sequence: sleep.sequence, result: .acknowledged),
+            .wait(LineRecoveryConditionsPublisherState.renewInterval)
+        )
+
+        // The did-wake "open" report is lost. It is re-sent until acknowledged
+        // instead of leaving the Provider on the 15-minute sleep lease.
+        XCTAssertEqual(state.noteSystemDidWake(underlayUsable: true), .sendNow)
+        var open = state.makeMessage()
+        XCTAssertFalse(open.gated)
+        for _ in 0..<LineRecoveryConditionsPublisherState.fastRetries {
+            XCTAssertEqual(
+                state.finishDelivery(sequence: open.sequence, result: .unacknowledged),
+                .wait(LineRecoveryConditionsPublisherState.retryDelay)
+            )
+            XCTAssertEqual(state.timerFired(), .sendNow)
+            open = state.makeMessage()
+            XCTAssertFalse(open.gated, "a retry re-asserts the current, open conditions")
+        }
+        // Still no answer: keep re-sending at the renewal cadence, so a lost
+        // report is stale for at most about one interval.
+        XCTAssertEqual(
+            state.finishDelivery(sequence: open.sequence, result: .unacknowledged),
+            .wait(LineRecoveryConditionsPublisherState.renewInterval)
+        )
+        XCTAssertEqual(state.timerFired(), .sendNow)
+        open = state.makeMessage()
+        XCTAssertEqual(
+            state.finishDelivery(sequence: open.sequence, result: .acknowledged),
+            .wait(LineRecoveryConditionsPublisherState.renewInterval)
+        )
+        XCTAssertEqual(state.consecutiveFailures, 0)
+
+        // An acknowledged open gate is still re-asserted periodically.
+        XCTAssertEqual(state.timerFired(), .sendNow)
+        XCTAssertFalse(state.makeMessage().gated)
+    }
+
+    func testPublisherIgnoresSupersededResultsAndStopsWhenDisconnected() {
+        var state = LineRecoveryConditionsPublisherState(source: "host")
+        XCTAssertEqual(state.noteProviderConnected(true), .sendNow)
+        let stale = state.makeMessage()
+        XCTAssertEqual(state.noteSystemWillSleep(), .sendNow)
+        let current = state.makeMessage()
+        XCTAssertEqual(
+            state.finishDelivery(sequence: stale.sequence, result: .unacknowledged),
+            .unchanged,
+            "an older report's result cannot schedule a retry of the newer one"
+        )
+        XCTAssertEqual(
+            state.finishDelivery(sequence: current.sequence, result: .providerNotConnected),
+            .wait(LineRecoveryConditionsPublisherState.renewInterval)
+        )
+
+        XCTAssertEqual(state.noteProviderConnected(false), .idle)
+        XCTAssertEqual(state.timerFired(), .idle)
+        XCTAssertEqual(
+            state.finishDelivery(sequence: current.sequence, result: .acknowledged),
+            .unchanged
+        )
+        XCTAssertEqual(state.noteSystemDidWake(underlayUsable: true), .unchanged)
+
+        // Reconnecting delivers the conditions accumulated while disconnected.
+        XCTAssertEqual(state.noteProviderConnected(true), .sendNow)
+        let resumed = state.makeMessage()
+        XCTAssertFalse(resumed.gated)
+        XCTAssertGreaterThan(resumed.sequence, current.sequence)
     }
 
     func testDecodesAnyConnectLineWaitingStatus() throws {

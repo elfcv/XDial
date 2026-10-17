@@ -50,19 +50,19 @@ func (c *anyConnectRuntimeCapability) cancelOwner() {
 	c.mu.Unlock()
 }
 
-// observeNetwork records the epoch and its default-route identity. A session
+// observeNetwork records the epoch and its Underlay identity. A session
 // established before the first observation was established on that network.
-func (c *anyConnectRuntimeCapability) observeNetwork(epoch, underlay string, config *engine.VPNConfig) {
+func (c *anyConnectRuntimeCapability) observeNetwork(epoch string, underlay lineNetworkUnderlay, config *engine.VPNConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.networkEpoch != epoch {
 		c.networkEpoch = epoch
 		c.lastRecoveryError = nil
 	}
-	if underlay != "" {
+	if underlay.defaultInterface != "" {
 		c.networkUnderlay = underlay
-		if c.sessionUnderlay == "" && c.session != nil {
-			c.sessionUnderlay = underlay
+		if c.sessionInterface == "" && c.session != nil {
+			c.sessionInterface = underlay.defaultInterface
 		}
 	}
 	if config != nil {
@@ -70,16 +70,21 @@ func (c *anyConnectRuntimeCapability) observeNetwork(epoch, underlay string, con
 	}
 }
 
-// The sslcon sockets are unbound and follow the kernel's choice when they
-// connect. Once the default route moved to another interface, the session
-// still rides the interface of the previous Underlay (or a vanished one, which
-// only DPD would notice). That session no longer belongs to the observed
-// network and is re-established on it. A change limited to other members of
-// the interface set leaves the carrying route intact and keeps the session.
-func (c *anyConnectRuntimeCapability) transportUnderlayStaleLocked() bool {
+// The sslcon sockets are unbound and stay on the interface the kernel chose
+// when they connected (the default route at that time). Only when that
+// interface is absent from the observed Underlay is the session provably dead
+// and re-established at once, instead of after a probe timeout or DPD.
+//
+// A moved default route alone proves nothing: the old interface may still
+// carry the session (Wi-Fi stays up after an Ethernet dock is plugged in), and
+// the committed generation keeps carrying traffic while a candidate prepares.
+// That session is left to the readiness probe, where only a structured
+// transient failure forces a reconnect. So is an interface that kept its name
+// and index but changed address: the snapshot cannot tell, the probe can.
+func (c *anyConnectRuntimeCapability) transportCarrierGoneLocked() bool {
 	return c.networkManaged && c.session != nil &&
-		c.sessionUnderlay != "" && c.networkUnderlay != "" &&
-		c.sessionUnderlay != c.networkUnderlay
+		c.sessionInterface != "" && c.networkUnderlay.interfaces != nil &&
+		!c.networkUnderlay.interfaces[c.sessionInterface]
 }
 
 func (c *anyConnectRuntimeCapability) ensureTransport(ctx context.Context, force bool, expectedRevision ...uint64) error {
@@ -108,12 +113,11 @@ func (c *anyConnectRuntimeCapability) ensureTransport(ctx context.Context, force
 			c.mu.Unlock()
 			return nil
 		}
-		// A live session on a superseded default route is re-established on
-		// the observed network once, through this same owner, instead of
-		// waiting for a probe timeout or DPD. While the host reports no usable
-		// network the working session is kept: replacing it could only wait.
-		stale := c.transportUnderlayStaleLocked() && c.owner != nil && c.owner.recoveryGate.state().open
-		if !force && !stale && c.bridge != nil && c.line != nil && c.line.available() && preparedAnyConnectSessionAlive(c.session) {
+		// A session whose interface left the Underlay is re-established once,
+		// through this same owner. While the host reports no usable network it
+		// is left to DPD: replacing it could only wait.
+		carrierGone := c.transportCarrierGoneLocked() && c.owner != nil && c.owner.recoveryGate.state().open
+		if !force && !carrierGone && c.bridge != nil && c.line != nil && c.line.available() && preparedAnyConnectSessionAlive(c.session) {
 			c.mu.Unlock()
 			return nil
 		}
@@ -180,7 +184,7 @@ func (c *anyConnectRuntimeCapability) runRecovery(work *anyConnectRecovery) {
 		// A later epoch may carry a freshly resolved dial address for the
 		// same identity; each attempt dials with what the owner observed last.
 		c.mu.Lock()
-		attemptUnderlay := c.networkUnderlay
+		attemptInterface := c.networkUnderlay.defaultInterface
 		config = c.config
 		c.mu.Unlock()
 		owner.notifyAnyConnectCapability(c, "line_reconnecting", attempt)
@@ -230,7 +234,7 @@ func (c *anyConnectRuntimeCapability) runRecovery(work *anyConnectRecovery) {
 			break
 		}
 		c.mu.Lock()
-		c.sessionUnderlay = attemptUnderlay
+		c.sessionInterface = attemptInterface
 		c.mu.Unlock()
 		owner.syncAnyConnectCapability(c)
 		owner.notifyAnyConnectCapability(c, "line_connected", attempt)

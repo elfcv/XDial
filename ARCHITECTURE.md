@@ -152,9 +152,11 @@ sslcon 是进程级单例；active Scenario 的有效依赖中至多有一条 An
 到期后恢复正常计数。宿主报告重新可用或新 epoch 是新的网络条件，重新获得预算；
 可用网络上耗尽预算或凭据、配置等终止错误仍提升为完整恢复。
 
-sslcon 的 socket 不绑定接口，跟随连接时的内核默认路由。新 epoch 的默认路由与会话
-建立时不同，就绪证明经同一恢复 owner 在新网络上重建会话，不等探测超时或 DPD；仅接口
-集合其他成员变化时保留会话，门关闭时也不替换仍可用的会话。
+sslcon 的 socket 不绑定接口，停留在连接时内核默认路由所在的接口上。只有该接口已不在
+新 epoch 的接口集合中，会话才必然失效，就绪证明经同一恢复 owner 立即重建，不等探测
+超时或 DPD。该接口仍在时（默认路由移到新接口，或同名同序号接口换了地址），候选准备
+期间旧会话继续承载已提交事务，不主动重连；仍只由经现有会话的就绪探测在结构化瞬态失败
+时强制重连。门关闭时也不替换会话。
 
 入口：[AnyConnect 运行能力](core/libbox/anyconnect_runtime.go)、
 [恢复门](core/libbox/line_recovery_gate.go)、[宿主报告](macos/Shared/LineRecoveryConditionsIPC.swift)。

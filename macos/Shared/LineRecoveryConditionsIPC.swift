@@ -189,19 +189,41 @@ final class LineRecoveryConditionsRelay: @unchecked Sendable {
     }
 }
 
-/// 宿主侧的报告状态。只用 macOS 已经裁决的事实：完整唤醒 / 即将休眠，以及宿主
-/// NWPath 是否 satisfied；不识别接口或网络产品。只有 Provider 可见的条件变化才需要
-/// 立即发送，关闭态由发布者按刷新间隔续约。
+/// 一次发送的结果。
+enum LineRecoveryConditionsDeliveryResult: Equatable {
+    case acknowledged
+    /// Provider 已连接，但没有确认（消息丢失、超时或无法解码的应答）。
+    case unacknowledged
+    case providerNotConnected
+}
+
+/// 发布者下一步要做什么。发布者只有一个计时器：`wait` 重新布置它，`idle` 取消它。
+enum LineRecoveryConditionsDeliveryStep: Equatable {
+    case sendNow
+    case wait(TimeInterval)
+    case idle
+    case unchanged
+}
+
+/// 宿主侧的报告状态与送达策略。只用 macOS 已经裁决的事实：完整唤醒 / 即将休眠、
+/// 宿主 NWPath 是否 satisfied、Provider 是否已连接；不识别接口或网络产品。
+///
+/// Provider 已连接期间，当前条件（无论门开或关）未确认就一直重发，确认后每
+/// `renewInterval` 重申一次：丢失的报告最多陈旧约一个周期，关闭态租约也随之续约。
+/// Provider 断开即停止，重新连接时立即发送当前条件。
 struct LineRecoveryConditionsPublisherState: Equatable {
-    static let refreshInterval: TimeInterval = 60
-    static let deliveryRetryDelay: TimeInterval = 5
-    static let maxDeliveryRetries = 3
+    static let renewInterval: TimeInterval = 60
+    static let retryDelay: TimeInterval = 5
+    /// 连续未确认超过这个次数后按 `renewInterval` 重发，避免不认识该消息的旧
+    /// Provider 被高频打扰。
+    static let fastRetries = 3
 
     let source: String
     private(set) var sequence: UInt64 = 0
     private(set) var systemAsleep = false
     private(set) var underlayUsable = true
-    private(set) var observedUnderlay = false
+    private(set) var providerConnected = false
+    private(set) var consecutiveFailures = 0
 
     init(source: String) {
         self.source = source
@@ -209,29 +231,39 @@ struct LineRecoveryConditionsPublisherState: Equatable {
 
     var gated: Bool { systemAsleep || !underlayUsable }
 
-    /// 返回 true 表示需要立即发送当前条件。
-    mutating func noteSystemWillSleep() -> Bool {
-        guard !systemAsleep else { return false }
+    mutating func noteSystemWillSleep() -> LineRecoveryConditionsDeliveryStep {
+        guard !systemAsleep else { return .unchanged }
         systemAsleep = true
-        return true
+        return conditionsChanged()
     }
 
     /// 只有完整唤醒（`didWake`）调用这里；Dark Wake 不是唤醒。
-    mutating func noteSystemDidWake(underlayUsable usable: Bool) -> Bool {
+    mutating func noteSystemDidWake(
+        underlayUsable usable: Bool
+    ) -> LineRecoveryConditionsDeliveryStep {
         let changed = systemAsleep || underlayUsable != usable
         systemAsleep = false
         underlayUsable = usable
-        return changed
+        return changed ? conditionsChanged() : .unchanged
     }
 
-    /// 休眠期间只记录路径；休眠本身已经关闭了门。第一次观察总要发送，用来清除
-    /// 上一宿主实例可能留下的关闭态。
-    mutating func observeUnderlay(usable: Bool) -> Bool {
-        let first = !observedUnderlay
-        observedUnderlay = true
+    /// 休眠期间只记录路径；休眠本身已经关闭了门。
+    mutating func observeUnderlay(
+        usable: Bool
+    ) -> LineRecoveryConditionsDeliveryStep {
         let changed = underlayUsable != usable
         underlayUsable = usable
-        return first || (changed && !systemAsleep)
+        return changed && !systemAsleep ? conditionsChanged() : .unchanged
+    }
+
+    /// 连接上的 Provider 可能是新进程或上一宿主实例留下关闭态的进程，立即声明当前条件。
+    mutating func noteProviderConnected(
+        _ connected: Bool
+    ) -> LineRecoveryConditionsDeliveryStep {
+        guard connected != providerConnected else { return .unchanged }
+        providerConnected = connected
+        consecutiveFailures = 0
+        return connected ? .sendNow : .idle
     }
 
     mutating func makeMessage() -> ProviderLineRecoveryConditions {
@@ -242,5 +274,37 @@ struct LineRecoveryConditionsPublisherState: Equatable {
             systemAsleep: systemAsleep,
             underlayUsable: underlayUsable
         )
+    }
+
+    /// 更新的报告已经发出时，旧报告的结果不再决定下一步。
+    mutating func finishDelivery(
+        sequence delivered: UInt64,
+        result: LineRecoveryConditionsDeliveryResult
+    ) -> LineRecoveryConditionsDeliveryStep {
+        guard delivered == sequence, providerConnected else { return .unchanged }
+        switch result {
+        case .acknowledged:
+            consecutiveFailures = 0
+            return .wait(Self.renewInterval)
+        case .unacknowledged:
+            consecutiveFailures += 1
+            return .wait(
+                consecutiveFailures <= Self.fastRetries
+                    ? Self.retryDelay : Self.renewInterval
+            )
+        case .providerNotConnected:
+            // 连接状态通知尚未到达；按周期自愈，断开通知到达时停止。
+            return .wait(Self.renewInterval)
+        }
+    }
+
+    /// 计时器到期：重发或续约当前条件。
+    func timerFired() -> LineRecoveryConditionsDeliveryStep {
+        providerConnected ? .sendNow : .idle
+    }
+
+    private mutating func conditionsChanged() -> LineRecoveryConditionsDeliveryStep {
+        consecutiveFailures = 0
+        return providerConnected ? .sendNow : .unchanged
     }
 }
