@@ -8,10 +8,8 @@ struct FeedbackAssistant: Identifiable, Equatable {
     var conversationEntry: ConversationEntry = .unsupported
 
     enum ConversationEntry: Equatable {
-        case unsupported, folder, codex
+        case unsupported, folder, codex, chatGPT, claude, cursor, antigravity, openCode
     }
-
-    var supportsNewConversation: Bool { conversationEntry != .unsupported }
 
     // Bundle identities, not filenames: apps may be renamed or installed in
     // ~/Applications. Only interactive assistants belong in this list.
@@ -43,11 +41,18 @@ struct FeedbackAssistant: Identifiable, Equatable {
                 // Cindy's open-file handler maps directories to new-session.
                 entry = .folder
             } else if item.id == "com.openai.codex", schemes.contains("codex") {
-                // Verified in the desktop bundle's threads/new route. Keep the
-                // clipboard fallback: this is not a published versioned API.
+                // Verified in the desktop bundle's threads/new route; the
+                // handoff still verifies the attachment and composer.
                 entry = .codex
             } else {
-                entry = .unsupported
+                switch item.id {
+                case "com.openai.chat": entry = .chatGPT
+                case "com.anthropic.claudefordesktop": entry = .claude
+                case "com.todesktop.230313mzl4w4u92": entry = .cursor
+                case "com.google.antigravity": entry = .antigravity
+                case "ai.opencode.desktop": entry = .openCode
+                default: entry = .unsupported
+                }
             }
             return Self(id: item.id, name: name, applicationURL: url, conversationEntry: entry)
         }
@@ -55,10 +60,19 @@ struct FeedbackAssistant: Identifiable, Equatable {
 
     func launchRequest(file: URL, prompt: String) -> FeedbackLaunchRequest {
         switch conversationEntry {
-        case .unsupported:
-            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [], conversationEntry: .unsupported)
+        case .unsupported, .chatGPT, .claude, .antigravity, .openCode:
+            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [], conversationEntry: conversationEntry, file: file, prompt: prompt)
+        case .cursor:
+            var components = URLComponents()
+            components.scheme = "cursor"
+            components.host = "anysphere.cursor-deeplink"
+            components.path = "/prompt"
+            components.queryItems = [URLQueryItem(name: "text", value: prompt)]
+            components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [components.url!],
+                                         conversationEntry: .cursor, file: file, prompt: prompt)
         case .folder:
-            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [file.deletingLastPathComponent()], conversationEntry: .folder)
+            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [file.deletingLastPathComponent()], conversationEntry: .folder, file: file, prompt: prompt)
         case .codex:
             var components = URLComponents()
             components.scheme = "codex"
@@ -72,7 +86,7 @@ struct FeedbackAssistant: Identifiable, Equatable {
             // Electron reads these with URLSearchParams, which treats a bare
             // plus as a space even though URLComponents allows it unescaped.
             components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [components.url!], conversationEntry: .codex)
+            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [components.url!], conversationEntry: .codex, file: file, prompt: prompt)
         }
     }
 }
@@ -81,6 +95,12 @@ struct FeedbackLaunchRequest: Equatable {
     let applicationURL: URL
     let urls: [URL]
     let conversationEntry: FeedbackAssistant.ConversationEntry
+    var file: URL? = nil
+    var prompt: String = ""
+}
+
+enum FeedbackHandoffResult: Equatable {
+    case ready, accessibilityRequired, failed
 }
 
 @MainActor
@@ -103,34 +123,20 @@ final class FeedbackCoordinator: ObservableObject {
     @Published private(set) var outcome: Outcome?
     private let defaults: UserDefaults
     private let discover: () -> [FeedbackAssistant]
-    private let open: (FeedbackLaunchRequest, @escaping (Bool) -> Void) -> Void
+    private let open: (FeedbackLaunchRequest, @escaping (FeedbackHandoffResult) -> Void) -> Void
     private let directory: URL
     private var requiresAssistantSelection = false
 
     enum Outcome: Equatable {
-        case copied, opened(String), conversationRequested(String, FeedbackAssistant.ConversationEntry)
-        case assistantUnavailable, openFailed, exportFailed, downloadFailed
+        case conversationReady(String)
+        case assistantUnavailable, openFailed, exportFailed, downloadFailed, accessibilityRequired
     }
 
     init(defaults: UserDefaults = xdialDefaults,
          directory: URL = ScenarioSwitchFeedbackRecorder.directoryURL.deletingLastPathComponent()
             .appendingPathComponent("Feedback", isDirectory: true),
          discover: @escaping () -> [FeedbackAssistant] = { FeedbackAssistant.discover() },
-         open: @escaping (FeedbackLaunchRequest, @escaping (Bool) -> Void) -> Void = { request, completion in
-             let configuration = NSWorkspace.OpenConfiguration()
-             configuration.activates = true
-             let finished: (NSRunningApplication?, Error?) -> Void = { application, error in
-                 DispatchQueue.main.async { completion(application != nil && error == nil) }
-             }
-             if request.urls.isEmpty {
-                 NSWorkspace.shared.openApplication(at: request.applicationURL, configuration: configuration, completionHandler: finished)
-             } else {
-                 // Target the chosen application explicitly, including for URL
-                 // schemes, rather than whichever app owns the default handler.
-                 NSWorkspace.shared.open(request.urls, withApplicationAt: request.applicationURL,
-                                         configuration: configuration, completionHandler: finished)
-             }
-         }) {
+         open: @escaping (FeedbackLaunchRequest, @escaping (FeedbackHandoffResult) -> Void) -> Void = FeedbackHandoff.open) {
         self.defaults = defaults
         self.directory = directory
         self.discover = discover
@@ -155,7 +161,9 @@ final class FeedbackCoordinator: ObservableObject {
 
     func refreshAssistants() {
         let previousID = selectedAssistantID
-        assistants = discover()
+        let preferred = defaults.string(forKey: "xdial.feedback.assistant")
+        let discovered = discover()
+        assistants = discovered.filter { $0.id == preferred } + discovered.filter { $0.id != preferred }
         if selectedAssistant == nil {
             if !previousID.isEmpty {
                 requiresAssistantSelection = true
@@ -176,28 +184,7 @@ final class FeedbackCoordinator: ObservableObject {
                         context: includeDiagnostics ? context : .general)
     }
 
-    /// Keep evidence in the attachment; text-only paste carries a short file reference.
-    @discardableResult
-    func copyPackage(english: Bool, pasteboard: NSPasteboard = .general) -> Bool {
-        do {
-            let package = package()
-            let text = try package.text(english: english)
-            let file = try package.write(text: text, under: directory)
-            pasteboard.clearContents()
-            guard pasteboard.writeObjects([file as NSURL]), pasteboard.setString(package.openingPrompt(english: english, file: file), forType: .string) else {
-                outcome = .exportFailed
-                return false
-            }
-            fileURL = file
-            outcome = .copied
-            return true
-        } catch {
-            outcome = .exportFailed
-            return false
-        }
-    }
-
-    func continueInAssistant(english: Bool, pasteboard: NSPasteboard = .general) {
+    func continueInAssistant(english: Bool) {
         guard !isOpening else { return }
         let requestedID = selectedAssistantID
         refreshAssistants()
@@ -205,19 +192,24 @@ final class FeedbackCoordinator: ObservableObject {
             outcome = .openFailed
             return
         }
-        guard copyPackage(english: english, pasteboard: pasteboard) else { return }
+        do {
+            let package = package()
+            fileURL = try package.write(text: package.text(english: english), under: directory)
+        } catch {
+            outcome = .exportFailed
+            return
+        }
         guard let fileURL else { return }
-        let request = assistant.launchRequest(file: fileURL, prompt: package().openingPrompt(english: english))
+        let request = assistant.launchRequest(file: fileURL, prompt: package().openingPrompt(english: english, file: fileURL))
         isOpening = true
-        open(request) { [weak self] success in
+        open(request) { [weak self] result in
             guard let self else { return }
             self.isOpening = false
-            if success {
+            if result == .ready {
                 self.defaults.set(assistant.id, forKey: "xdial.feedback.assistant")
-                self.outcome = request.conversationEntry == .unsupported
-                    ? .opened(assistant.name) : .conversationRequested(assistant.name, request.conversationEntry)
+                self.outcome = .conversationReady(assistant.name)
             } else {
-                self.outcome = .openFailed
+                self.outcome = result == .accessibilityRequired ? .accessibilityRequired : .openFailed
                 self.refreshAssistants()
             }
         }

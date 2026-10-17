@@ -254,8 +254,8 @@ struct FeedbackPackage {
                 request = english ? "Help me with XDial." : "请帮我使用 XDial。"
             }
         }
-        let reference = file?.path ?? "XDial-feedback.txt"
-        return request + (english ? " Read the attached file or: " : "请先读取附件或文件：") + reference
+        let reference = file?.lastPathComponent ?? "XDial-feedback.txt"
+        return request + (english ? " Read the attached file: " : "请先读取附件：") + reference
     }
 
     private func conversationGuidance(english: Bool) -> String {
@@ -358,7 +358,7 @@ struct FeedbackPackage {
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
         let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let file = directory.appendingPathComponent("XDial-feedback.txt")
+        let file = directory.appendingPathComponent("XDial-feedback-" + String(directory.lastPathComponent.prefix(8)) + ".txt")
         try Data(text.utf8).write(to: file, options: .atomic)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         return file

@@ -121,18 +121,17 @@
       }
     },
     "feedback.intro": {
-      "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Get AI help with troubleshooting, configuration, or product ideas."
-          }
-        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用 AI 排查问题、调整配置，或聊聊产品建议。"
+            "value": "选择 AI 助手，带上诊断文件直接聊。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose an AI assistant and start a conversation with your diagnostic file."
           }
         }
       }
@@ -512,35 +511,33 @@
       }
     },
     "feedback.opened": {
-      "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Opened %@. Paste and send."
-          }
-        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已打开 %@，请粘贴并发送。"
+            "value": "诊断文件已添加到 %@ 的新对话，发送后即可继续聊。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic file added to a new conversation in %@. Send to continue."
           }
         }
       }
     },
     "feedback.openFailed": {
-      "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Could not open the assistant. Retry, or attach the diagnostic file below to an AI conversation."
-          }
-        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未能打开助手。请重试，或将下方诊断文件添加到 AI 对话。"
+            "value": "未能确认诊断文件已交给助手。请检查助手是否已登录、保持其窗口在前台，然后重试。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not confirm file delivery. Check that the assistant is signed in, keep its window in front, then retry."
           }
         }
       }
@@ -665,35 +662,33 @@
       }
     },
     "feedback.folderRequested": {
-      "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Requested a new conversation in %@. Paste and send."
-          }
-        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已请求在 %@ 中新建对话，请粘贴并发送。"
+            "value": "诊断文件已添加到 %@ 的新对话，发送后即可继续聊。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic file added to a new conversation in %@. Send to continue."
           }
         }
       }
     },
     "feedback.codexRequested": {
-      "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Requested a new conversation in %@. Review and send the prompt, or paste if it is missing."
-          }
-        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已请求在 %@ 中新建对话，请检查说明后发送；若未出现，可粘贴。"
+            "value": "诊断文件已添加到 %@ 的新对话，发送后即可继续聊。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic file added to a new conversation in %@. Send to continue."
           }
         }
       }
@@ -784,18 +779,17 @@
       }
     },
     "feedback.context.omitted": {
-      "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Automatic diagnostics are off. The error context will not be shared with the assistant; add any details you want to discuss below."
-          }
-        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已关闭自动诊断资料，错误现场不会交给 AI；请在下方补充你想聊的内容。"
+            "value": "已关闭诊断信息，错误现场不会交给 AI。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostics are off. The error context will not be shared."
           }
         }
       }
@@ -830,6 +824,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "让 AI 助手接着排查这次场景切换失败，帮你让目标场景正常生效。"
+          }
+        }
+      }
+    },
+    "feedback.askAI": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找 AI 帮忙"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask AI"
+          }
+        }
+      }
+    },
+    "feedback.accessibilityRequired": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在系统设置 → 隐私与安全性 → 辅助功能中允许 XDial 控制所选助手，然后重试。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow XDial in System Settings → Privacy & Security → Accessibility, then retry."
+          }
+        }
+      }
+    },
+    "feedback.ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "诊断文件已添加到 %@ 的对话，发送后即可继续聊。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic file added to the conversation in %@. Send to continue."
           }
         }
       }
