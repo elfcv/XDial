@@ -8,7 +8,7 @@ struct FeedbackAssistant: Identifiable, Equatable {
     var conversationEntry: ConversationEntry = .unsupported
 
     enum ConversationEntry: Equatable {
-        case unsupported, folder, codex, chatGPT, claude, cursor, antigravity, openCode
+        case unsupported, claudeCowork
     }
 
     // Bundle identities, not filenames: apps may be renamed or installed in
@@ -32,63 +32,32 @@ struct FeedbackAssistant: Identifiable, Equatable {
                   FileManager.default.isExecutableFile(atPath: executable.path) else { return nil }
             let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
                 ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? item.fallback
-            let documents = bundle.object(forInfoDictionaryKey: "CFBundleDocumentTypes") as? [[String: Any]] ?? []
             let protocols = bundle.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
             let schemes = protocols.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
-            let entry: ConversationEntry
-            if item.id == "com.xd.cindy",
-               documents.contains(where: { ($0["LSItemContentTypes"] as? [String])?.contains("public.folder") == true }) {
-                // Cindy's open-file handler maps directories to new-session.
-                entry = .folder
-            } else if item.id == "com.openai.codex", schemes.contains("codex") {
-                // Verified in the desktop bundle's threads/new route; the
-                // handoff still verifies the attachment and composer.
-                entry = .codex
-            } else {
-                switch item.id {
-                case "com.openai.chat": entry = .chatGPT
-                case "com.anthropic.claudefordesktop": entry = .claude
-                case "com.todesktop.230313mzl4w4u92": entry = .cursor
-                case "com.google.antigravity": entry = .antigravity
-                case "ai.opencode.desktop": entry = .openCode
-                default: entry = .unsupported
-                }
-            }
+            // Opening a workspace or prefilling text is not file attachment.
+            // https://support.claude.com/en/articles/14729294-open-claude-desktop-with-a-link
+            let entry: ConversationEntry = item.id == "com.anthropic.claudefordesktop" && schemes.contains("claude")
+                ? .claudeCowork : .unsupported
             return Self(id: item.id, name: name, applicationURL: url, conversationEntry: entry)
         }
     }
 
-    func launchRequest(file: URL, prompt: String) -> FeedbackLaunchRequest {
-        switch conversationEntry {
-        case .unsupported, .chatGPT, .claude, .antigravity, .openCode:
-            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [], conversationEntry: conversationEntry, file: file, prompt: prompt)
-        case .cursor:
-            var components = URLComponents()
-            components.scheme = "cursor"
-            components.host = "anysphere.cursor-deeplink"
-            components.path = "/prompt"
-            components.queryItems = [URLQueryItem(name: "text", value: prompt)]
-            components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [components.url!],
-                                         conversationEntry: .cursor, file: file, prompt: prompt)
-        case .folder:
-            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [file.deletingLastPathComponent()], conversationEntry: .folder, file: file, prompt: prompt)
-        case .codex:
-            var components = URLComponents()
-            components.scheme = "codex"
-            components.host = "threads"
-            components.path = "/new"
-            components.queryItems = [
-                URLQueryItem(name: "mode", value: "work"),
-                URLQueryItem(name: "path", value: file.deletingLastPathComponent().path),
-                URLQueryItem(name: "prompt", value: prompt),
-            ]
-            // Electron reads these with URLSearchParams, which treats a bare
-            // plus as a space even though URLComponents allows it unescaped.
-            components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [components.url!], conversationEntry: .codex, file: file, prompt: prompt)
+    func launchRequest(file: URL) -> FeedbackLaunchRequest {
+        guard conversationEntry == .claudeCowork else {
+            return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [], conversationEntry: .unsupported, file: file)
         }
+        var components = URLComponents()
+        components.scheme = "claude"
+        components.host = "cowork"
+        components.path = "/new"
+        // q can submit immediately in some desktop versions. Send only the
+        // file; all conversation guidance is already included in its contents.
+        components.queryItems = [URLQueryItem(name: "file", value: file.path)]
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        return FeedbackLaunchRequest(applicationURL: applicationURL, urls: [components.url!],
+                                     conversationEntry: .claudeCowork, file: file)
     }
+
 }
 
 struct FeedbackLaunchRequest: Equatable {
@@ -96,16 +65,14 @@ struct FeedbackLaunchRequest: Equatable {
     let urls: [URL]
     let conversationEntry: FeedbackAssistant.ConversationEntry
     var file: URL? = nil
-    var prompt: String = ""
 }
 
 enum FeedbackHandoffResult: Equatable {
-    case ready, accessibilityRequired, failed
+    case requested, unsupported, failed
 }
 
 @MainActor
 final class FeedbackCoordinator: ObservableObject {
-    static let cindyDownloadURL = URL(string: "https://cindy.app/download/")!
     @Published var kind: FeedbackKind = .problem {
         didSet {
             if kind != oldValue { includeDiagnostics = kind != .suggestion }
@@ -128,8 +95,8 @@ final class FeedbackCoordinator: ObservableObject {
     private var requiresAssistantSelection = false
 
     enum Outcome: Equatable {
-        case conversationReady(String)
-        case assistantUnavailable, openFailed, exportFailed, downloadFailed, accessibilityRequired
+        case handoffRequested(String)
+        case assistantUnavailable, openFailed, exportFailed, unsupported
     }
 
     init(defaults: UserDefaults = xdialDefaults,
@@ -192,6 +159,10 @@ final class FeedbackCoordinator: ObservableObject {
             outcome = .openFailed
             return
         }
+        guard assistant.conversationEntry != .unsupported else {
+            outcome = .unsupported
+            return
+        }
         do {
             let package = package()
             fileURL = try package.write(text: package.text(english: english), under: directory)
@@ -200,23 +171,19 @@ final class FeedbackCoordinator: ObservableObject {
             return
         }
         guard let fileURL else { return }
-        let request = assistant.launchRequest(file: fileURL, prompt: package().openingPrompt(english: english, file: fileURL))
+        let request = assistant.launchRequest(file: fileURL)
         isOpening = true
         open(request) { [weak self] result in
             guard let self else { return }
             self.isOpening = false
-            if result == .ready {
+            if result == .requested {
                 self.defaults.set(assistant.id, forKey: "xdial.feedback.assistant")
-                self.outcome = .conversationReady(assistant.name)
+                self.outcome = .handoffRequested(assistant.name)
             } else {
-                self.outcome = result == .accessibilityRequired ? .accessibilityRequired : .openFailed
+                self.outcome = result == .unsupported ? .unsupported : .openFailed
                 self.refreshAssistants()
             }
         }
-    }
-
-    func downloadCindy() {
-        if !NSWorkspace.shared.open(Self.cindyDownloadURL) { outcome = .downloadFailed }
     }
 
     func revealFile() {

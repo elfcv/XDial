@@ -30,38 +30,32 @@ final class FeedbackAssistantTests: XCTestCase {
         XCTAssertFalse(resolved.contains("com.xd.cindydev"))
     }
 
-    @MainActor func testHandoffExportsFileWithoutReplacingClipboardAndRemembersOnlyVerifiedOpen() throws {
+    @MainActor func testNativeRequestExportsFileAndRemembersOnlyAcceptedOpen() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let suite = "xdial-feedback-test-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let assistant = FeedbackAssistant(id: "com.xd.cindy", name: "Cindy", applicationURL: URL(fileURLWithPath: "/Applications/Cindy.app"))
+        let assistant = FeedbackAssistant(id: "com.anthropic.claudefordesktop", name: "Claude",
+            applicationURL: root, conversationEntry: .claudeCowork)
         var opened: [FeedbackLaunchRequest] = []
         var finish: ((FeedbackHandoffResult) -> Void)?
         let coordinator = FeedbackCoordinator(defaults: defaults, directory: root, discover: { [assistant] }, open: {
             opened.append($0); finish = $1
         })
-        let pasteboard = NSPasteboard.withUniqueName()
-        defer { pasteboard.releaseGlobally() }
         coordinator.refreshAssistants()
-        pasteboard.setString("existing clipboard", forType: .string)
         coordinator.description = "现场说明"
         coordinator.continueInAssistant(english: false)
-        XCTAssertEqual(opened.first?.applicationURL, assistant.applicationURL)
-        XCTAssertTrue(opened.first?.urls.isEmpty == true)
         XCTAssertTrue(coordinator.isOpening)
         coordinator.continueInAssistant(english: false)
         XCTAssertEqual(opened.count, 1)
-        XCTAssertEqual(pasteboard.string(forType: .string), "existing clipboard")
         let file = try XCTUnwrap(coordinator.fileURL)
         XCTAssertTrue(try String(contentsOf: file).contains("现场说明"))
         XCTAssertEqual(opened.first?.file, file)
-        XCTAssertTrue(opened.first?.prompt.contains(file.lastPathComponent) == true)
-        XCTAssertNotNil(coordinator.fileURL)
+        XCTAssertEqual(opened.first?.applicationURL, assistant.applicationURL)
         XCTAssertNil(defaults.string(forKey: "xdial.feedback.assistant"))
-        finish?(.ready)
-        XCTAssertEqual(coordinator.outcome, .conversationReady("Cindy"))
+        finish?(.requested)
+        XCTAssertEqual(coordinator.outcome, .handoffRequested("Claude"))
         XCTAssertFalse(coordinator.isOpening)
         XCTAssertEqual(defaults.string(forKey: "xdial.feedback.assistant"), assistant.id)
     }
@@ -69,7 +63,7 @@ final class FeedbackAssistantTests: XCTestCase {
     @MainActor func testFailedOpenKeepsFileForManualHandoff() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let assistant = FeedbackAssistant(id: "test", name: "Test", applicationURL: root)
+        let assistant = FeedbackAssistant(id: "test", name: "Test", applicationURL: root, conversationEntry: .claudeCowork)
         let coordinator = FeedbackCoordinator(directory: root, discover: { [assistant] }, open: { _, complete in complete(.failed) })
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
@@ -133,7 +127,7 @@ final class FeedbackAssistantTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("not a directory".utf8).write(to: root)
         defer { try? FileManager.default.removeItem(at: root) }
-        let assistant = FeedbackAssistant(id: "test", name: "Test", applicationURL: root)
+        let assistant = FeedbackAssistant(id: "test", name: "Test", applicationURL: root, conversationEntry: .claudeCowork)
         var opened = false
         let coordinator = FeedbackCoordinator(directory: root, discover: { [assistant] }, open: { _, _ in opened = true })
         let pasteboard = NSPasteboard.withUniqueName()
@@ -146,78 +140,21 @@ final class FeedbackAssistantTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "previous contents")
     }
 
-    @MainActor func testCindyOpensTheNewFeedbackDirectoryAsAConversation() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let assistant = FeedbackAssistant(id: "com.xd.cindy", name: "Cindy", applicationURL: root,
-                                          conversationEntry: .folder)
-        var request: FeedbackLaunchRequest?
-        let coordinator = FeedbackCoordinator(directory: root, discover: { [assistant] }, open: { value, done in
-            request = value
-            done(.ready)
-        })
-        let pasteboard = NSPasteboard.withUniqueName()
-        defer { pasteboard.releaseGlobally() }
-        coordinator.refreshAssistants()
-        coordinator.description = "新对话现场"
-        coordinator.continueInAssistant(english: false)
-        XCTAssertEqual(request?.applicationURL, assistant.applicationURL)
-        XCTAssertEqual(request?.urls, [coordinator.fileURL!.deletingLastPathComponent()])
-        XCTAssertEqual(coordinator.outcome, .conversationReady("Cindy"))
-        XCTAssertTrue(try String(contentsOf: coordinator.fileURL!).contains("新对话现场"))
-    }
-
-    func testCodexNewConversationEncodesWorkspaceAndOnlyPrefillsShortFileInstruction() throws {
-        let assistant = FeedbackAssistant(id: "com.openai.codex", name: "Codex",
-            applicationURL: URL(fileURLWithPath: "/Applications/Renamed.app"), conversationEntry: .codex)
+    func testClaudeNativeFileRouteEscapesPathAndDoesNotSubmitPrompt() throws {
         let file = URL(fileURLWithPath: "/tmp/诊断 + & context?#/XDial-feedback.txt")
-        let prompt = FeedbackPackage(kind: .problem, description: "", runtime: nil).openingPrompt(english: false)
-        let request = assistant.launchRequest(file: file, prompt: prompt)
-        XCTAssertEqual(request.applicationURL, assistant.applicationURL)
+        let assistant = FeedbackAssistant(id: "com.anthropic.claudefordesktop", name: "Claude",
+            applicationURL: file, conversationEntry: .claudeCowork)
+        let request = assistant.launchRequest(file: file)
         XCTAssertEqual(request.urls.count, 1)
         let parts = try XCTUnwrap(URLComponents(url: request.urls[0], resolvingAgainstBaseURL: false))
-        XCTAssertEqual(parts.scheme, "codex")
-        XCTAssertEqual(parts.host, "threads")
+        XCTAssertEqual(parts.scheme, "claude")
+        XCTAssertEqual(parts.host, "cowork")
         XCTAssertEqual(parts.path, "/new")
         XCTAssertFalse(parts.percentEncodedQuery?.contains("+") == true)
-        XCTAssertTrue(parts.percentEncodedQuery?.contains("%2B") == true)
-        let query = Dictionary(uniqueKeysWithValues: (parts.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-        XCTAssertEqual(query["path"], file.deletingLastPathComponent().path)
-        XCTAssertEqual(query["mode"], "work")
-        XCTAssertTrue(query["prompt"]?.contains("XDial-feedback.txt") == true)
-        XCTAssertEqual(query["prompt"], prompt)
-        XCTAssertLessThan(request.urls[0].absoluteString.count, 2_000)
-        XCTAssertEqual(Set(query.keys), ["path", "prompt", "mode"])
+        XCTAssertEqual(parts.queryItems, [URLQueryItem(name: "file", value: file.path)])
     }
 
-    func testDiscoveryEnablesOnlyAdvertisedConversationTransports() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        var bundles: [String: URL] = [:]
-        for (id, extra) in [
-            ("com.xd.cindy", ["CFBundleDocumentTypes": [["LSItemContentTypes": ["public.folder"]]]] as [String: Any]),
-            ("com.openai.codex", ["CFBundleURLTypes": [["CFBundleURLSchemes": ["codex"]]]] as [String: Any]),
-        ] {
-            let app = root.appendingPathComponent(id + ".app")
-            let executable = app.appendingPathComponent("Contents/MacOS/Assistant")
-            try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data("test".utf8).write(to: executable)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
-            var info = extra
-            info["CFBundleIdentifier"] = id
-            info["CFBundleExecutable"] = "Assistant"
-            info["CFBundlePackageType"] = "APPL"
-            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
-                .write(to: app.appendingPathComponent("Contents/Info.plist"))
-            bundles[id] = app
-        }
-        let assistants = FeedbackAssistant.discover(resolve: { bundles[$0] })
-        XCTAssertEqual(assistants.count, 2)
-        XCTAssertEqual(assistants.first { $0.id == "com.xd.cindy" }?.conversationEntry, .folder)
-        XCTAssertEqual(assistants.first { $0.id == "com.openai.codex" }?.conversationEntry, .codex)
-    }
-
-    func testEveryCatalogIdentityHasAnExplicitHandoffAdapter() throws {
+    func testDiscoveryKeepsAppsWithoutNativeFileSupportVisibleButUnsupported() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         var apps: [String: URL] = [:]
@@ -229,88 +166,58 @@ final class FeedbackAssistantTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
             let info: [String: Any] = ["CFBundleIdentifier": item.id, "CFBundleExecutable": "Assistant",
                 "CFBundleDocumentTypes": [["LSItemContentTypes": ["public.folder"]]],
-                "CFBundleURLTypes": [["CFBundleURLSchemes": ["codex"]]]]
+                "CFBundleURLTypes": [["CFBundleURLSchemes": ["codex", "cursor", "claude", "opencode"]]]]
             try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
                 .write(to: app.appendingPathComponent("Contents/Info.plist"))
             apps[item.id] = app
         }
         let assistants = FeedbackAssistant.discover { apps[$0] }
         XCTAssertEqual(assistants.count, FeedbackAssistant.catalog.count)
-        XCTAssertFalse(assistants.contains { $0.conversationEntry == .unsupported })
-        let file = root.appendingPathComponent("XDial-feedback-example.txt")
-        for assistant in assistants {
-            let request = assistant.launchRequest(file: file, prompt: "Read the attachment.")
-            XCTAssertEqual(request.file, file)
-            XCTAssertEqual(request.prompt, "Read the attachment.")
+        XCTAssertEqual(assistants.filter { $0.conversationEntry != .unsupported }.map(\.id), ["com.anthropic.claudefordesktop"])
+        for assistant in assistants where assistant.conversationEntry == .unsupported {
+            XCTAssertTrue(assistant.launchRequest(file: root).urls.isEmpty)
         }
     }
 
-    func testNativeDraftRoutesEscapeQueryAndNeverAutoSubmitClaude() throws {
-        let file = URL(fileURLWithPath: "/tmp/诊断 + & ?/XDial-feedback-example.txt")
-        for entry: FeedbackAssistant.ConversationEntry in [.cursor] {
-            let assistant = FeedbackAssistant(id: "test", name: "Test", applicationURL: file, conversationEntry: entry)
-            let request = assistant.launchRequest(file: file, prompt: "Read + inspect & explain")
-            let parts = try XCTUnwrap(URLComponents(url: request.urls[0], resolvingAgainstBaseURL: false))
-            XCTAssertFalse(parts.percentEncodedQuery!.contains("+"))
-            XCTAssertTrue(parts.queryItems!.contains { $0.value == "Read + inspect & explain" })
-        }
-        let claude = FeedbackAssistant(id: "com.anthropic.claudefordesktop", name: "Claude", applicationURL: file, conversationEntry: .claude)
-        // Cowork's q route submits immediately. Claude uses a new chat and a
-        // real attachment through Accessibility, never that submitting route.
-        XCTAssertTrue(claude.launchRequest(file: file, prompt: "Read the attachment.").urls.isEmpty)
-    }
-
-    @MainActor func testPermissionFailureRetainsFileButDoesNotRememberSuccessfulDelivery() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let suite = UUID().uuidString
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let assistant = FeedbackAssistant(id: "test", name: "Test", applicationURL: root, conversationEntry: .claude)
-        let coordinator = FeedbackCoordinator(defaults: defaults, directory: root, discover: { [assistant] },
-            open: { _, done in done(.accessibilityRequired) })
+    @MainActor func testUnsupportedAppDoesNotExportOrLaunch() {
+        let assistant = FeedbackAssistant(id: "test", name: "Test", applicationURL: URL(fileURLWithPath: "/Applications/Test.app"))
+        var launched = false
+        let coordinator = FeedbackCoordinator(discover: { [assistant] }, open: { _, _ in launched = true })
         coordinator.refreshAssistants()
-        coordinator.continueInAssistant(english: false)
-        XCTAssertEqual(coordinator.outcome, .accessibilityRequired)
-        XCTAssertNotNil(coordinator.fileURL)
+        coordinator.continueInAssistant(english: true)
+        XCTAssertEqual(coordinator.outcome, .unsupported)
+        XCTAssertNil(coordinator.fileURL)
+        XCTAssertFalse(launched)
         XCTAssertFalse(coordinator.isOpening)
-        XCTAssertNil(defaults.string(forKey: "xdial.feedback.assistant"))
     }
 
-    @MainActor func testClipboardLeaseSeparatesFileAndPromptAndRestoresOriginalContents() throws {
-        let board = NSPasteboard.withUniqueName()
-        defer { board.releaseGlobally() }
-        board.setString("original", forType: .string)
-        let lease = FeedbackHandoff.ClipboardLease(pasteboard: board)
-        let file = URL(fileURLWithPath: "/tmp/XDial-feedback-test.txt")
-        try lease.write(file: file)
-        XCTAssertEqual(board.string(forType: .fileURL), file.absoluteString)
-        XCTAssertNil(board.string(forType: .string))
-        try lease.write(text: "Read the attachment.")
-        XCTAssertNil(board.string(forType: .fileURL))
-        XCTAssertEqual(board.string(forType: .string), "Read the attachment.")
-        lease.restore()
-        XCTAssertEqual(board.string(forType: .string), "original")
+    @MainActor func testNativeOpenerRejectsUnsupportedAndMissingFilesBeforeOpening() {
+        let app = URL(fileURLWithPath: "/Applications/Test.app")
+        let missing = URL(fileURLWithPath: "/tmp/" + UUID().uuidString)
+        for entry: FeedbackAssistant.ConversationEntry in [.unsupported, .claudeCowork] {
+            let request = FeedbackAssistant(id: "test", name: "Test", applicationURL: app, conversationEntry: entry)
+                .launchRequest(file: missing)
+            var result: FeedbackHandoffResult?
+            FeedbackHandoff.open(request, using: { _, _, _ in XCTFail("Must not launch") }) { result = $0 }
+            XCTAssertEqual(result, entry == .unsupported ? .unsupported : .failed)
+        }
     }
 
-    @MainActor func testClipboardLeaseDoesNotOverwriteConcurrentUserCopy() throws {
-        let board = NSPasteboard.withUniqueName()
-        defer { board.releaseGlobally() }
-        board.setString("original", forType: .string)
-        let lease = FeedbackHandoff.ClipboardLease(pasteboard: board)
-        try lease.write(text: "handoff")
-        board.clearContents()
-        board.setString("user copied something else", forType: .string)
-        XCTAssertThrowsError(try lease.write(text: "must not replace user copy"))
-        lease.restore()
-        XCTAssertEqual(board.string(forType: .string), "user copied something else")
-    }
-
-    func testPromptVerificationHandlesAccessibleWhitespaceWithoutAcceptingAnotherReport() {
-        let prompt = "Read XDial-feedback-123.txt."
-        XCTAssertTrue(FeedbackHandoff.containsPrompt("Read\u{00A0}XDial-feedback-123.txt.\u{200B}\n", prompt))
-        XCTAssertFalse(FeedbackHandoff.containsPrompt("Read XDial-feedback-456.txt.", prompt))
-        XCTAssertFalse(FeedbackHandoff.containsPrompt("anything", ""))
+    @MainActor func testNativeOpenerReportsOSAcceptanceWithoutClaimingAttachmentReadiness() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("synthetic diagnostic".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let request = FeedbackAssistant(id: "test", name: "Test", applicationURL: file, conversationEntry: .claudeCowork)
+            .launchRequest(file: file)
+        for accepted in [true, false] {
+            var result: FeedbackHandoffResult?
+            FeedbackHandoff.open(request, using: { urls, app, done in
+                XCTAssertEqual(urls, request.urls)
+                XCTAssertEqual(app, request.applicationURL)
+                done(accepted)
+            }) { result = $0 }
+            XCTAssertEqual(result, accepted ? .requested : .failed)
+        }
     }
 
     private func clickedFailure() -> ConnectionReport {

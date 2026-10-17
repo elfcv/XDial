@@ -121,17 +121,18 @@
       }
     },
     "feedback.intro": {
+      "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "选择 AI 助手，带上诊断文件直接聊。"
+            "value": "选择支持原生文件交接的 AI 助手，带上诊断文件聊。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choose an AI assistant and start a conversation with your diagnostic file."
+            "value": "Choose an AI assistant with native file handoff support."
           }
         }
       }
@@ -394,33 +395,16 @@
     "feedback.noAssistant": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No supported release AI app found. Install one, then return here."
-          }
-        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未找到支持的正式版 AI 助手。安装后回到这里继续。"
+            "value": "未发现已安装的 AI 软件。"
           }
-        }
-      }
-    },
-    "feedback.download": {
-      "extractionState": "manual",
-      "localizations": {
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Download Cindy…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "下载 Cindy…"
+            "value": "No installed AI apps found."
           }
         }
       }
@@ -510,34 +494,19 @@
         }
       }
     },
-    "feedback.opened": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "诊断文件已添加到 %@ 的新对话，发送后即可继续聊。"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Diagnostic file added to a new conversation in %@. Send to continue."
-          }
-        }
-      }
-    },
     "feedback.openFailed": {
+      "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未能确认诊断文件已交给助手。请检查助手是否已登录、保持其窗口在前台，然后重试。"
+            "value": "未能发起文件交接。请检查助手是否可用后重试。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Could not confirm file delivery. Check that the assistant is signed in, keep its window in front, then retry."
+            "value": "Could not request file handoff. Check the assistant and retry."
           }
         }
       }
@@ -555,23 +524,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "未能生成或复制反馈文件。请重试；仍未成功时，可先复制你填写的描述。"
-          }
-        }
-      }
-    },
-    "feedback.downloadFailed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Could not open the download page. Visit cindy.app/download/ in your browser."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未能打开下载页。请在浏览器访问 cindy.app/download/。"
           }
         }
       }
@@ -657,38 +609,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "新对话只预填简短说明，详细资料由 AI 从文件读取。"
-          }
-        }
-      }
-    },
-    "feedback.folderRequested": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "诊断文件已添加到 %@ 的新对话，发送后即可继续聊。"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Diagnostic file added to a new conversation in %@. Send to continue."
-          }
-        }
-      }
-    },
-    "feedback.codexRequested": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "诊断文件已添加到 %@ 的新对话，发送后即可继续聊。"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Diagnostic file added to a new conversation in %@. Send to continue."
           }
         }
       }
@@ -844,34 +764,36 @@
         }
       }
     },
-    "feedback.accessibilityRequired": {
+    "feedback.unsupported": {
+      "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请在系统设置 → 隐私与安全性 → 辅助功能中允许 XDial 控制所选助手，然后重试。"
+            "value": "不支持原生文件交接"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allow XDial in System Settings → Privacy & Security → Accessibility, then retry."
+            "value": "Native file handoff unsupported"
           }
         }
       }
     },
-    "feedback.ready": {
+    "feedback.requested": {
+      "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "诊断文件已添加到 %@ 的对话，发送后即可继续聊。"
+            "value": "已向 %@ 发起文件交接，请在应用中确认。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Diagnostic file added to the conversation in %@. Send to continue."
+            "value": "File handoff requested in %@. Confirm in the app."
           }
         }
       }

@@ -89,8 +89,6 @@ struct FeedbackView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(8)
-                    Button(text("download")) { feedback.downloadCindy() }
-                        .padding(8)
                 } else {
                     ForEach(feedback.assistants) { assistant in
                         Button {
@@ -101,13 +99,22 @@ struct FeedbackView: View {
                             HStack(spacing: 10) {
                                 Image(nsImage: NSWorkspace.shared.icon(forFile: assistant.applicationURL.path))
                                     .resizable().frame(width: 28, height: 28)
-                                Text(assistant.name)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(assistant.name)
+                                    if assistant.conversationEntry == .unsupported {
+                                        Text(text("unsupported"))
+                                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                                    } else {
+                                        Text("Cowork").font(.system(size: 10)).foregroundStyle(.secondary)
+                                    }
+                                }
                                 Spacer()
                             }
                             .padding(8)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(assistant.conversationEntry == .unsupported)
                         .accessibilityIdentifier("feedback.assistant." + assistant.id)
                     }
                 }
@@ -124,18 +131,17 @@ struct FeedbackView: View {
 
     private func outcomeText(_ outcome: FeedbackCoordinator.Outcome) -> String {
         switch outcome {
-        case .conversationReady(let name): return String(format: text("ready"), name)
-        case .accessibilityRequired: return text("accessibilityRequired")
+        case .handoffRequested(let name): return String(format: text("requested"), name)
+        case .unsupported: return text("unsupported")
         case .assistantUnavailable: return text("assistantUnavailable")
         case .openFailed: return text("openFailed")
         case .exportFailed: return text("exportFailed")
-        case .downloadFailed: return text("downloadFailed")
         }
     }
 
     private func isError(_ outcome: FeedbackCoordinator.Outcome) -> Bool {
         switch outcome {
-        case .assistantUnavailable, .openFailed, .exportFailed, .downloadFailed, .accessibilityRequired: return true
+        case .assistantUnavailable, .openFailed, .exportFailed, .unsupported: return true
         default: return false
         }
     }
