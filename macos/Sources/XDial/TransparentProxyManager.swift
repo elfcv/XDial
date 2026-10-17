@@ -583,7 +583,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             underlayDefaultIndex: underlay.defaultInterface.index,
             systemDNSJSON: underlay.systemDNSJSON,
             refreshLineRuntimes: active.refreshLineRuntimes,
-            networkEpochID: active.networkEpochID
+            networkEpochID: active.networkEpochID,
+            underlayPathIdentity: underlay.pathIdentity
         )
         sendScenarioSwitchMessage(request) { [weak self] switchResult in
             self?.finishScenarioSwitch(
@@ -1328,6 +1329,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                     "underlay_default_index":
                         NSNumber(value: underlay.defaultInterface.index),
                     "system_dns": underlay.systemDNSJSON as NSString,
+                    "underlay_path_identity":
+                        underlay.pathIdentity as NSString,
                     "transaction_id": transactionID as NSString,
                     "connection_report": connectionReport as NSString,
                 ]
@@ -3601,45 +3604,31 @@ private struct HostUnderlaySnapshot {
     let interfaces: [HostPathInterfaceSnapshot]
     let interfacesJSON: String
     let systemDNSJSON: String
+    /// Comparison facts sampled together with the snapshot above. The
+    /// Provider receives only the opaque `pathIdentity`, never these facts.
+    let identity: HostUnderlayIdentity
 
     /// Exact canonical identity for coalescing host notifications. This value
     /// is never logged, persisted, sent to Provider, or exposed by Debug.
     var epochFingerprint: String {
-        ([
-            "\(defaultInterface.index):\(defaultInterface.name)",
-            canonicalInterfaceKeys.joined(separator: ","),
-            systemDNSJSON,
-        ]).joined(separator: "\u{1F}")
+        identity.epochFingerprint
+    }
+
+    /// Opaque equality token for the default path (interface, its IPv4
+    /// addresses, default routers). The Provider compares it across
+    /// generations to decide whether established TCP flows remain valid.
+    var pathIdentity: String {
+        identity.pathIdentity
     }
 
     func isEquivalent(to other: HostUnderlaySnapshot) -> Bool {
-        defaultInterface.name == other.defaultInterface.name
-            && defaultInterface.index == other.defaultInterface.index
-            && canonicalInterfaceKeys == other.canonicalInterfaceKeys
-            && systemDNSJSON == other.systemDNSJSON
+        identity == other.identity
     }
 
     func differenceKinds(
         comparedTo other: HostUnderlaySnapshot
     ) -> [String] {
-        var kinds: [String] = []
-        if defaultInterface.name != other.defaultInterface.name
-            || defaultInterface.index != other.defaultInterface.index {
-            kinds.append("default-interface")
-        }
-        if canonicalInterfaceKeys != other.canonicalInterfaceKeys {
-            kinds.append("interface-set")
-        }
-        if systemDNSJSON != other.systemDNSJSON {
-            kinds.append("system-dns")
-        }
-        return kinds
-    }
-
-    private var canonicalInterfaceKeys: [String] {
-        interfaces.map {
-            "\($0.index):\($0.name):\($0.type)"
-        }.sorted()
+        identity.differenceKinds(comparedTo: other.identity)
     }
 }
 
@@ -3788,20 +3777,156 @@ private final class HostUnderlayCapture {
                 )
             )
         }
+        guard let interfaceAddresses = Self.captureInterfaceAddresses() else {
+            // 地址快照缺失不能当作“默认接口没有地址”，否则会伪造一次换网。
+            return HostUnderlaySnapshotEvaluation(
+                result: nil,
+                evidence: HostUnderlayCaptureEvidence(
+                    schemaVersion: 1,
+                    reason: .snapshotEncodingFailed,
+                    pathStatus: pathStatus,
+                    routeInterface: routeInterfaceName,
+                    candidateInterfaces: candidateNames,
+                    invalidCandidateInterfaces: [],
+                    routeError: "interface address snapshot failed"
+                )
+            )
+        }
         guard let systemDNSJSON = Self.captureSystemDNSJSON() else {
             return HostUnderlaySnapshotEvaluation(
                 result: .failure(ManagerError.systemDNSUnavailable),
                 evidence: nil
             )
         }
+        let identity = HostUnderlayIdentity(
+            defaultInterface: HostUnderlayIdentity.Interface(
+                name: defaultInterface.name,
+                index: defaultInterface.index,
+                type: defaultInterface.type
+            ),
+            interfaces: interfaces.map {
+                HostUnderlayIdentity.Interface(
+                    name: $0.name,
+                    index: $0.index,
+                    type: $0.type
+                )
+            },
+            systemDNSJSON: systemDNSJSON,
+            interfaceAddresses: interfaceAddresses,
+            routers: Self.captureDefaultRouters()
+        )
         return HostUnderlaySnapshotEvaluation(
             result: .success(HostUnderlaySnapshot(
                 defaultInterface: defaultInterface,
                 interfaces: interfaces,
                 interfacesJSON: interfacesJSON,
-                systemDNSJSON: systemDNSJSON
+                systemDNSJSON: systemDNSJSON,
+                identity: identity
             )),
             evidence: nil
+        )
+    }
+
+    /// Kernel interface addresses at the same sampling point as the default
+    /// route and NWPath. `HostUnderlayIdentity` keeps only what identifies the
+    /// default path; this reader does not filter by interface name or type.
+    private static func captureInterfaceAddresses()
+        -> [HostInterfaceAddressFact]?
+    {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0 else {
+            return nil
+        }
+        guard let first = head else {
+            return []
+        }
+        defer { freeifaddrs(head) }
+        var facts: [HostInterfaceAddressFact] = []
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            defer { cursor = entry.pointee.ifa_next }
+            guard let socketAddress = entry.pointee.ifa_addr else {
+                continue
+            }
+            let name = String(cString: entry.pointee.ifa_name)
+            switch Int32(socketAddress.pointee.sa_family) {
+            case AF_INET:
+                var buffer = [CChar](
+                    repeating: 0,
+                    count: Int(INET_ADDRSTRLEN)
+                )
+                let rendered = socketAddress.withMemoryRebound(
+                    to: sockaddr_in.self,
+                    capacity: 1
+                ) { pointer -> Bool in
+                    var address = pointer.pointee.sin_addr
+                    return inet_ntop(
+                        AF_INET,
+                        &address,
+                        &buffer,
+                        socklen_t(buffer.count)
+                    ) != nil
+                }
+                if rendered {
+                    facts.append(HostInterfaceAddressFact(
+                        interfaceName: name,
+                        family: .ipv4,
+                        address: String(cString: buffer)
+                    ))
+                }
+            case AF_INET6:
+                var buffer = [CChar](
+                    repeating: 0,
+                    count: Int(INET6_ADDRSTRLEN)
+                )
+                let rendered = socketAddress.withMemoryRebound(
+                    to: sockaddr_in6.self,
+                    capacity: 1
+                ) { pointer -> Bool in
+                    var address = pointer.pointee.sin6_addr
+                    return inet_ntop(
+                        AF_INET6,
+                        &address,
+                        &buffer,
+                        socklen_t(buffer.count)
+                    ) != nil
+                }
+                if rendered {
+                    facts.append(HostInterfaceAddressFact(
+                        interfaceName: name,
+                        family: .ipv6,
+                        address: String(cString: buffer)
+                    ))
+                }
+            default:
+                continue
+            }
+        }
+        return facts
+    }
+
+    /// The primary service's default routers as configd publishes them. A
+    /// missing key is a fact (for example an IPv6-only or link-local network),
+    /// not a failed capture.
+    private static func captureDefaultRouters() -> HostDefaultRouterFacts {
+        func router(_ key: String, _ property: CFString) -> String? {
+            guard let state = SCDynamicStoreCopyValue(
+                nil,
+                key as CFString
+            ) as? [String: Any] else {
+                return nil
+            }
+            return state[property as String] as? String
+        }
+        return HostDefaultRouterFacts(
+            ipv4: router(
+                "State:/Network/Global/IPv4",
+                kSCPropNetIPv4Router
+            ),
+            ipv6: router(
+                "State:/Network/Global/IPv6",
+                kSCPropNetIPv6Router
+            )
         )
     }
 
@@ -3914,6 +4039,16 @@ private final class HostUnderlayMonitor {
     private var lastSystemWakeAt: Date?
     private var systemSleepGate = SystemSleepNetworkEpochGate()
     private var cancelled = false
+    private var factStore: SCDynamicStore?
+
+    /// Weak bridge for configd's C callback; owned by the store's context.
+    private final class FactObserver {
+        weak var monitor: HostUnderlayMonitor?
+
+        init(_ monitor: HostUnderlayMonitor) {
+            self.monitor = monitor
+        }
+    }
 
     init(
         baseline: HostUnderlaySnapshot,
@@ -3923,6 +4058,10 @@ private final class HostUnderlayMonitor {
         self.onChange = onChange
     }
 
+    deinit {
+        stopFactNotifications()
+    }
+
     func start() {
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
@@ -3930,6 +4069,7 @@ private final class HostUnderlayMonitor {
             }
         }
         monitor.start(queue: .global(qos: .utility))
+        startFactNotifications()
     }
 
     func cancel() {
@@ -3938,6 +4078,84 @@ private final class HostUnderlayMonitor {
         pendingChange = nil
         monitor.pathUpdateHandler = nil
         monitor.cancel()
+        stopFactNotifications()
+    }
+
+    /// NWPath does not promise a callback when only the default router, the
+    /// system resolvers or a configd-managed interface address change on an
+    /// unchanged interface. configd publishes each of those facts; watching
+    /// the same keys the snapshot reads gives every fingerprint fact a change
+    /// source. Read-only: nothing is written to the dynamic store.
+    private func startFactNotifications() {
+        guard factStore == nil, !cancelled else { return }
+        let observer = Unmanaged.passRetained(FactObserver(self))
+        var context = SCDynamicStoreContext(
+            version: 0,
+            info: observer.toOpaque(),
+            retain: nil,
+            release: { info in
+                Unmanaged<FactObserver>.fromOpaque(info).release()
+            },
+            copyDescription: nil
+        )
+        guard let store = SCDynamicStoreCreate(
+            nil,
+            "XDial host Underlay" as CFString,
+            { _, _, info in
+                guard let info else { return }
+                Unmanaged<FactObserver>.fromOpaque(info)
+                    .takeUnretainedValue()
+                    .monitor?
+                    .factsChanged()
+            },
+            &context
+        ) else {
+            observer.release()
+            return
+        }
+        let keys = [
+            "State:/Network/Global/IPv4",
+            "State:/Network/Global/IPv6",
+            "State:/Network/Global/DNS",
+        ] as CFArray
+        let patterns = ["State:/Network/Interface/[^/]+/IPv4"] as CFArray
+        guard
+            SCDynamicStoreSetNotificationKeys(store, keys, patterns),
+            SCDynamicStoreSetDispatchQueue(store, .main)
+        else {
+            return
+        }
+        factStore = store
+    }
+
+    private func stopFactNotifications() {
+        if let factStore {
+            SCDynamicStoreSetDispatchQueue(factStore, nil)
+        }
+        factStore = nil
+    }
+
+    /// Only re-samples. It never cancels a pending change and never feeds the
+    /// path transition state, so NWPath edges (unsatisfied / restored) keep
+    /// their meaning; an equivalent snapshot is ignored here.
+    private func factsChanged() {
+        guard
+            !cancelled,
+            pendingChange == nil,
+            systemSleepGate.observeNetworkSignal() == .evaluateCurrentPath
+        else {
+            return
+        }
+        let path = monitor.currentPath
+        guard
+            path.status == .satisfied,
+            let result = HostUnderlayCapture.snapshotResult(for: path),
+            case let .success(snapshot) = result,
+            !snapshot.isEquivalent(to: baseline)
+        else {
+            return
+        }
+        scheduleChange(allowEquivalentSnapshot: false)
     }
 
     func noteSystemWake(at date: Date = Date()) {
@@ -4054,6 +4272,7 @@ private final class HostUnderlayMonitor {
             self.cancelled = true
             self.monitor.pathUpdateHandler = nil
             self.monitor.cancel()
+            self.stopFactNotifications()
             self.onChange(snapshot, allowEquivalentSnapshot)
         }
         pendingChange = work

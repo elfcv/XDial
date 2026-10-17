@@ -131,6 +131,7 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
     private static let underlayDefaultNameOption = "underlay_default_name"
     private static let underlayDefaultIndexOption = "underlay_default_index"
     private static let systemDNSOption = "system_dns"
+    private static let underlayPathIdentityOption = "underlay_path_identity"
     private static let transactionIDOption = "transaction_id"
     private static let connectionReportOption = "connection_report"
     private static let debugFailureStageOption = "debug_failure_stage"
@@ -202,6 +203,14 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
     /// source lease is gone, so a third generation can never accumulate.
     private var retainedSourceRetirementPending = false
     private var retainedSourceRetirementRetryCount = 0
+    /// Host-provided opaque default-path identity of the committed
+    /// generation's Underlay snapshot. `nil` (older host) never proves that
+    /// the path is unchanged. Only touched on `engineQueue`.
+    private var committedUnderlayPathIdentity: String?
+    /// At most one source generation whose TCP flows outlive a same-path
+    /// network-epoch commit. Only touched on `engineQueue`.
+    private var sourceRetention = ScenarioSwitchSourceRetention()
+    private var retainedSourceFlows = ProviderRelayDrain.empty
 
     override func startProxy(
         options: [String: Any]?,
@@ -260,6 +269,12 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
             interfacesJSON: interfacesJSON,
             systemDNSJSON: systemDNSJSON
         )
+        // Optional: only a later same-path network-epoch Switch consults it.
+        let underlayPathIdentity =
+            (options?[Self.underlayPathIdentityOption] as? String)
+                .flatMap {
+                    HostUnderlayIdentity.isValidPathIdentity($0) ? $0 : nil
+                }
 #if DEBUG
         let debugFailureStage =
             options?[Self.debugFailureStageOption] as? String
@@ -309,6 +324,9 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
             self.pendingCommitAbort = nil
             self.retainedSourceRetirementPending = false
             self.retainedSourceRetirementRetryCount = 0
+            self.committedUnderlayPathIdentity = underlayPathIdentity
+            self.sourceRetention = ScenarioSwitchSourceRetention()
+            self.retainedSourceFlows = .empty
             do {
 #if DEBUG
                 if debugFailureStage == "rule-set" {
@@ -1289,6 +1307,12 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
             )
             return
         }
+        // Latest-wins: a retained source ends before a successor candidate
+        // may borrow Line leases, so the pool never holds a third generation.
+        // Libbox's Prepare independently refuses while a source is retained.
+        if sourceRetention.holdsSource {
+            endSourceRetention(token: nil, reason: .successorCandidate)
+        }
         guard retireRetainedSourceIfNeeded(
             runtime,
             scheduleRetry: false
@@ -1685,10 +1709,29 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
 
         // CommitPreparedSwitch atomically adopted B while retaining A, then
         // the operation gate published B before a terminal stop/fatal could
-        // deactivate the relay registry. A now exists only for this drain.
+        // deactivate the relay registry. A now exists only for its relays.
+        let sourceGeneration = generation
+        let sourceReport = sourceReporter.currentReport()
+        let sourceDrainDecision = ScenarioSwitchSourceDrainPolicy.decide(
+            ScenarioSwitchSourceDrainFacts(
+                networkEpochSwitch:
+                    operation.request.networkEpochID != nil,
+                sourceScenarioID: sourceReport?.scenario.id ?? "",
+                targetScenarioID: committedReport.scenario.id,
+                sourceConfigurationFingerprint:
+                    sourceReport?.configurationFingerprint ?? "",
+                targetConfigurationFingerprint:
+                    committedReport.configurationFingerprint,
+                sourcePathIdentity: committedUnderlayPathIdentity,
+                targetPathIdentity:
+                    operation.request.underlayPathIdentity
+            )
+        )
         session = prepared.session
         reporter = candidateReporter
         generation = candidateReporter.transactionID
+        committedUnderlayPathIdentity =
+            operation.request.underlayPathIdentity
         settingsCommitted = true
         outboundProbeGate.invalidate()
         traffic.reset(transactionID: generation)
@@ -1701,17 +1744,12 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         activeCancellation = operation.cancellation
         cancellationLock.unlock()
 
-        if !sourceDrain.wait(timeout: 1) {
-            sourceDrain.cancel()
-            if !sourceDrain.wait(timeout: 1) {
-                logger.error(
-                    "scenario-switch-source-drain-timeout generation=\(self.generation, privacy: .public) flows=\(sourceDrain.count)"
-                )
-            }
-        }
-        retainedSourceRetirementPending = true
-        retainedSourceRetirementRetryCount = 0
-        _ = retireRetainedSourceIfNeeded(runtime, scheduleRetry: true)
+        finishSourceHandoff(
+            sourceDrain,
+            decision: sourceDrainDecision,
+            sourceGeneration: sourceGeneration,
+            runtime: runtime
+        )
 
         do {
             _ = try candidateReporter.persistCommittedCandidate()
@@ -1963,6 +2001,102 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
+    /// Ends the source generation's relays after B's irreversible commit. New
+    /// flows already go to B. Associations (UDP) always take the bounded
+    /// handoff and re-associate with B; flows (TCP, local SOCKS5) are kept on
+    /// A only when `decision` proves the path and configuration unchanged.
+    private func finishSourceHandoff(
+        _ sourceDrain: ProviderRelayDrain,
+        decision: ScenarioSwitchSourceDrainDecision,
+        sourceGeneration: String,
+        runtime: EmbeddedSingBoxRuntime
+    ) {
+        guard case let .retainFlows(limit) = decision else {
+            drainSourceRelays(sourceDrain)
+            retireSourceGeneration(runtime)
+            return
+        }
+        drainSourceRelays(sourceDrain.subset(owning: .association))
+        let flows = sourceDrain.subset(owning: .flow)
+        guard let retained = sourceRetention.begin(
+            sourceGeneration: sourceGeneration,
+            committedGeneration: generation,
+            flowCount: flows.unfinishedCount,
+            limit: limit
+        ) else {
+            drainSourceRelays(flows)
+            retireSourceGeneration(runtime)
+            return
+        }
+        retainedSourceFlows = flows
+        logger.notice(
+            "scenario-switch-source-retained generation=\(self.generation, privacy: .public) source=\(sourceGeneration, privacy: .public) flows=\(retained.flowCount, privacy: .public) limit-seconds=\(Int(limit), privacy: .public)"
+        )
+        let token = retained.token
+        engineQueue.asyncAfter(deadline: .now() + limit) { [weak self] in
+            self?.endSourceRetention(token: token, reason: .limitReached)
+        }
+        flows.notifyWhenFinished(queue: engineQueue) { [weak self] in
+            self?.endSourceRetention(token: token, reason: .flowsFinished)
+        }
+    }
+
+    private func drainSourceRelays(_ drain: ProviderRelayDrain) {
+        let grace = ScenarioSwitchSourceDrainPolicy.handoffGrace
+        guard !drain.wait(timeout: grace) else { return }
+        drain.cancel()
+        if !drain.wait(timeout: grace) {
+            logger.error(
+                "scenario-switch-source-drain-timeout generation=\(self.generation, privacy: .public) flows=\(drain.count)"
+            )
+        }
+    }
+
+    private func retireSourceGeneration(_ runtime: EmbeddedSingBoxRuntime) {
+        retainedSourceRetirementPending = true
+        retainedSourceRetirementRetryCount = 0
+        _ = retireRetainedSourceIfNeeded(runtime, scheduleRetry: true)
+    }
+
+    /// Ends the retained source at most once. Natural completion and the hard
+    /// limit retire it here; a successor candidate marks it for the
+    /// retirement its Prepare performs next; stop leaves teardown to rollback.
+    private func endSourceRetention(
+        token: UUID?,
+        reason: ScenarioSwitchSourceRetention.EndReason
+    ) {
+        let ended: ScenarioSwitchSourceRetention.Retained?
+        if let token {
+            ended = sourceRetention.end(token: token)
+        } else {
+            ended = sourceRetention.endCurrent()
+        }
+        guard let ended else { return }
+        let flows = retainedSourceFlows
+        retainedSourceFlows = .empty
+        let remaining = flows.unfinishedCount
+        if remaining > 0 {
+            flows.cancel()
+            if reason != .stopped,
+               !flows.wait(
+                timeout: ScenarioSwitchSourceDrainPolicy.handoffGrace
+               ) {
+                logger.error(
+                    "scenario-switch-retained-source-drain-timeout generation=\(self.generation, privacy: .public) flows=\(remaining, privacy: .public)"
+                )
+            }
+        }
+        logger.notice(
+            "scenario-switch-retained-source-ended generation=\(self.generation, privacy: .public) source=\(ended.sourceGeneration, privacy: .public) reason=\(reason.rawValue, privacy: .public) retained=\(ended.flowCount, privacy: .public) cancelled=\(remaining, privacy: .public)"
+        )
+        guard reason != .stopped else { return }
+        retainedSourceRetirementPending = true
+        retainedSourceRetirementRetryCount = 0
+        if reason != .successorCandidate, let runtime {
+            _ = retireRetainedSourceIfNeeded(runtime, scheduleRetry: true)
+        }
+    }
+
     /// Retire is cleanup after B's irreversible commit, not part of deciding
     /// whether A or B is active. A failure therefore keeps B authoritative but
     /// holds the pool at two leases and prevents another Prepare until cleanup
@@ -2164,7 +2298,11 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
             credentials: credentials,
             generation: reservation.generation,
             attach: { [weak self] handle in
-                self?.relayRegistry.attach(handle, to: reservation) ?? false
+                self?.relayRegistry.attach(
+                    handle,
+                    to: reservation,
+                    owning: .association
+                ) ?? false
             },
             finish: { [weak self] in
                 self?.relayRegistry.finish(reservation)
@@ -2638,6 +2776,10 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         rollbackInProgress = true
         retainedSourceRetirementPending = false
         retainedSourceRetirementRetryCount = 0
+        // The registry teardown above already cancelled every generation's
+        // relays; Libbox Stop closes the retained source Box with the rest.
+        endSourceRetention(token: nil, reason: .stopped)
+        committedUnderlayPathIdentity = nil
         rollbackCompletions = [completion]
         reporter.beginRollback(error, code: code)
 

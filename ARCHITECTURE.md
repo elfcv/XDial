@@ -61,7 +61,9 @@ Transparent Proxy 不接管 ICMP。link-local、multicast、limited broadcast �
 RFC1918、IPv6 ULA、Tailnet 与企业单播地址仍由 Scenario 裁决，排除集合不按应用或产品扩展。
 
 Underlay 来自宿主请求连接前同一时刻的内核默认接口、完整 `NWPath.availableInterfaces`
-与系统 DNS。Provider 内的 `NWPath` 可能隐藏既有全流量 VPN，只用于诊断。
+与系统 DNS；同一样本另取默认接口的 IPv4 地址与主服务 IPv4 / IPv6 默认路由器，只用于比较。
+IPv6 接口地址（临时地址在稳定网络上轮换）不进入比较；Provider 只收到默认路径的不透明身份，
+不收到这些地址。Provider 内的 `NWPath` 可能隐藏既有全流量 VPN，只用于诊断。
 `route.default_interface` 原样采用内核结果；接口快照仅补齐系统 MTU、标志与地址，
 只排除当前 XDial 会话自己登记的接口，不按名称前缀筛选、不取首候选、不生成 outbound
 `bind_interface`。缺失或不一致的快照不能启动连接。
@@ -249,8 +251,12 @@ journal 无法可靠写入时不能 Commit。入口：[事务处置](macos/Share
   或旧 Box 退役只释放自己的租约，最后一个租约释放才停止能力，不并发创建第二个握手任务。
 - 当前 epoch、revision 与 generation 的就绪证明有效后才 Commit。迟到成功不能恢复旧
   ready；同一 Line 的新成功不能清除其他 Line 的失败或 Box 结构错误。
-- 提交原子切换新 flow 的 relay generation 与完整 DNS / route 配置；旧 flow 有界排空。
-  规则、DNS 和默认出口不能分成多个可见提交。
+- 提交原子切换新 flow 的 relay generation 与完整 DNS / route 配置；旧 flow 有界排空，
+  默认 1 秒后关闭。仅当 network epoch 重编译同一 Scenario 与配置指纹、默认路径身份
+  （默认接口、其 IPv4 地址与默认路由器）也未变时，旧 generation 已接入的 TCP flow 留在
+  旧 Box 直至结束，最长 10 分钟；下一候选开始准备（路径变化即下一 epoch）或停止先使其
+  退役，UDP association 仍 1 秒换代。保留期间租约仍只属于 committed 与另一个 generation
+  ——候选或保留的旧源，二者不并存。规则、DNS 和默认出口不能分成多个可见提交。
 - 候选失败只清理候选，保留旧场景、网络设置和连接时长；提交中失败恢复旧 relay。
   无法证明旧 generation 健康时才进入全局回滚。报告同时保留 from、to、候选与仍承载流量的事务。
 - 任意时刻最多一个候选，latest-wins；相同目标与配置指纹为 no-op。显式断开优先取消候选
@@ -264,6 +270,11 @@ journal 无法可靠写入时不能 Commit。入口：[事务处置](macos/Share
 
 NWPath、默认路由、DNS 与 SSID 的同次物理变化合并为一个不含 SSID 的 network epoch；
 稳定样本只形成最终 `(epoch, desired Scenario, Underlay fingerprint)` 的一笔 Switch。
+Underlay fingerprint 由默认接口、接口集合、系统 DNS、默认接口 IPv4 地址与默认路由器组成，
+NWPath 更新与 configd 对相应键的只读通知都触发重新采样；日志分别标注 `default-interface`、
+`interface-set`、`system-dns`、`gateway`、`address`；
+同一接口、同一 DNS 地址的两个网络也因网关或地址不同而换代。XDial 的 Provider 不创建接口、
+不发布 IPv4 / IPv6 服务状态或 DNS 设置，其启停不改变指纹。
 旧 epoch 的候选和退避回调失效，网络稳定不等于 Line 登录、握手或真实出口已恢复。
 
 休眠至完整 `didWake` 之间只积累变化，Dark Wake 不停止已提交事务或创建候选。
