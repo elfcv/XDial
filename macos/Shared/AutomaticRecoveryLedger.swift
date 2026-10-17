@@ -265,9 +265,10 @@ struct AutomaticRecoveryLedger {
             parkedAt: current.parkedAt,
             failureCode: current.failureCode,
             tailAttemptsUsed: current.tailAttemptsUsed,
-            deferredGrant: current.deferredGrant?.epoch == epoch
-                ? nil
-                : current.deferredGrant
+            // A grant deferred for exactly this Underlay was earned by a
+            // host-observed change before the attempt ran; re-anchoring on
+            // the same facts is not a budget and must not cancel it.
+            deferredGrant: current.deferredGrant
         )
         budgetEpoch = epoch
     }
@@ -467,6 +468,63 @@ struct AutomaticRecoveryLedger {
         lastGrantAtByFingerprint = lastGrantAtByFingerprint.filter {
             now.timeIntervalSince($0.value) < spacing
         }
+    }
+}
+
+/// Decides which settled report may end the current full-recovery step.
+///
+/// Network Extension status callbacks and journal reads arrive at any time,
+/// e.g. a screen-wake `syncStatus` right after a full wake. While an attempt
+/// is scheduled, preparing or capturing the Underlay, the journal still holds
+/// the previous failed transaction; that report is history, not the
+/// attempt's outcome. Only the transaction the step is waiting for — the
+/// failure that opened the episode, or the attempt's own transaction once it
+/// exists — can decide whether to retry, park or stop.
+struct AutomaticRecoveryOutcomeGate {
+    enum Decision: Equatable {
+        /// No full recovery is in progress.
+        case notRecovering
+        /// Keep reporting "reconnecting"; this report decides nothing.
+        case awaitOutcome
+        /// The awaited transaction settled; retry, park or stop now.
+        case attemptOutcome
+    }
+
+    private(set) var awaitedTransactionID: String?
+
+    /// The step now waits for this transaction's settled report.
+    mutating func await(_ transactionID: String?) {
+        awaitedTransactionID = transactionID
+    }
+
+    /// A new attempt was scheduled: until it creates its own transaction no
+    /// report belongs to it.
+    mutating func attemptScheduled() {
+        awaitedTransactionID = nil
+    }
+
+    mutating func reset() {
+        awaitedTransactionID = nil
+    }
+
+    func decide(
+        recoveryInProgress: Bool,
+        attemptPending: Bool,
+        report: ConnectionReport?,
+        currentTransactionID: String?
+    ) -> Decision {
+        guard recoveryInProgress else { return .notRecovering }
+        guard !attemptPending,
+              let awaitedTransactionID,
+              let report,
+              report.transactionID == awaitedTransactionID,
+              report.transactionID == currentTransactionID,
+              [.failed, .cancelled].contains(report.state),
+              report.rollbackComplete,
+              report.systemTakeoverRemoved else {
+            return .awaitOutcome
+        }
+        return .attemptOutcome
     }
 }
 

@@ -122,6 +122,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
     /// failure that opened the recovery episode is being handled.
     private var automaticReconnectAttemptKind: AutomaticRecoveryAttemptKind?
     private var automaticReconnectRetryFailedTransactionID: String?
+    /// Only the transaction the current recovery step waits for may decide
+    /// it; stray status callbacks re-reading an older journal report cannot.
+    private var automaticRecoveryOutcomeGate = AutomaticRecoveryOutcomeGate()
     /// Parked recovery keeps a read-only Underlay observer. It is separate
     /// from the committed session's monitor: Network Extension status
     /// callbacks stop that one, and XDial's own attempts stop this one.
@@ -2652,6 +2655,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         automaticReconnectTrigger = .automaticConnection
         automaticReconnectAttemptKind = nil
         automaticReconnectTransactionID = report.transactionID
+        automaticRecoveryOutcomeGate.await(report.transactionID)
         automaticRecoveryLedger.beginEpisode(
             in: recoveryEpoch(
                 scenarioID: report.scenario.id,
@@ -2689,6 +2693,10 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         automaticReconnectTrigger = .unexpectedDisconnect
         automaticReconnectAttemptKind = nil
         automaticReconnectTransactionID = nil
+        // The lost committed transaction's settled report opens the episode.
+        automaticRecoveryOutcomeGate.await(
+            report?.transactionID ?? currentTransactionID
+        )
         automaticRecoveryLedger.beginEpisode(
             in: recoveryEpoch(
                 scenarioID: report?.scenario.id ?? "",
@@ -3698,6 +3706,66 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
     }
 
+    /// A scheduled attempt cannot start because the host's current
+    /// transaction is no longer the one it was scheduled after. A wake /
+    /// tail attempt simply returns to parking; a budget step is decided by
+    /// the transaction that is current now, so recovery cannot hang waiting
+    /// for an attempt that never gets its own transaction.
+    private func abandonScheduledAttempt(
+        _ kind: AutomaticRecoveryAttemptKind
+    ) {
+        guard automaticReconnectInProgress else { return }
+        appLog(
+            "Transparent Proxy automatic reconnect \(kind.name) attempt "
+                + "abandoned before its transaction; current="
+                + (currentTransactionID ?? "none")
+        )
+        if kind.isSingleParkedAttempt, automaticRecoveryLedger.isParked {
+            returnToParkingWithoutAttempt()
+            return
+        }
+        automaticRecoveryOutcomeGate.await(currentTransactionID)
+        handleAutomaticReconnectAfterDisconnect(
+            report: ConnectionReportJournal.read()
+        )
+    }
+
+    /// The attempt failed on the host before its transaction existed (its
+    /// plan or journal could not be created). No report describes it, so
+    /// the previous attempt's failed report must not decide; a plan that
+    /// cannot be built is a configuration-class stop.
+    private func failAutomaticRecoveryBeforeTransaction(
+        _ error: Error,
+        attempt: AutomaticRecoveryAttemptKind
+    ) {
+        appLog(
+            "Transparent Proxy automatic reconnect \(attempt.name) attempt "
+                + "could not create its transaction: "
+                + error.localizedDescription
+        )
+        automaticReconnectInProgress = false
+        automaticReconnectTrigger = nil
+        automaticReconnectAttemptKind = nil
+        automaticReconnectTransactionID = nil
+        automaticReconnectUnderlayWaitEvidence = nil
+        networkExtensionSessionTransactionID = nil
+        cancelAutomaticReconnectRetry(resetAttempts: false)
+        clearParkedRecovery()
+        if let incidentID = activeReconnectIncidentID {
+            ReconnectIncidentJournal.finish(
+                incidentID: incidentID,
+                outcome: "failed",
+                code: "host-start-failed",
+                message: error.localizedDescription
+            )
+        }
+        activeReconnectIncidentID = nil
+        publishRuntimeStatus(
+            "disconnected",
+            error: error.localizedDescription
+        )
+    }
+
     private func returnToParkingWithoutAttempt() {
         automaticReconnectInProgress = false
         automaticReconnectTrigger = nil
@@ -3713,7 +3781,17 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             "disconnected",
             error: ConnectionReportJournal.read()?.error?.message
         )
-        captureParkedUnderlay(fallback: parkedUnderlay)
+        // No transaction ran, so there is nothing of XDial's to absorb.
+        // Resume observing from the parked epoch's own Underlay: a network
+        // that changed meanwhile (for example across sleep) is then reported
+        // as a host epoch and earns its full budget.
+        guard let parkedUnderlay else {
+            captureParkedUnderlay(fallback: nil)
+            return
+        }
+        startParkedUnderlayMonitoring(baseline: parkedUnderlay)
+        scheduleParkedTail()
+        scheduleDeferredGrantIfNeeded()
     }
 
     private func scheduleParkedTail() {
@@ -3867,26 +3945,33 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
     }
 
+    /// An attempt is scheduled (possibly held across sleep) or its Underlay
+    /// capture / settled preparation is running; it has no transaction yet.
+    private var automaticRecoveryAttemptPending: Bool {
+        automaticReconnectRetryToken != nil
+            || automaticReconnectPreparationGate.token != nil
+    }
+
     private func handleAutomaticReconnectAfterDisconnect(
         report: ConnectionReport?
     ) {
-        guard automaticReconnectInProgress else { return }
-        guard
-            let report,
-            report.transactionID == currentTransactionID
-        else {
+        switch automaticRecoveryOutcomeGate.decide(
+            recoveryInProgress: automaticReconnectInProgress,
+            attemptPending: automaticRecoveryAttemptPending,
+            report: report,
+            currentTransactionID: currentTransactionID
+        ) {
+        case .notRecovering:
+            return
+        case .awaitOutcome:
             publishRuntimeStatus("reconnecting", error: nil)
             return
+        case .attemptOutcome:
+            break
         }
-        guard [.failed, .cancelled].contains(report.state) else {
-            publishRuntimeStatus("reconnecting", error: nil)
-            return
-        }
-        guard report.rollbackComplete,
-              report.systemTakeoverRemoved else {
-            publishRuntimeStatus("reconnecting", error: nil)
-            return
-        }
+        guard let report else { return }
+        // Consumed: a duplicate of this report decides nothing further.
+        automaticRecoveryOutcomeGate.reset()
         guard let trigger = automaticReconnectTrigger else {
             finishAutomaticReconnect(
                 report: report,
@@ -3905,7 +3990,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             scheduleAutomaticReconnectRetry(
                 failedTransactionID: report.transactionID,
                 failureCode: report.error?.code,
-                delay: delay
+                delay: delay,
+                outcomeReport: report
             )
             publishRuntimeStatus("reconnecting", error: nil)
             return
@@ -3925,7 +4011,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         failureCode: String? = nil,
         delay: TimeInterval,
         recordSchedule: Bool = true,
-        kind requestedKind: AutomaticRecoveryAttemptKind? = nil
+        kind requestedKind: AutomaticRecoveryAttemptKind? = nil,
+        outcomeReport: ConnectionReport? = nil
     ) {
         guard automaticReconnectRetryWorkItem == nil,
               automaticReconnectRetryToken == nil,
@@ -3938,14 +4025,18 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         } else {
             guard let retryNumber =
                 automaticRecoveryLedger.nextAttempt else {
+                // No budget left for the failure just decided (or for the
+                // episode that just opened in an exhausted epoch).
+                let report = outcomeReport ?? ConnectionReportJournal.read()
                 finishAutomaticReconnect(
-                    report: ConnectionReportJournal.read(),
-                    message: ConnectionReportJournal.read()?.error?.message
+                    report: report,
+                    message: report?.error?.message
                 )
                 return
             }
             kind = .budget(retryNumber)
         }
+        automaticRecoveryOutcomeGate.attemptScheduled()
         if recordSchedule,
            case let .budget(retryNumber) = kind {
             if let incidentID = activeReconnectIncidentID {
@@ -4020,13 +4111,17 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         automaticReconnectRetryAt = nil
         automaticReconnectRetryKind = nil
         automaticReconnectRetryFailedTransactionID = nil
+        guard automaticReconnectInProgress else { return }
         guard
-            automaticReconnectInProgress,
             currentTransactionID == failedTransactionID,
             requestedProfileJSON != nil,
             let manager,
-            startIntentID != nil,
-            let preparationID = automaticReconnectPreparationGate.begin()
+            startIntentID != nil
+        else {
+            abandonScheduledAttempt(scheduledKind)
+            return
+        }
+        guard let preparationID = automaticReconnectPreparationGate.begin()
         else {
             return
         }
@@ -4060,8 +4155,14 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                           self.automaticReconnectPreparationGate
                             .isCurrent(preparationID),
                           self.startIntentID == intentID,
-                          self.currentTransactionID == failedTransactionID,
                           self.automaticReconnectInProgress else {
+                        return
+                    }
+                    guard self.currentTransactionID == failedTransactionID
+                    else {
+                        _ = self.automaticReconnectPreparationGate
+                            .finish(preparationID)
+                        self.abandonScheduledAttempt(scheduledKind)
                         return
                     }
                     guard !self.powerLifecycleGate.defersNetworkWork,
@@ -4093,6 +4194,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                         guard self.automaticRecoveryLedger.recordStarted(
                             retryNumber
                         ) else {
+                            self.abandonScheduledAttempt(attemptKind)
                             return
                         }
                     case .tail:
@@ -4108,6 +4210,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                         self.automaticReconnectTransactionID =
                             transactionID
                         self.automaticReconnectAttemptKind = attemptKind
+                        // From here only this transaction's settled report
+                        // is the attempt's outcome.
+                        self.automaticRecoveryOutcomeGate.await(transactionID)
                         if let incidentID = self.activeReconnectIncidentID {
                             if case let .budget(retryNumber) = attemptKind {
                                 ReconnectIncidentJournal.append(
@@ -4133,7 +4238,10 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                             $0.setState(.preparing)
                         }
                     } catch {
-                        self.publishFailure(error)
+                        self.failAutomaticRecoveryBeforeTransaction(
+                            error,
+                            attempt: attemptKind
+                        )
                         return
                     }
                     appLog(
@@ -4320,6 +4428,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         automaticReconnectRetryAt = nil
         automaticReconnectRetryKind = nil
         automaticReconnectRetryFailedTransactionID = nil
+        automaticRecoveryOutcomeGate.reset()
         if resetAttempts {
             automaticRecoveryLedger.stableReset()
         }
