@@ -8,6 +8,9 @@ enum ConnectionFailureCode {
 
 enum AutomaticReconnectTrigger: String, Codable {
     case automaticConnection = "automatic-connection"
+    /// A parked recovery resumed because settled host network facts changed.
+    /// Before 2026-08-16 this raw value named a removed Underlay-change
+    /// rebuild; incident records persisted then still decode with it.
     case underlayChange = "underlay-change"
     case unexpectedDisconnect = "unexpected-disconnect"
 }
@@ -21,6 +24,14 @@ struct AutomaticReconnectRuntimeState: Codable, Equatable {
     let retryAt: Date?
     let retryAttempt: Int?
     let underlayWaitEvidence: HostUnderlayCaptureEvidence?
+    /// Budget exhausted with a network-related failure: the runtime is
+    /// disconnected, takeover is removed, the connection intent is kept and
+    /// a read-only Underlay monitor waits for a settled network change.
+    let parked: Bool
+    /// `budget`, `wake` or `tail` for the scheduled or running attempt.
+    let attemptKind: String?
+    let tailAttemptAt: Date?
+    let recovery: AutomaticRecoveryLedgerProjection?
 
     enum CodingKeys: String, CodingKey {
         case inProgress = "in_progress"
@@ -31,6 +42,10 @@ struct AutomaticReconnectRuntimeState: Codable, Equatable {
         case retryAt = "retry_at"
         case retryAttempt = "retry_attempt"
         case underlayWaitEvidence = "underlay_wait_evidence"
+        case parked
+        case attemptKind = "attempt_kind"
+        case tailAttemptAt = "tail_attempt_at"
+        case recovery
     }
 
     init(
@@ -41,7 +56,11 @@ struct AutomaticReconnectRuntimeState: Codable, Equatable {
         stableResetAt: Date?,
         retryAt: Date?,
         retryAttempt: Int?,
-        underlayWaitEvidence: HostUnderlayCaptureEvidence? = nil
+        underlayWaitEvidence: HostUnderlayCaptureEvidence? = nil,
+        parked: Bool = false,
+        attemptKind: String? = nil,
+        tailAttemptAt: Date? = nil,
+        recovery: AutomaticRecoveryLedgerProjection? = nil
     ) {
         self.inProgress = inProgress
         self.trigger = trigger
@@ -51,6 +70,48 @@ struct AutomaticReconnectRuntimeState: Codable, Equatable {
         self.retryAt = retryAt
         self.retryAttempt = retryAttempt
         self.underlayWaitEvidence = underlayWaitEvidence
+        self.parked = parked
+        self.attemptKind = attemptKind
+        self.tailAttemptAt = tailAttemptAt
+        self.recovery = recovery
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        inProgress = try values.decode(Bool.self, forKey: .inProgress)
+        trigger = try values.decodeIfPresent(
+            AutomaticReconnectTrigger.self,
+            forKey: .trigger
+        )
+        attemptsUsed = try values.decode(Int.self, forKey: .attemptsUsed)
+        maxAttempts = try values.decode(Int.self, forKey: .maxAttempts)
+        stableResetAt = try values.decodeIfPresent(
+            Date.self,
+            forKey: .stableResetAt
+        )
+        retryAt = try values.decodeIfPresent(Date.self, forKey: .retryAt)
+        retryAttempt = try values.decodeIfPresent(
+            Int.self,
+            forKey: .retryAttempt
+        )
+        underlayWaitEvidence = try values.decodeIfPresent(
+            HostUnderlayCaptureEvidence.self,
+            forKey: .underlayWaitEvidence
+        )
+        parked = try values.decodeIfPresent(Bool.self, forKey: .parked)
+            ?? false
+        attemptKind = try values.decodeIfPresent(
+            String.self,
+            forKey: .attemptKind
+        )
+        tailAttemptAt = try values.decodeIfPresent(
+            Date.self,
+            forKey: .tailAttemptAt
+        )
+        recovery = try values.decodeIfPresent(
+            AutomaticRecoveryLedgerProjection.self,
+            forKey: .recovery
+        )
     }
 
     func retryCountdownSeconds(at date: Date) -> Int? {
@@ -136,6 +197,17 @@ enum AutomaticReconnectFailurePolicy {
         "server-error",
     ]
 
+    /// Whether a settled new network epoch may grant a parked recovery a
+    /// fresh budget. Only failures with structured network evidence park;
+    /// identity, configuration and unclassified codes are already terminal
+    /// for the epoch they failed in, and a different network gives no
+    /// structured reason to expect another result.
+    static func permitsNetworkEpochGrant(
+        _ error: ConnectionReportError?
+    ) -> Bool {
+        isTransient(error)
+    }
+
     static func isTransient(_ error: ConnectionReportError?) -> Bool {
         guard let error else { return false }
         let code = error.code
@@ -162,10 +234,10 @@ enum AutomaticReconnectFailurePolicy {
 
 /// 自动重连是同一份用户连接意图的有界恢复，不是静默无限拉起。
 ///
-/// Underlay 改变后的自动重建仍只重试结构化的 Underlay 瞬态故障；
-/// 启动自动连接与已提交会话意外断线按 `AutomaticReconnectFailurePolicy`
-/// 分类，终止与未知错误立即结束。无论哪种来源，预算都是五次，
-/// 且必须连续稳定五分钟才会清零。
+/// 启动自动连接、已提交会话意外断线与停泊后由网络变化恢复的完整恢复都按
+/// `AutomaticReconnectFailurePolicy` 分类，终止与未知错误立即结束。预算属于
+/// 一个恢复 epoch（`AutomaticRecoveryLedger`），每个 epoch 五次，同一事务
+/// 连续稳定五分钟才会清零。
 struct AutomaticReconnectRetryPolicy {
     private let delays: [TimeInterval]
     let stableResetInterval: TimeInterval
@@ -214,10 +286,7 @@ struct AutomaticReconnectRetryPolicy {
             return false
         }
         switch trigger {
-        case .underlayChange:
-            return report.error?.code ==
-                ConnectionFailureCode.underlayEgressUnavailable
-        case .automaticConnection, .unexpectedDisconnect:
+        case .automaticConnection, .underlayChange, .unexpectedDisconnect:
             return AutomaticReconnectFailurePolicy.isTransient(report.error)
         }
     }
