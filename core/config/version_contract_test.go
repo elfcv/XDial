@@ -45,3 +45,22 @@ func TestProfileDocumentSchemaVersionsArePinned(t *testing.T) {
 		t.Fatalf("schema_version 3 must be rejected as unsupported, got %v; %s", err, policy)
 	}
 }
+
+// 运行配置指纹随连接报告写进 App Group。之后的构建（或共用身份的另一通道）接管运行中的
+// 连接时，拿它和自己现算的指纹做相等比较；前缀是指纹算法的版本，改了它，接管后的连接会被
+// 误判为有未应用的改动。这个前缀由各版本共用（D22），完整清单和纳入标准见
+// test/version_constants_test.py。
+func TestRuntimeConfigurationFingerprintPrefixIsPinned(t *testing.T) {
+	const (
+		prefix = "runtime-v1:"
+		policy = "改这些值必须先在 main 上演进并处理旧版本兼容，不能只在 beta 分支改"
+	)
+	plan, err := BuildConnectionPlan(runtimeFingerprintTestProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := plan.ConfigurationFingerprint
+	if !strings.HasPrefix(fingerprint, prefix) || len(fingerprint) != len(prefix)+64 {
+		t.Fatalf("configuration fingerprint = %q, want %q followed by a SHA-256 digest; %s", fingerprint, prefix, policy)
+	}
+}

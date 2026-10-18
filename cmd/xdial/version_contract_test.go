@@ -19,8 +19,10 @@ import (
 // test/version_constants_test.py。
 const versionContractPolicy = "改这些值必须先在 main 上演进并处理旧版本兼容，不能只在 beta 分支改"
 
-// 安装方（Swift）只认 registration_handoff_version 与 protocol_version 为 1 的 helper；
-// 声明别的值，新旧 App 与 helper 之间的注册交接就会失败。
+// 安装方（Swift）对这两个值的要求不同：daemon-info 的 registration_handoff_version 是能力
+// 声明，只和最低协议版本 1 比大小，低于 1 就当旧 helper 走旧维护窗口；registration-handoff
+// 回复的 protocol_version 必须恰好等于 1，否则安装方按服务忙放弃，新旧 App 与 helper 之间的
+// 注册交接就会失败。
 func TestRegistrationHandoffWireVersionsArePinned(t *testing.T) {
 	clients := NewClientSet()
 	eng := engine.New(filepath.Join(t.TempDir(), "engine"), t.TempDir(), &daemonCallback{clients: clients})

@@ -5,7 +5,7 @@ import XCTest
 /// Stable, beta and Debug share these persistent formats and cross-process
 /// protocols (D22). test/version_constants_test.py pins every site, including
 /// the ones outside this test target (PrivilegeManager, KeychainStore and the
-/// Go helper); this suite checks the values through the code that writes and
+/// Go side); this suite checks the values through the code that writes and
 /// reads them.
 final class VersionConstantContractTests: XCTestCase {
     private let policy = "改这些值必须先在 main 上演进并处理旧版本兼容，不能只在 beta 分支改"
@@ -50,11 +50,19 @@ final class VersionConstantContractTests: XCTestCase {
         )
 
         // Stable and Debug read the same file: a newer schema is refused, never rewritten.
+        // Launch goes through loadOrCreate, the path that could replace the library.
         var newer = ProfileLibrary()
         newer.schemaVersion = 4
         let sealed = try AES.GCM.seal(JSONEncoder().encode(newer), using: key, authenticating: authenticatedData)
-        try XCTUnwrap(sealed.combined).write(to: file)
-        XCTAssertThrowsError(try ProfileLibraryStore(directory: directory, keyProvider: { _ in key }).load(), policy)
+        let written = try XCTUnwrap(sealed.combined)
+        try written.write(to: file)
+        XCTAssertThrowsError(
+            try ProfileLibraryStore(directory: directory, keyProvider: { _ in key }).loadOrCreate {
+                XCTFail("a newer library must not be replaced by a migrated one; \(self.policy)")
+                return ProfileLibrary()
+            }, policy
+        )
+        XCTAssertEqual(try Data(contentsOf: file), written, "a newer library was rewritten; \(policy)")
     }
 
     func testUpdateFormatsArePinned() throws {
@@ -166,6 +174,23 @@ final class VersionConstantContractTests: XCTestCase {
             LocalSOCKSShareRequest.self, from: JSONSerialization.data(withJSONObject: object)
         )
         XCTAssertFalse(newer.isValid, policy)
+
+        let control = TailscaleControlRequest(transactionID: "transaction", identityProfileID: "profile", command: .status)
+        XCTAssertTrue(control.isValid, policy)
+        var controlObject = try jsonObject(control)
+        XCTAssertEqual(controlObject["kind"] as? String, "tailscale-control", policy)
+        XCTAssertEqual(controlObject["version"] as? Int, 1, policy)
+        controlObject["version"] = 2
+        let newerControl = try JSONDecoder().decode(
+            TailscaleControlRequest.self, from: JSONSerialization.data(withJSONObject: controlObject)
+        )
+        XCTAssertFalse(newerControl.isValid, policy)
+        XCTAssertEqual(
+            TailscaleControlPolicy.rejection(
+                request: newerControl, transactionID: "transaction",
+                committed: true, switching: false, activeIdentity: "profile"
+            ), "invalid-request", policy
+        )
     }
 
     private func temporaryDirectory() throws -> URL {

@@ -6,8 +6,8 @@
 这个检查直接读两侧源码，把每个版本号固定为当前值，并核对写入方和读取方一致。
 
 纳入标准（同时满足）：
-1. 显式版本：版本字段的取值、版本判断的阈值，或文件名、UserDefaults 键、钥匙串账户、
-   认证附加数据里的 v1 之类后缀；
+1. 显式版本：版本字段的取值、缺字段时的缺省值、版本判断的阈值，或文件名、UserDefaults
+   键、钥匙串账户、认证附加数据、持久值前缀里的 v1 之类后缀；
 2. 跨越构建边界：写入方和读取方不保证是同一个构建。包括持久化到磁盘、UserDefaults、
    钥匙串或 App Group 后由之后的版本（或共用身份的另一通道、共用配置库的 Debug）读取；
    经 IPC 在分别安装和替换的进程之间传递（宿主 App、root helper、网络扩展）；经更新
@@ -15,7 +15,8 @@
 
 不纳入：
 - 只在同一进程、同一构建内产生和消费的：ConnectionPlan 的 schema_version 由宿主进程内
-  的 Libbox 生成、宿主自己校验；sing-box 源规则集的 version 只在内存里交给 sing-box；
+  的 Libbox 生成、宿主自己校验；线路运行身份的 line-runtime-v1: 前缀由网络扩展进程内的
+  Libbox 生成，摘要用进程内随机密钥，只在同一个扩展进程里比较；
 - 写入后没有任何读取方的：NE providerConfiguration 里的 schema_version；Tailscale 迁移
   标记文件的内容 "v1"（读取方只看文件是否存在，文件名已固定）；
 - 随同一构建打包的输入：RuleSetPresetCatalog 的 schema_version；
@@ -62,25 +63,44 @@ PINS = [
         ],
     },
     {
-        "name": "helper 注册交接协议版本",
+        "name": "helper 注册交接回复 protocol_version",
         "value": "1",
-        "shared": "root helper 在 daemon-info 和 registration-handoff 回复里声明，安装方只认这个版本",
+        "shared": "root helper 写进 registration-handoff 回复，安装方要求恰好等于这个值才租用维护窗口，"
+                  "否则按服务忙放弃；升级期间新旧 App 与新旧 helper 交叉组合",
         "sites": [
-            site("Go", "cmd/xdial/daemon.go", r"\bRegistrationHandoffVersion:\s*(\d+)"),
             site("Go", "cmd/xdial/daemon.go", r"\bProtocolVersion:\s*(\d+)"),
             site("Swift", "macos/Sources/XDial/PrivilegeManager.swift",
                  r"reply\.protocolVersion\s*==\s*(\d+)"),
         ],
     },
     {
+        "name": "helper 声明的注册交接能力 registration_handoff_version",
+        "value": "1",
+        "shared": "root helper 在 daemon-info 里声明；安装方不要求相等，只拿它和最低协议版本比大小，"
+                  "低于最低版本就当旧 helper 走旧维护窗口",
+        "sites": [
+            site("Go", "cmd/xdial/daemon.go", r"\bRegistrationHandoffVersion:\s*(\d+)"),
+        ],
+    },
+    {
         "name": "helper 注册交接的最低协议版本（低于它按旧 helper 处理）",
         "value": "1",
-        "shared": "安装方据此判断正在运行的 helper 能否租用维护窗口",
+        "shared": "安装方据此判断正在运行的 helper 能否租用维护窗口；helper 声明的能力版本不能低于它",
         "sites": [
             site("Swift", "macos/Sources/XDial/PrivilegeManager.swift",
                  r"handoffProtocolVersion\s*<\s*(\d+)"),
             site("Swift", "macos/Shared/HelperRegistrationCoordinator.swift",
                  r"handoffProtocolVersion\s*<\s*(\d+)"),
+        ],
+    },
+    {
+        "name": "旧 helper 缺省的注册交接版本（daemon-info 不带该字段时）",
+        "value": "0",
+        "shared": "早于交接协议的旧 helper 不带 registration_handoff_version，安装方按这个值处理；它必须小于"
+                  "最低协议版本，旧 helper 才会走旧维护窗口，而不是收到它不认识的 registration-handoff",
+        "sites": [
+            site("Swift", "macos/Sources/XDial/PrivilegeManager.swift",
+                 r"registrationHandoffVersion\s*\?\?\s*(\d+)"),
         ],
     },
     {
@@ -265,6 +285,38 @@ PINS = [
         ],
     },
     {
+        "name": "宿主与网络扩展的 Tailscale 控制 IPC 版本",
+        "value": "1",
+        "shared": "宿主 App 与网络扩展分别替换，更新期间可能版本不同；读取方版本不符就回 invalid-request",
+        "sites": [
+            site("Swift", "macos/Shared/TailscaleControlIPC.swift",
+                 r'kind = "tailscale-control"\s*version = (\d+)$'),
+            site("Swift", "macos/Shared/TailscaleControlIPC.swift",
+                 r'kind == "tailscale-control" && version == (\d+)'),
+        ],
+    },
+    {
+        "name": "文本规则集转换出的 sing-box 源规则集 version",
+        "value": "3",
+        "shared": "转换结果缓存在共享 App Group 的 xdial-rule-sets，缓存路径不含版本，由共用 App Group 的其他版本"
+                  "直接读取；读取方的 sing-box 拒绝它不认识的版本，缓存失效后离线或拉取失败时连接报 rule-set-unavailable",
+        "sites": [
+            site("Go", "core/libbox/configgen.go", r"sourceRuleSet\{\s*Version:\s*(\d+),"),
+        ],
+    },
+    {
+        "name": "运行配置指纹版本前缀",
+        "value": "runtime-v1:",
+        "shared": "宿主算出的指纹随连接报告写进 App Group；之后的构建（或共用身份的另一通道）接管运行中的连接、"
+                  "判断配置是否已应用、判断同场景切换是否 no-op 时，都拿它和自己现算的指纹做相等比较。前缀是指纹"
+                  "算法的版本：改了它，接管后的连接会被误判为有未应用的改动；改投影或摘要算法时同样要在 main 上处理"
+                  "新旧指纹的比较",
+        "sites": [
+            site("Go", "core/config/runtime_fingerprint.go",
+                 r'runtimeConfigurationFingerprintPrefix\s*=\s*"([^"]+)"'),
+        ],
+    },
+    {
         "name": "便携 Profile 文档 xdial.schema_version（读取上限、仅资源文档）",
         "value": "2",
         "shared": "导出文件、订阅和预置配置包里的文档会被其他版本导入",
@@ -321,6 +373,10 @@ def inspect(pin):
     return problems, observed
 
 
+def pin_named(name):
+    return next(pin for pin in PINS if pin["name"] == name)
+
+
 def failure_message(pin, problems):
     lines = [f"版本常量「{pin['name']}」偏离契约："]
     lines += [f"  - {problem}" for problem in problems]
@@ -352,9 +408,19 @@ class VersionConstantContractTests(unittest.TestCase):
 
     def test_required_cross_language_pairs_are_checked_on_both_sides(self):
         # 计划 H4 点名的两组跨 Go/Swift 常量必须两侧都在表里，不能只剩一侧。
-        for name in ["helper 注册维护意图 version", "helper 注册交接协议版本"]:
-            pin = next(pin for pin in PINS if pin["name"] == name)
+        for name in ["helper 注册维护意图 version", "helper 注册交接回复 protocol_version"]:
+            pin = pin_named(name)
             self.assertEqual({entry["side"] for entry in pin["sites"]}, {"Go", "Swift"}, name)
+
+    def test_helper_handoff_versions_keep_their_order(self):
+        # 安装方只拿 helper 声明的能力版本和最低协议版本比大小：缺省值必须低于最低版本，旧 helper
+        # 才会走旧维护窗口；helper 声明的版本不能低于最低版本，否则新 helper 也会被当成旧 helper。
+        legacy = int(pin_named("旧 helper 缺省的注册交接版本（daemon-info 不带该字段时）")["value"])
+        minimum = int(pin_named("helper 注册交接的最低协议版本（低于它按旧 helper 处理）")["value"])
+        declared = int(pin_named("helper 声明的注册交接能力 registration_handoff_version")["value"])
+        self.assertLess(legacy, minimum, f"旧 helper 缺省值 {legacy} 必须小于最低协议版本 {minimum}。{POLICY}")
+        self.assertGreaterEqual(
+            declared, minimum, f"helper 声明的版本 {declared} 不能低于最低协议版本 {minimum}。{POLICY}")
 
 
 if __name__ == "__main__":
