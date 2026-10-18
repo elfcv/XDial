@@ -55,7 +55,7 @@ curl -sS -X POST 127.0.0.1:19877/action \
   前置条件就绪。`connectionReport` 表达连接事务的计划、任务、事件、错误和回滚结果。
 - `activeScenarioID` 是 Profile 的 active Scenario；`desiredConnectionScenarioID` 是连接
   意图。切换期间的来源、候选和实际提交身份在 `scenarioSwitchReport` 中。
-- Next 的 `profile` 是运行选择的配置，`editingProfile` 是配置窗口正在编辑的配置；
+- `profile` 是运行选择的配置，`editingProfile` 是配置窗口正在编辑的配置；
   两者都经过凭据脱敏。`profileEditorPosition` 记录当前分类和展开对象，供窗口交互验收。
 - `configDirty` 表示已保存配置的有效运行依赖与当前事务不同。底层指纹可能受凭据影响，
   不对外暴露。

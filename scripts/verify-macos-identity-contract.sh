@@ -115,8 +115,10 @@ for target in XDial XDialSettingsUI XDialTransparentProxy XDialTests; do
     [[ " $(build_setting Debug "$target" SWIFT_ACTIVE_COMPILATION_CONDITIONS) " == *' XDIAL_DEVELOPMENT_IDENTITY '* ]] \
         || fail "Debug/$target missing development identity condition"
 done
+# XDialTests compiles Shared sources without a test host, so its own conditions
+# decide which identity CI's Release test run asserts.
 for configuration in FormalDevelopment Release; do
-    for target in XDial XDialSettingsUI XDialTransparentProxy; do
+    for target in XDial XDialSettingsUI XDialTransparentProxy XDialTests; do
         conditions=" $(build_setting "$configuration" "$target" SWIFT_ACTIVE_COMPILATION_CONDITIONS) "
         [[ "$conditions" != *' XDIAL_DEVELOPMENT_IDENTITY '* ]] \
             || fail "$configuration/$target incorrectly uses development identity"

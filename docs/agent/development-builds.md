@@ -90,21 +90,32 @@ Next 的旧配置仍是首次只读迁移的来源，也仍在“删除数据”
 
    ```sh
    ls -d "/Applications/XDial Next.app" ~/.xdial-next ~/Library/Preferences/com.kafeifei.xdial.next.plist \
-     ~/Library/Logs/"XDial Next" "/Library/Application Support/XDial Next" \
-     /Applications/.XDial-next.installation.lock \
-     ~/Library/"Group Containers"/UVZM439VGU.com.kafeifei.xdial.next.network 2>/dev/null
+     ~/Library/Logs/"XDial Next" ~/Library/"Application Support"/"XDial Next" \
+     "/Library/Application Support/XDial Next" \
+     ~/Library/"Group Containers"/UVZM439VGU.com.kafeifei.xdial.next.network \
+     ~/Library/"Application Scripts"/UVZM439VGU.com.kafeifei.xdial.next.network 2>/dev/null
+   ls -a /Applications | grep '^\.XDial-next\.'
    sudo ls -d "/private/var/root/Library/Group Containers/UVZM439VGU.com.kafeifei.xdial.next.network" 2>/dev/null
    find /tmp/ -maxdepth 1 -name 'xdial-next*'
    security find-generic-password -s com.kafeifei.xdial.next >/dev/null 2>&1 && echo "keychain item present"
    systemextensionsctl list | grep -F com.kafeifei.xdial.next
    launchctl print system/com.kafeifei.xdial.next.daemon >/dev/null 2>&1 && echo "daemon loaded"
    launchctl print-disabled system | grep -F com.kafeifei.xdial.next
-   pgrep -fl 'XDial Next.app'
+   pgrep -fl 'XDial Next\.app|xdial-next|xdial\.next'
    ```
 
+   `/Applications` 下以 `.XDial-next.` 开头的是安装锁，以及安装事务中断后留下的 `.install-*`、`.backup-*`、
+   `.transaction-*`。`pgrep` 要同时匹配 App、Settings UI、扩展和 root 常驻的 helper：helper 的命令行只有
+   `xdial-daemon daemon --socket /tmp/xdial-next.sock`，不含 `XDial Next.app`。
+
 2. `XDial Next.app` 还在时，用它自己的卸载流程卸载，**不要勾选“同时删除新旧版本的配置与密码”**。
+   这一步会注销 Next 的 helper。
 3. 卸载后扩展可能显示 `terminated waiting to uninstall on reboot`，重启后由系统移除。
-4. 不要用任何版本的“卸载并删除数据”清理 Next：它会同时删掉所有版本共用的配置库、正式版与 Debug
+4. 删 Next 的旧配置前，先确认共享库已经建立：`ls ~/.xdial/configuration/profiles.enc`。不存在时，
+   先启动一次 Debug 或正式版完成首启转换（整库复制 `.xdial`、`.xdial-debug`、`.xdial-next` 中修改时间最新的
+   `profiles.enc`，用对应身份的钥匙串项解密），在配置窗口确认需要的 Profile 都在，再做下一步。否则
+   `~/.xdial-next` 和它的钥匙串项可能是 Next 多 Profile 配置库仅有的一份，删掉无法恢复。
+5. 不要用任何版本的“卸载并删除数据”清理 Next：它会同时删掉所有版本共用的配置库、正式版与 Debug
    的旧数据和全部配置密钥，还会卸载执行它的那个 App。只用定点命令：
 
    ```sh
@@ -113,11 +124,15 @@ Next 的旧配置仍是首次只读迁移的来源，也仍在“删除数据”
    security delete-generic-password -s com.kafeifei.xdial.next   # 重复执行，直到提示找不到
    ```
 
-5. 其余路径按第 1 步的结果手动删除：两处 App Group 容器（root 那份需要 `sudo`）、`~/Library/Logs/XDial Next`、
-   root 属主的 `/Library/Application Support/XDial Next`、`/Applications/.XDial-next.installation.lock`
-   和 `/tmp/xdial-next*`。`launchctl print-disabled` 里只剩的启用记录不对应已加载的服务，可以不处理。
-6. 升级 Debug 或正式版前，确认没有 Next 进程在运行。Next 不再是已知的兄弟身份，它的进程会让
-   helper 维护停在“进程状态未知”；这只暂停维护，不会结束任何进程，退出 Next 后恢复。
+6. 其余路径按第 1 步的结果手动删除：两处 App Group 容器（root 那份需要 `sudo`）及
+   `~/Library/Application Scripts` 下的同名目录、`~/Library/Logs/XDial Next`、`~/Library/Application Support/XDial Next`、
+   root 属主的 `/Library/Application Support/XDial Next`、`/Applications` 下以 `.XDial-next.` 开头的文件和目录，
+   以及 `/tmp/xdial-next*`。`launchctl print-disabled` 里只剩的启用记录不对应已加载的服务，可以不处理。
+7. 升级 Debug 或正式版前，确认第 1 步的 `pgrep` 没有输出。Next 不再是已知的兄弟身份，它的 App 和 helper
+   都会让 helper 维护停在“进程状态未知”；这只暂停维护，不会结束任何进程。Next 的 helper 是 KeepAlive 的
+   root daemon，退出 App 不会停止它，用 Next 自己的卸载流程注销 helper 后才恢复。`XDial Next.app` 已被直接删除、
+   helper 仍在运行时，重启 Mac：helper 的 launchd plist 和程序都在已删除的包里，重启后不会再被拉起（按
+   SMAppService 的机制推断）。
 
 另外：Apple 开发者后台里 Next 的 App ID、App Group 和两份 Developer ID profile 可以作废；
 tailnet 里 `xdial-next-*` 的陈旧设备可以手动删除；本地 `build/` 下名字含 `next` 的目录可以删除。
