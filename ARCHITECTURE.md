@@ -322,6 +322,8 @@ FormalDevelopment 保留正式身份，仅用于正式身份验证。
 从而决定所在的线、新旧比较和是否多读 beta.json；它不替换或锁定 stable.json，不参与签名包
 授权。更低构建号的宿主不覆盖已装 App：自行安装和 `--install-only` 在安装锁内拒绝；Finder
 拖拽覆盖拦不住，之后扩展检查发现仍登记着更高构建号的扩展时不再激活，提示先卸载（不删数据）。
+两道门禁都由被装进来的更旧 App 执行，只有带门禁的构建才会拦截；装回不带门禁的构建（v0.9.6
+及更早）宿主仍被替换、与扩展失配，只能先卸载再安装。
 
 入口：[安装状态机](macos/Shared/InstallationTransaction.swift)、
 [构建与身份](docs/agent/development-builds.md)、[更新协议与发布](docs/agent/updates.md)。
