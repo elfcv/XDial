@@ -24,6 +24,7 @@ expect_failure "$contract" validate-inputs 0.7.0 98
 expect_failure "$contract" validate-inputs v0.7 98
 expect_failure "$contract" validate-inputs v01.7.0 98
 expect_failure "$contract" validate-inputs v0.7.0-rc.1 98
+expect_failure "$contract" validate-inputs next-v0.7.0 98
 expect_failure "$contract" validate-inputs v0.7.0 0
 expect_failure "$contract" validate-inputs v0.7.0 build-98
 
@@ -216,21 +217,74 @@ mkdir -p "$git_fixture"
     "$contract" assert-git-tag v1.2.5
 )
 
-# Release inputs must match the checked-in notes before anything is fetched,
-# acceptance builds included.
-expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
-    release-inputs RELEASE_TAG=v2.3.4 RELEASE_BUILD_NUMBER=234
-expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
-    release-inputs RELEASE_TAG=v9.9.9 RELEASE_BUILD_NUMBER=999 \
-    RELEASE_UPDATE_ACCEPTANCE_ID=pages-fixture
+# origin is a local bare repository, so release-inputs never fetches over the
+# network.
+release_source="$test_root/release-source.git"
+release_work="$test_root/release-work"
+git init -q --bare "$release_source"
+git init -q -b main "$release_work"
+(
+    cd "$release_work"
+    git config user.name 'XDial Test'
+    git config user.email 'xdial-test@example.invalid'
+    printf '%s\n' source >tracked.txt
+    git add tracked.txt
+    git commit -qm source
+    git remote add origin "$release_source"
+    git push -qu origin main
+    git tag v2.3.4
+    git update-ref -d refs/remotes/origin/main
+    release_notes="$test_root/release-input-notes.md"
 
-# An acceptance build is refused offline, before the stable publisher runs.
-if publish_output="$(make -s --no-print-directory -f "$repository_root/Makefile" \
-    publish RELEASE_TAG=v9.9.9 RELEASE_UPDATE_ACCEPTANCE_ID=pages-fixture 2>&1)"; then
-    fail "an acceptance build reached the stable publisher"
-fi
-grep -Fq 'an acceptance build cannot be published to stable' <<<"$publish_output" \
-    || fail "publish did not refuse the acceptance build before running"
+    # Notes for another version fail before origin/main is fetched, and an
+    # acceptance build does not skip them.
+    printf '%s\n' '# XDial v2.3.3' '' '## 更新了什么' '' '- 门禁测试。' \
+        >"$release_notes"
+    expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
+        release-inputs RELEASE_CONTRACT="$contract" RELEASE_TAG=v2.3.4 \
+        RELEASE_BUILD_NUMBER=234 RELEASE_NOTES_FILE="$release_notes"
+    expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
+        release-inputs RELEASE_CONTRACT="$contract" RELEASE_TAG=v2.3.4 \
+        RELEASE_BUILD_NUMBER=234 RELEASE_NOTES_FILE="$release_notes" \
+        RELEASE_UPDATE_ACCEPTANCE_ID=pages-fixture
+    if git rev-parse -q --verify refs/remotes/origin/main >/dev/null; then
+        fail "release-inputs fetched origin/main before validating the notes"
+    fi
+
+    # Valid inputs refresh origin/main before the tag is checked against it.
+    printf '%s\n' '# XDial v2.3.4' '' '## 更新了什么' '' '- 门禁测试。' \
+        >"$release_notes"
+    make -s --no-print-directory -f "$repository_root/Makefile" release-inputs \
+        RELEASE_CONTRACT="$contract" RELEASE_TAG=v2.3.4 RELEASE_BUILD_NUMBER=234 \
+        RELEASE_NOTES_FILE="$release_notes"
+    [[ "$(git rev-parse refs/remotes/origin/main)" == "$(git rev-parse HEAD)" ]] \
+        || fail "release-inputs did not refresh origin/main"
+
+    # A failed refresh must not fall through to a stale, otherwise valid ref.
+    git remote remove origin
+    git update-ref refs/remotes/origin/main HEAD
+    expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
+        release-inputs RELEASE_CONTRACT="$contract" RELEASE_TAG=v2.3.4 \
+        RELEASE_BUILD_NUMBER=234 RELEASE_NOTES_FILE="$release_notes"
+
+    # Explicit formal-identity acceptance builds have synthetic versions and no
+    # stable tag. They alone may bypass the stable tag/main check, and publish
+    # refuses them before the stable publisher runs. This fixture has no
+    # scripts/publish-release.py, so a broken guard still cannot publish.
+    git tag -d v2.3.4 >/dev/null
+    printf '%s\n' '# XDial v9.9.9' '' '## 更新了什么' '' '- 验收包。' \
+        >"$release_notes"
+    make -s --no-print-directory -f "$repository_root/Makefile" release-inputs \
+        RELEASE_CONTRACT="$contract" RELEASE_TAG=v9.9.9 RELEASE_BUILD_NUMBER=999 \
+        RELEASE_NOTES_FILE="$release_notes" \
+        RELEASE_UPDATE_ACCEPTANCE_ID=pages-fixture
+    if publish_output="$(make -s --no-print-directory -f "$repository_root/Makefile" \
+        publish RELEASE_TAG=v9.9.9 RELEASE_UPDATE_ACCEPTANCE_ID=pages-fixture 2>&1)"; then
+        fail "an acceptance build reached the stable publisher"
+    fi
+    grep -Fq 'an acceptance build cannot be published to stable' <<<"$publish_output" \
+        || fail "publish did not refuse the acceptance build before running"
+)
 
 fixture_root="$test_root/archive-fixture"
 fixture_app="$fixture_root/XDial.app"
@@ -256,6 +310,12 @@ printf '%s\n' extra >"$tampered_root/extra.txt"
     /usr/bin/zip -qry "$test_root/tampered.zip" XDial.app extra.txt
 )
 expect_failure "$contract" verify-archive-shape "$test_root/tampered.zip"
+
+other_root="$test_root/other-root"
+mkdir -p "$other_root"
+/usr/bin/ditto "$fixture_app" "$other_root/Other.app"
+/usr/bin/ditto -c -k --keepParent "$other_root/Other.app" "$test_root/other-root.zip"
+expect_failure "$contract" verify-archive-shape "$test_root/other-root.zip"
 
 printf '%s\n' tampered >>"$archive_path"
 expect_failure "$contract" verify-checksum "$archive_path" "$archive_path.sha256"
