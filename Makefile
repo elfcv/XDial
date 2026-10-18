@@ -160,6 +160,13 @@ test-jev-loop:
 jev-loop:
 	python3 scripts/jev_loop.py --watch --publish --repair
 
+# 正式版、beta 与 Debug 共享的持久格式和跨进程协议版本只能经 main 演进（D22）。
+# 作为 make test 的前置，CI 的 Go job 在 "go test" 一步执行。
+.PHONY: test-version-contract
+test: test-version-contract
+test-version-contract:
+	python3 -m unittest discover -s test -p 'version_constants_test.py'
+
 go-vet: $(PATCHED_WORKFILE)
 	$(PATCHED_GO_ENV) go vet ./...
 
