@@ -257,6 +257,10 @@ enum ApplicationRelocator {
             ) else {
                 throw InstallationError.installedSuccessorLocationMismatch
             }
+            let sourceBuild = ApplicationBundleInfo.string(
+                forKey: "CFBundleVersion",
+                at: sourceURL
+            ) ?? ""
             if AppUpdateStager.isOwnedStagedApplication(sourceURL) {
                 let sourceVersion = ApplicationBundleInfo.string(
                     forKey: "CFBundleShortVersionString",
@@ -264,7 +268,8 @@ enum ApplicationRelocator {
                 ) ?? ""
                 guard AppUpdateRelaunchIntentStore
                     .permitsStagedSuccessor(
-                        targetVersion: sourceVersion
+                        targetVersion: sourceVersion,
+                        targetBuild: sourceBuild
                     ) else {
                     throw InstallationError
                         .automaticUpdateIdentityMismatch
@@ -307,7 +312,14 @@ enum ApplicationRelocator {
                 destinationExists: destinationExists,
                 destinationMatchesIdentity: destinationMatchesIdentity,
                 destinationIsRecognizedProduct:
-                    destinationIsRecognizedProduct
+                    destinationIsRecognizedProduct,
+                sourceBuild: sourceBuild,
+                destinationBuild: destinationExists
+                    ? ApplicationBundleInfo.string(
+                        forKey: "CFBundleVersion",
+                        at: destinationURL
+                    )
+                    : nil
             ) {
             case .continueLaunch:
                 // A matching bundle identifier does not make a downloaded or
@@ -320,6 +332,16 @@ enum ApplicationRelocator {
                     message:
                         "“应用程序”中已有另一份签名或标识不同的 \(XDialBuildIdentity.applicationDisplayName)。"
                         + "为避免覆盖未知程序，XDial 已停止自动安装。",
+                    canRetry: false
+                )
+            case .rejectDowngrade:
+                // Only the user's own uninstall may remove the newer System
+                // Extension; replacing the host alone would leave them mismatched.
+                return .failed(
+                    message:
+                        "已安装更新的版本（可能是 beta），请先在 "
+                        + "\(XDialBuildIdentity.applicationDisplayName) "
+                        + "内卸载（不勾选删除数据），再安装这个版本。",
                     canRetry: false
                 )
             case .install, .replace:

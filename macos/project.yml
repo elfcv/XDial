@@ -31,6 +31,10 @@ settings:
     XDIAL_SETTINGS_ENTRY_IDENTIFIER: com.kafeifei.xdial.app.settings-entry
     XDIAL_BUILD_FLAVOR: release
     XDIAL_UPDATE_ACCEPTANCE_ID: ""
+    # The published tag (vX.Y.Z or vX.Y.Z-beta.N), empty unless a build passes
+    # it. It only identifies the installed release for display and diagnostics;
+    # it never selects a feed or authorizes an update.
+    XDIAL_RELEASE_TAG: ""
     XDIAL_SOURCE_REVISION: "unversioned"
   configs:
     Debug:
@@ -173,6 +177,7 @@ targets:
         XDialBuildConfiguration: "$(CONFIGURATION)"
         XDialSourceRevision: "$(XDIAL_SOURCE_REVISION)"
         XDialUpdateAcceptanceID: "$(XDIAL_UPDATE_ACCEPTANCE_ID)"
+        XDialReleaseTag: "$(XDIAL_RELEASE_TAG)"
         XDialTransparentProxyBundleIdentifier: "$(XDIAL_TRANSPARENT_PROXY_BUNDLE_IDENTIFIER)"
     settings:
       base:

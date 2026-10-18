@@ -2,6 +2,80 @@ import AppKit
 import Combine
 import Foundation
 
+/// The running release as the update channel sees it. XDialReleaseTag only
+/// identifies an installed beta for display, diagnostics and the beta-line
+/// rule; it never selects a feed URL or authorizes a bundle.
+struct InstalledRelease: Equatable, Sendable {
+    static let releaseTagInfoKey = "XDialReleaseTag"
+
+    let shortVersion: String
+    let build: String
+    /// nil when the short version is not a canonical X.Y.Z.
+    let tag: ReleaseTag?
+
+    /// A beta only when the signed tag is a beta of this very short version;
+    /// anything else is the stable release `v<short version>`.
+    init(shortVersion: String, build: String, releaseTag: String?) {
+        self.shortVersion = shortVersion
+        self.build = build
+        if let releaseTag,
+           let parsed = ReleaseTag(releaseTag),
+           parsed.isBeta,
+           parsed.version == shortVersion {
+            tag = parsed
+        } else {
+            tag = ReleaseTag("v\(shortVersion)")
+        }
+    }
+
+    static func current(
+        infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:]
+    ) -> InstalledRelease {
+        InstalledRelease(
+            shortVersion: infoDictionary["CFBundleShortVersionString"]
+                as? String ?? "0",
+            build: infoDictionary["CFBundleVersion"] as? String ?? "0",
+            releaseTag: infoDictionary[releaseTagInfoKey] as? String
+        )
+    }
+
+    var isBeta: Bool { tag?.isBeta == true }
+
+    var displayTag: String { tag?.description ?? "v\(shortVersion)" }
+
+    /// Whether a published tag is a newer release than this one. A short
+    /// version that is not X.Y.Z keeps the comparison released clients use.
+    func precedes(tag published: String) -> Bool {
+        guard let tag else {
+            return VersionUpdatePolicy.isNewer(
+                latestTag: published,
+                than: shortVersion
+            )
+        }
+        return ReleaseTag(published).map { tag < $0 } ?? false
+    }
+}
+
+/// The user's opt-in to beta releases. Only "beta" turns it on; it starts off.
+enum AppUpdateChannelPreference {
+    static let key = "xdial.update.channel"
+
+    static func receivesBeta(defaults: UserDefaults = xdialDefaults) -> Bool {
+        defaults.string(forKey: key) == AppUpdateChannel.beta.rawValue
+    }
+
+    static func setReceivesBeta(
+        _ receivesBeta: Bool,
+        defaults: UserDefaults = xdialDefaults
+    ) {
+        if receivesBeta {
+            defaults.set(AppUpdateChannel.beta.rawValue, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+}
+
 @MainActor
 final class AppUpdateChecker: ObservableObject {
     #if DEBUG
@@ -15,6 +89,11 @@ final class AppUpdateChecker: ObservableObject {
     @Published private(set) var failure: AppUpdateFailure?
     @Published private(set) var stagedUpdate: StagedAppUpdate?
     @Published private(set) var lastCheckedAt: Date?
+    @Published private(set) var receivesBetaUpdates: Bool
+    /// A beta feed failure while stable still gave the conclusion.
+    @Published private(set) var secondaryNotice: String?
+    @Published private(set) var lastBuildNotNewer:
+        (detail: AppUpdateBuildNotNewer, at: Date)?
     #if XDIAL_TESTING
     private(set) var launchAttemptCount = 0
     #endif
@@ -27,6 +106,46 @@ final class AppUpdateChecker: ObservableObject {
         default:
             false
         }
+    }
+
+    /// Switching feeds mid-transaction would leave a candidate from a channel
+    /// the user just left; the switch waits until the work settles.
+    var canChangeChannel: Bool {
+        !isBusy && phase != .handingOff
+            && downloadTask == nil && handoffTask == nil && !checkInFlight
+    }
+
+    var installedRelease: InstalledRelease { currentRelease() }
+
+    /// Returns false when the switch is refused because an update is busy.
+    @discardableResult
+    func setReceivesBetaUpdates(_ receivesBeta: Bool) -> Bool {
+        guard receivesBeta != receivesBetaUpdates else { return true }
+        guard canChangeChannel else { return false }
+        AppUpdateChannelPreference.setReceivesBeta(
+            receivesBeta,
+            defaults: preferenceDefaults
+        )
+        receivesBetaUpdates = receivesBeta
+        // Leaving beta never downgrades. Only an update that would carry a
+        // stable install into a beta line is dropped; an installed beta keeps
+        // its pending fix.
+        if !receivesBeta,
+           let candidate = releaseCandidate,
+           candidate.channel == .beta,
+           !currentRelease().isBeta {
+            discardPreparedUpdate()
+            releaseCandidate = nil
+            failure = nil
+            phase = .idle
+        }
+        secondaryNotice = nil
+        // The check reads the preference when it starts, so the latest switch
+        // always decides which feeds it requests.
+        channelCheckTask = Task { [weak self] in
+            await self?.check(manual: true)
+        }
+        return true
     }
 
     func installPreparedUpdate(
@@ -53,6 +172,7 @@ final class AppUpdateChecker: ObservableObject {
                 self.releaseCandidate = freshCandidate
                 try AppUpdateRelaunchIntentStore.write(
                     targetVersion: freshCandidate.version,
+                    targetBuild: freshCandidate.build,
                     reconnectScenarioID: reconnectScenarioID
                 )
                 self.stopObservingHandoffTermination()
@@ -76,21 +196,29 @@ final class AppUpdateChecker: ObservableObject {
     private static let pollingInterval: UInt64 = 600_000_000_000
     private static let manualCheckCooldown: TimeInterval = 5
 
-    private let releaseLookup: AppUpdateReleaseLookup
+    private let releaseLookup: AppUpdateChannelLookup
     private let automaticUpdatesPermitted: @MainActor () -> Bool
+    private let currentRelease: @MainActor () -> InstalledRelease
+    private let preferenceDefaults: UserDefaults
     private var checkInFlight = false
     private var downloadTask: Task<Void, Never>?
     private var handoffTask: Task<Void, Never>?
     private var cacheRestoreTask: Task<Void, Never>?
+    private var channelCheckTask: Task<Void, Never>?
     private var handoffTerminationObserver: NSObjectProtocol?
     private var lastManualCheckStartedAt: Date?
 
     init(
-        releaseLookup: AppUpdateReleaseLookup = AppUpdateReleaseLookup(),
+        releaseLookup: AppUpdateChannelLookup = AppUpdateChannelLookup(),
         automaticUpdatesPermitted:
             @escaping @MainActor () -> Bool = {
                 ApplicationRelocator.permitsAutomaticUpdates
             },
+        installedRelease:
+            @escaping @MainActor () -> InstalledRelease = {
+                InstalledRelease.current()
+            },
+        preferenceDefaults: UserDefaults = xdialDefaults,
         pruneStaleStaging:
             @escaping @MainActor () -> Void = {
                 AppUpdateStager.pruneStaleRoots()
@@ -98,6 +226,11 @@ final class AppUpdateChecker: ObservableObject {
     ) {
         self.releaseLookup = releaseLookup
         self.automaticUpdatesPermitted = automaticUpdatesPermitted
+        currentRelease = installedRelease
+        self.preferenceDefaults = preferenceDefaults
+        receivesBetaUpdates = AppUpdateChannelPreference.receivesBeta(
+            defaults: preferenceDefaults
+        )
         pruneStaleStaging()
         cacheRestoreTask = Task { [weak self, releaseLookup] in
             guard let validatedAt = await releaseLookup.lastValidatedAt(),
@@ -117,6 +250,7 @@ final class AppUpdateChecker: ObservableObject {
         downloadTask?.cancel()
         handoffTask?.cancel()
         cacheRestoreTask?.cancel()
+        channelCheckTask?.cancel()
         if let handoffTerminationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(
                 handoffTerminationObserver
@@ -167,10 +301,13 @@ final class AppUpdateChecker: ObservableObject {
     #if DEBUG
     func injectFakeRelease(
         version: String = "99.0.0",
+        tag: String? = nil,
+        channel: AppUpdateChannel = .stable,
         notes: String = "- 验证自动更新界面与状态。"
     ) {
-        let tag = "v\(version)"
+        let tag = tag ?? "v\(version)"
         releaseCandidate = AppUpdateReleaseCandidate(
+            channel: channel,
             tag: tag,
             version: version,
             build: "9999999999",
@@ -212,24 +349,39 @@ final class AppUpdateChecker: ObservableObject {
         checkInFlight = true
         let previousCandidate = releaseCandidate
         failure = nil
+        secondaryNotice = nil
         phase = .checking
         defer { checkInFlight = false }
 
         do {
+            let installed = currentRelease()
+            let receivesBeta = receivesBetaUpdates
             let result = try await releaseLookup.check(
-                currentVersion: currentVersion
+                installed: installed,
+                receivesBeta: receivesBeta
             )
+            // stable.json is the baseline every subscription reads; a beta
+            // failure alone only becomes a secondary notice.
+            if let error = result.stable.error { throw error }
             lastCheckedAt = result.checkedAt
+            secondaryNotice = result.beta?.error.map {
+                "beta 清单暂时无法读取：\($0.localizedDescription)"
+            }
             switch result.availability {
             case let .available(candidate):
                 releaseCandidate = candidate
                 phase = .available
-            case .upToDate:
+            case let .buildNotNewer(detail):
                 releaseCandidate = nil
-                phase = .upToDate
-            case .noRelease:
+                reportBuildNotNewer(detail, at: result.checkedAt)
+            case .upToDate, .noRelease:
                 releaseCandidate = nil
-                phase = .noRelease
+                if installed.isBeta && !receivesBeta {
+                    phase = .awaitingStable
+                } else {
+                    phase = result.availability == .upToDate
+                        ? .upToDate : .noRelease
+                }
             }
         } catch is CancellationError {
             releaseCandidate = previousCandidate
@@ -314,14 +466,20 @@ final class AppUpdateChecker: ObservableObject {
         }
     }
 
+    /// Download and installation each require the feed that offered the
+    /// candidate to confirm it again; the other feed's failure does not block.
     private func revalidate(
         _ expected: AppUpdateReleaseCandidate,
         preserving phaseOnFailure: AppUpdatePhase
     ) async -> AppUpdateReleaseCandidate? {
         do {
             let result = try await releaseLookup.check(
-                currentVersion: currentVersion
+                installed: currentRelease(),
+                receivesBeta: receivesBetaUpdates
             )
+            if let error = result.outcome(for: expected.channel)?.error {
+                throw error
+            }
             lastCheckedAt = result.checkedAt
             switch result.availability {
             case let .available(candidate)
@@ -335,6 +493,10 @@ final class AppUpdateChecker: ObservableObject {
                     detail: "发布清单已更改，请确认新版本后重试。"
                 )
                 phase = .available
+            case let .buildNotNewer(detail):
+                discardPreparedUpdate()
+                releaseCandidate = nil
+                reportBuildNotNewer(detail, at: result.checkedAt)
             case .upToDate, .noRelease:
                 discardPreparedUpdate()
                 releaseCandidate = nil
@@ -454,10 +616,25 @@ final class AppUpdateChecker: ObservableObject {
         self.handoffTerminationObserver = nil
     }
 
-    private var currentVersion: String {
-        Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String ?? "0"
+    private func reportBuildNotNewer(
+        _ detail: AppUpdateBuildNotNewer,
+        at date: Date
+    ) {
+        lastBuildNotNewer = (detail, date)
+        failure = AppUpdateFailure(
+            code: .buildNotNewer,
+            detail: "\(detail.tag) 的构建号 \(detail.build) 不高于当前的 "
+                + "\(detail.installedBuild)，安装后网络扩展不会被替换，"
+                + "已停止这次更新。"
+        )
+        phase = .failed
+        NSLog(
+            "XDial update %@ %@ build %@ is not newer than installed build %@",
+            detail.channel.rawValue,
+            detail.tag,
+            detail.build,
+            detail.installedBuild
+        )
     }
 
     #if XDIAL_TESTING
@@ -476,6 +653,7 @@ final class AppUpdateChecker: ObservableObject {
 
     func waitForTasksForTesting() async {
         if let task = cacheRestoreTask { await task.value }
+        if let task = channelCheckTask { await task.value }
         while let task = downloadTask { await task.value }
         while let task = handoffTask { await task.value }
     }

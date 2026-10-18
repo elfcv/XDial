@@ -710,6 +710,99 @@ final class InstallationTransactionTests: XCTestCase {
         )
     }
 
+    func testRelocationRejectsAnOlderBuildOverANewerInstallation() {
+        // A stable or same-version package over an installed beta: the newer
+        // System Extension would stay active beside the older host.
+        for (source, destination) in [
+            ("1792000000", "1792000001"),
+            ("999", "1000"),
+        ] {
+            for recognized in [true, false] {
+                XCTAssertEqual(
+                    ApplicationRelocationDecision.decide(
+                        currentIsCanonical: false,
+                        destinationExists: true,
+                        destinationMatchesIdentity: !recognized,
+                        destinationIsRecognizedProduct: recognized,
+                        sourceBuild: source,
+                        destinationBuild: destination
+                    ),
+                    .rejectDowngrade,
+                    "\(source) over \(destination)"
+                )
+            }
+        }
+        for (source, destination) in [
+            ("1792000001", "1792000000"),
+            ("1000", "999"),
+            ("1792000000", "1792000000"),
+        ] {
+            XCTAssertEqual(
+                ApplicationRelocationDecision.decide(
+                    currentIsCanonical: false,
+                    destinationExists: true,
+                    destinationMatchesIdentity: true,
+                    sourceBuild: source,
+                    destinationBuild: destination
+                ),
+                .replace,
+                "\(source) over \(destination)"
+            )
+        }
+        // An unreadable build is not evidence of a downgrade, a foreign
+        // destination stays rejected, and the canonical copy just launches.
+        for (source, destination) in [
+            ("", "1000"), ("100", nil), ("0100", "1000"), ("abc", "1"),
+        ] as [(String, String?)] {
+            XCTAssertEqual(
+                ApplicationRelocationDecision.decide(
+                    currentIsCanonical: false,
+                    destinationExists: true,
+                    destinationMatchesIdentity: true,
+                    sourceBuild: source,
+                    destinationBuild: destination
+                ),
+                .replace,
+                "\(source) over \(destination ?? "nil")"
+            )
+        }
+        XCTAssertEqual(
+            ApplicationRelocationDecision.decide(
+                currentIsCanonical: false,
+                destinationExists: true,
+                destinationMatchesIdentity: false,
+                sourceBuild: "1",
+                destinationBuild: "2"
+            ),
+            .rejectExisting
+        )
+        XCTAssertEqual(
+            ApplicationRelocationDecision.decide(
+                currentIsCanonical: true,
+                destinationExists: true,
+                destinationMatchesIdentity: true,
+                sourceBuild: "1",
+                destinationBuild: "2"
+            ),
+            .continueLaunch
+        )
+        XCTAssertEqual(
+            ApplicationRelocationDecision.decide(
+                currentIsCanonical: false,
+                destinationExists: false,
+                destinationMatchesIdentity: false,
+                sourceBuild: "1",
+                destinationBuild: nil
+            ),
+            .install
+        )
+        XCTAssertEqual(BundleBuildNumber.compare("10", "9"), .orderedDescending)
+        XCTAssertEqual(BundleBuildNumber.compare("9", "10"), .orderedAscending)
+        XCTAssertEqual(BundleBuildNumber.compare("42", "42"), .orderedSame)
+        XCTAssertNil(BundleBuildNumber.compare("0", "1"))
+        XCTAssertNil(BundleBuildNumber.compare("1.2", "1"))
+    }
+
     func testBundleReplacementKeepsBackupUntilValidationSucceeds()
         throws {
         let fixture = try ReplacementFixture()

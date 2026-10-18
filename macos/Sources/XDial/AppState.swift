@@ -668,6 +668,9 @@ final class AppState: ObservableObject {
                 currentVersion: Bundle.main.object(
                     forInfoDictionaryKey: "CFBundleShortVersionString"
                 ) as? String ?? "0",
+                currentBuild: Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleVersion"
+                ) as? String ?? "0",
                 activeScenarioID: profile.activeScenarioID
             )
         // 启动时只读取授权状态。位置授权弹窗必须由安装窗口或设置页中

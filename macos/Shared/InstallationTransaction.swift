@@ -227,17 +227,44 @@ struct InstallationReport: Codable, Equatable {
     }
 }
 
+/// CFBundleVersion is the order macOS uses to replace an active System
+/// Extension. Both release channels share one increasing sequence.
+enum BundleBuildNumber {
+    /// Orders two canonical positive decimals without overflowing; nil when
+    /// either value is not one.
+    static func compare(_ lhs: String, _ rhs: String) -> ComparisonResult? {
+        guard isCanonical(lhs), isCanonical(rhs) else { return nil }
+        if lhs.utf8.count != rhs.utf8.count {
+            return lhs.utf8.count < rhs.utf8.count
+                ? .orderedAscending : .orderedDescending
+        }
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    static func isCanonical(_ value: String) -> Bool {
+        guard let first = value.utf8.first, (49 ... 57).contains(first)
+        else { return false }
+        return value.utf8.allSatisfy { (48 ... 57).contains($0) }
+    }
+}
+
 enum ApplicationRelocationDecision: Equatable {
     case continueLaunch
     case install
     case replace
     case rejectExisting
+    /// The installed bundle has a higher build, possibly a beta. Replacing it
+    /// would leave its newer System Extension active beside an older host.
+    case rejectDowngrade
 
     static func decide(
         currentIsCanonical: Bool,
         destinationExists: Bool,
         destinationMatchesIdentity: Bool,
-        destinationIsRecognizedProduct: Bool = false
+        destinationIsRecognizedProduct: Bool = false,
+        sourceBuild: String? = nil,
+        destinationBuild: String? = nil
     ) -> ApplicationRelocationDecision {
         if currentIsCanonical {
             return .continueLaunch
@@ -245,10 +272,16 @@ enum ApplicationRelocationDecision: Equatable {
         guard destinationExists else {
             return .install
         }
-        return destinationMatchesIdentity
-            || destinationIsRecognizedProduct
-            ? .replace
-            : .rejectExisting
+        guard destinationMatchesIdentity
+            || destinationIsRecognizedProduct else {
+            return .rejectExisting
+        }
+        if let sourceBuild, let destinationBuild,
+           BundleBuildNumber.compare(sourceBuild, destinationBuild)
+            == .orderedAscending {
+            return .rejectDowngrade
+        }
+        return .replace
     }
 }
 

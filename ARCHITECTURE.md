@@ -309,10 +309,16 @@ FormalDevelopment 保留正式身份，仅用于正式身份验证。
 签名 profile 与 entitlement 属于对应身份，不以移除能力或借用正式身份填补 Debug 签名缺口。
 独立安装不代表两个数据面同时接管已被证明兼容。
 
-更新候选来自固定 Pages 地址的一份完整、版本化清单，归档由 GitHub Releases 托管；
+更新候选来自固定 Pages 地址的完整、版本化清单，归档由 GitHub Releases 托管；
 客户端不通过匿名 API 或 HTML 拼装候选。检查、下载和验证不改变当前连接，安装点击后才交接。
 缓存不是安装许可：下载与安装前重新确认候选，撤回、变化或无法确认即停止；归档大小、摘要、
 实际版本 / build 与嵌套签名共同绑定同一候选。验收包的固定 acceptance ID 与正式更新隔离。
+
+通道不改变身份：beta 与正式版是同一个正式身份的 App，区别只在多读的 beta.json。stable.json
+始终是结论的基准；用户开启 beta，或已装 beta 尚未被 stable 超过时才再读 beta.json，两份清单
+各自保持缓存与修订链，取标签更高者，关闭开关不降级。新旧按发布标签的 SemVer 比较，候选
+构建号必须高于当前；构建号倒序不是“已是最新”，而是失败。包内发布标签只识别当前安装，
+不参与签名包授权或清单地址选择；安装期拒绝用更低构建号覆盖已装 App。
 
 入口：[安装状态机](macos/Shared/InstallationTransaction.swift)、
 [构建与身份](docs/agent/development-builds.md)、[更新协议与发布](docs/agent/updates.md)。

@@ -21,10 +21,23 @@ private extension GeneralSettingsSection {
     }
 }
 
+private struct AppUpdateCheckerKey: EnvironmentKey {
+    static let defaultValue: AppUpdateChecker? = nil
+}
+
+extension EnvironmentValues {
+    /// Absent in offline layout previews, which must not start an updater.
+    var appUpdateChecker: AppUpdateChecker? {
+        get { self[AppUpdateCheckerKey.self] }
+        set { self[AppUpdateCheckerKey.self] = newValue }
+    }
+}
+
 /// Application preferences share the configuration window and do not change the selected source.
 struct GeneralSettingsView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.appUpdateChecker) private var updater
     private var section: GeneralSettingsSection { state.editorPosition.generalSection }
 
     var body: some View {
@@ -192,6 +205,10 @@ struct GeneralSettingsView: View {
                     openWindow(id: "update")
                     NSApp.activate(ignoringOtherApps: true)
                 }
+                if let updater {
+                    Divider()
+                    AppUpdateChannelSettings(updater: updater)
+                }
             } else {
                 Text(state.tr("独立开发版 · 手动更新", "Independent build · Manual updates"))
                 note(state.tr(
@@ -227,10 +244,65 @@ struct GeneralSettingsView: View {
         }
     }
 
+    /// A beta shows its tag; stable and development builds show v<short version>.
     private var appVersionText: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let hasVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") is String
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        return "v\(version) · build \(build)"
+        let tag = hasVersion ? InstalledRelease.current().displayTag : "v?"
+        return "\(tag) · build \(build)"
+    }
+}
+
+/// Beta is the same app published earlier; the switch only adds beta.json to
+/// the feeds read. Turning it off never downgrades.
+private struct AppUpdateChannelSettings: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var updater: AppUpdateChecker
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                state.tr("接收 beta 版本", "Receive beta versions"),
+                isOn: Binding(
+                    get: { updater.receivesBetaUpdates },
+                    set: { updater.setReceivesBetaUpdates($0) }
+                )
+            )
+            .toggleStyle(.switch)
+            .disabled(!updater.canChangeChannel)
+            note(state.tr(
+                "beta 与正式版是同一个 App，只是更早发布。开启后立即检查一次。关闭不会降级：已安装的 beta 继续接收这条线的修复，正式版追上后自动回到正式版。",
+                "Beta is the same app, released earlier. Turning this on checks right away. Turning it off never downgrades: an installed beta keeps receiving fixes on its line and returns to the stable release once stable catches up."
+            ))
+            if let status {
+                note(status)
+            }
+        }
+    }
+
+    private var status: String? {
+        if !updater.canChangeChannel {
+            return state.tr(
+                "正在检查或安装更新，完成后才能切换。",
+                "An update check or installation is in progress; switch after it finishes."
+            )
+        }
+        let installed = updater.installedRelease
+        guard installed.isBeta, !updater.receivesBetaUpdates,
+              let tag = installed.tag else {
+            return nil
+        }
+        return state.tr(
+            "当前是 \(tag)，正式版 v\(tag.version) 发布后自动回到正式版。",
+            "This is \(tag); it returns to stable when v\(tag.version) is released."
+        )
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

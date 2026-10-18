@@ -1,6 +1,7 @@
 import Foundation
 
 struct AppUpdateReleaseCandidate: Equatable, Sendable {
+    let channel: AppUpdateChannel
     let tag: String
     let version: String
     let build: String
@@ -14,17 +15,30 @@ struct AppUpdateReleaseCandidate: Equatable, Sendable {
 
     var identity: AppUpdateCandidateIdentity {
         AppUpdateCandidateIdentity(
+            channel: channel,
             version: version,
             build: build,
             archiveSHA256: archiveSHA256
         )
     }
+
+    var releaseTag: ReleaseTag? { ReleaseTag(tag) }
 }
 
 struct AppUpdateCandidateIdentity: Equatable, Sendable {
+    let channel: AppUpdateChannel
     let version: String
     let build: String
     let archiveSHA256: String
+}
+
+/// A feed offered a newer tag whose build would not replace the active
+/// System Extension. Reported as a failure, never as "up to date".
+struct AppUpdateBuildNotNewer: Equatable, Sendable {
+    let channel: AppUpdateChannel
+    let tag: String
+    let build: String
+    let installedBuild: String
 }
 
 enum AppUpdateReleaseSelectionError: Error, Equatable {
@@ -35,6 +49,7 @@ enum AppUpdateReleaseSelectionError: Error, Equatable {
     case invalidPublishedAt
     case releaseNotesMissing
     case notNewer
+    case buildNotNewer
     case archiveSizeInvalid
     case archiveSHA256Invalid
     case archiveURLRejected
@@ -45,12 +60,14 @@ enum AppUpdateReleasePolicy {
         from release: AppUpdateFeedRelease,
         generatedAt: Date,
         configuration: AppUpdateFeedConfiguration,
-        currentVersion: String,
+        installed: InstalledRelease,
         currentSystemVersion: String
     ) throws -> AppUpdateReleaseCandidate {
-        guard VersionUpdatePolicy.stableReleaseVersion(
-            fromTag: release.tag
-        ) == release.version else {
+        guard permitsTag(
+            release.tag,
+            version: release.version,
+            channel: configuration.channel
+        ) else {
             throw AppUpdateReleaseSelectionError.invalidVersionTag
         }
         guard isPositiveInteger(release.build) else {
@@ -97,14 +114,18 @@ enum AppUpdateReleasePolicy {
         ) else {
             throw AppUpdateReleaseSelectionError.archiveURLRejected
         }
-        guard VersionUpdatePolicy.isNewer(
-            latestTag: release.tag,
-            than: currentVersion
-        ) else {
+        guard installed.precedes(tag: release.tag) else {
             throw AppUpdateReleaseSelectionError.notNewer
+        }
+        // A lower build cannot replace the active System Extension, so a newer
+        // tag with an older build is a publishing fault, not an update.
+        guard BundleBuildNumber.compare(release.build, installed.build)
+                .map({ $0 == .orderedDescending }) ?? true else {
+            throw AppUpdateReleaseSelectionError.buildNotNewer
         }
 
         return AppUpdateReleaseCandidate(
+            channel: configuration.channel,
             tag: release.tag,
             version: release.version,
             build: release.build,
@@ -116,6 +137,22 @@ enum AppUpdateReleasePolicy {
             archiveSHA256: release.archiveSHA256,
             releaseNotes: releaseNotes
         )
+    }
+
+    /// Each feed carries only its own tag form: stable keeps the exact rule
+    /// released clients apply, and beta accepts only `vX.Y.Z-beta.N`.
+    private static func permitsTag(
+        _ tag: String,
+        version: String,
+        channel: AppUpdateChannel
+    ) -> Bool {
+        switch channel {
+        case .stable:
+            VersionUpdatePolicy.stableReleaseVersion(fromTag: tag) == version
+        case .beta:
+            ReleaseTag(tag).map { $0.isBeta && $0.version == version }
+                ?? false
+        }
     }
 
     private static func isPositiveInteger(_ value: String) -> Bool {
@@ -223,6 +260,9 @@ enum AppUpdatePhase: String, Equatable {
     case checking
     case upToDate = "up_to_date"
     case noRelease = "no_release"
+    /// An installed beta with the beta preference off: it keeps following
+    /// its beta line and returns to stable once stable passes it.
+    case awaitingStable = "awaiting_stable"
     case available
     case downloading
     case validating
@@ -234,6 +274,7 @@ enum AppUpdatePhase: String, Equatable {
 enum AppUpdateFailureCode: String, Equatable {
     case checkUnavailable = "check_unavailable"
     case candidateChanged = "candidate_changed"
+    case buildNotNewer = "build_not_newer"
     case downloadFailed = "download_failed"
     case validationFailed = "validation_failed"
 }
@@ -244,10 +285,14 @@ struct AppUpdateFailure: Equatable {
 }
 
 struct AppUpdateRelaunchIntent: Codable, Equatable {
-    static let schemaVersion = 1
+    /// Schema 2 adds targetBuild: a beta and its stable release share X.Y.Z.
+    /// Every earlier schema stays readable, because the outgoing app that
+    /// wrote the intent may be any released version.
+    static let schemaVersion = 2
 
     let schemaVersion: Int
     let targetVersion: String
+    let targetBuild: String?
     let reconnectScenarioID: String?
     let createdAt: Date
 }
@@ -263,12 +308,14 @@ enum AppUpdateRelaunchIntentPolicy {
     static func decision(
         for intent: AppUpdateRelaunchIntent,
         currentVersion: String,
+        currentBuild: String,
         activeScenarioID: String,
         now: Date
     ) -> AppUpdateRelaunchDecision? {
         guard permitsTarget(
             intent,
             version: currentVersion,
+            build: currentBuild,
             now: now
         ) else {
             return nil
@@ -283,17 +330,24 @@ enum AppUpdateRelaunchIntentPolicy {
         return .reconnect(scenarioID: scenarioID)
     }
 
+    /// Accepts every schema up to the current one. Schema 1, written by
+    /// v0.9.x and earlier, binds only the version; later schemas also bind
+    /// the build.
     static func permitsTarget(
         _ intent: AppUpdateRelaunchIntent,
         version: String,
+        build: String,
         now: Date
     ) -> Bool {
         let age = now.timeIntervalSince(intent.createdAt)
-        return intent.schemaVersion
-            == AppUpdateRelaunchIntent.schemaVersion
-            && intent.targetVersion == version
-            && age >= 0
-            && age <= maximumAge
+        guard (1 ... AppUpdateRelaunchIntent.schemaVersion)
+                .contains(intent.schemaVersion),
+              intent.targetVersion == version,
+              age >= 0,
+              age <= maximumAge else {
+            return false
+        }
+        return intent.schemaVersion == 1 || intent.targetBuild == build
     }
 }
 
@@ -302,6 +356,7 @@ enum AppUpdateRelaunchIntentStore {
 
     static func write(
         targetVersion: String,
+        targetBuild: String,
         reconnectScenarioID: String?,
         now: Date = Date(),
         defaults: UserDefaults = xdialDefaults
@@ -309,6 +364,7 @@ enum AppUpdateRelaunchIntentStore {
         let intent = AppUpdateRelaunchIntent(
             schemaVersion: AppUpdateRelaunchIntent.schemaVersion,
             targetVersion: targetVersion,
+            targetBuild: targetBuild,
             reconnectScenarioID: reconnectScenarioID,
             createdAt: now
         )
@@ -317,6 +373,7 @@ enum AppUpdateRelaunchIntentStore {
 
     static func loadDecision(
         currentVersion: String,
+        currentBuild: String,
         activeScenarioID: String,
         now: Date = Date(),
         defaults: UserDefaults = xdialDefaults
@@ -329,6 +386,7 @@ enum AppUpdateRelaunchIntentStore {
               let decision = AppUpdateRelaunchIntentPolicy.decision(
                   for: intent,
                   currentVersion: currentVersion,
+                  currentBuild: currentBuild,
                   activeScenarioID: activeScenarioID,
                   now: now
               ) else {
@@ -340,6 +398,7 @@ enum AppUpdateRelaunchIntentStore {
 
     static func permitsStagedSuccessor(
         targetVersion: String,
+        targetBuild: String,
         now: Date = Date(),
         defaults: UserDefaults = xdialDefaults
     ) -> Bool {
@@ -351,6 +410,7 @@ enum AppUpdateRelaunchIntentStore {
               AppUpdateRelaunchIntentPolicy.permitsTarget(
                   intent,
                   version: targetVersion,
+                  build: targetBuild,
                   now: now
               ) else {
             defaults.removeObject(forKey: key)
