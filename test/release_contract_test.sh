@@ -264,6 +264,17 @@ sign_distribution_fixture "$variant"
 expect_failure_with 'cannot read Go build information' \
     verify_distribution_fixture "$variant"
 
+# A machine without Go is told so, instead of being sent after a valid helper.
+no_tools="$test_root/no-tools"
+mkdir -p "$no_tools"
+check_helper_flavor_without_go() (
+    source "$contract"
+    PATH="$no_tools"
+    assert_helper_without_build_flavor "$1"
+)
+expect_failure_with 'go is required' \
+    check_helper_flavor_without_go "$distribution_root/helper"
+
 check_hardened_signature() (
     source "$contract"
     assert_hardened_signature "$1"
@@ -560,6 +571,8 @@ cp "$distribution_root/go-helper/go.mod" "$distribution_root/go-helper/main.go" 
 
     build_stamped_helper
     "$helper_source" "$source_app" v3.4.5 >/dev/null
+    expect_failure_with 'go is required' \
+        /usr/bin/env PATH="$no_tools" "$helper_source" "$source_app" v3.4.5
     expect_failure_with 'release tag does not exist' \
         "$helper_source" "$source_app" v3.4.6
     expect_failure "$helper_source" "$test_root/helper-source-app/Missing.app" v3.4.5

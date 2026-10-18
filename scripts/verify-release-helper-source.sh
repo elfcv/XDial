@@ -26,6 +26,8 @@ helper_path="$app_path/Contents/MacOS/xdial-daemon"
 
 [[ -f "$helper_path" && ! -L "$helper_path" ]] \
     || fail "missing bundled helper: $helper_path"
+command -v go >/dev/null \
+    || fail "go is required to read the helper's Go build information"
 tagged_commit="$(git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null)" \
     || fail "release tag does not exist locally: $tag"
 build_info="$(go version -m "$helper_path" 2>/dev/null)" \

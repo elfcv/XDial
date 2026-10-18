@@ -193,7 +193,7 @@ test-patched-sslcon: $(PATCHED_WORKFILE)
 			./session ./vpn -count=1
 
 test: public-content-gate $(PATCHED_WORKFILE) test-patched-tailscale test-patched-sing-box test-patched-sslcon sing-box-test-validator
-	PATH="$(dir $(SING_BOX_TEST_BINARY)):$(PATH)" $(PATCHED_GO_ENV) go test -tags '$(MOBILE_LIBBOX_TAGS)' ./core/... -v -count=1
+	PATH="$(dir $(SING_BOX_TEST_BINARY)):$(PATH)" $(PATCHED_GO_ENV) go test -tags '$(MOBILE_LIBBOX_TAGS)' ./core/... ./cmd/xdial/ -v -count=1
 
 test-release-contract:
 	bash test/release_contract_test.sh

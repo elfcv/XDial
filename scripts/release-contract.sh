@@ -232,6 +232,9 @@ assert_debug_server_absent() {
 assert_helper_without_build_flavor() {
     local helper_path="$1"
     local build_info
+    # A missing toolchain must not read as a defect in the helper.
+    command -v go >/dev/null \
+        || fail "go is required to read the helper's Go build information"
     build_info="$(go version -m "$helper_path" 2>/dev/null)" \
         || fail "cannot read Go build information from $helper_path"
     if grep -Eq '^[[:space:]]+build[[:space:]].*main\.buildFlavor' <<<"$build_info"; then
