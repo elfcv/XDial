@@ -777,6 +777,13 @@ final class DebugServer {
             } else {
                 channel = ReleaseTag(tag)?.isBeta == true ? .beta : .stable
             }
+            // Real feeds never pair a beta tag with stable or the reverse.
+            guard (ReleaseTag(tag)?.isBeta == true) == (channel == .beta)
+            else {
+                return ("400 Bad Request", json([
+                    "error": "channel does not match the tag",
+                ]))
+            }
             updater.injectFakeRelease(
                 version: version,
                 tag: tag,

@@ -316,9 +316,12 @@ FormalDevelopment 保留正式身份，仅用于正式身份验证。
 
 通道不改变身份：beta 与正式版是同一个正式身份的 App，区别只在多读的 beta.json。stable.json
 始终是结论的基准；用户开启 beta，或已装 beta 尚未被 stable 超过时才再读 beta.json，两份清单
-各自保持缓存与修订链，取标签更高者，关闭开关不降级。新旧按发布标签的 SemVer 比较，候选
-构建号必须高于当前；构建号倒序不是“已是最新”，而是失败。包内发布标签只识别当前安装，
-不参与签名包授权或清单地址选择；安装期拒绝用更低构建号覆盖已装 App。
+各自保持缓存与修订链，取标签更高者。关闭开关不降级，已装 beta 只接收本 X.Y.Z 线的修复；
+它尚未被 stable 超过时，beta.json 读取失败即无结论。新旧按发布标签的 SemVer 比较，候选
+构建号必须高于当前；构建号倒序不是“已是最新”，而是失败。包内发布标签只用来认出已装 beta，
+从而决定所在的线、新旧比较和是否多读 beta.json；它不替换或锁定 stable.json，不参与签名包
+授权。更低构建号的宿主不覆盖已装 App：自行安装和 `--install-only` 在安装锁内拒绝；Finder
+拖拽覆盖拦不住，之后扩展检查发现仍登记着更高构建号的扩展时不再激活，提示先卸载（不删数据）。
 
 入口：[安装状态机](macos/Shared/InstallationTransaction.swift)、
 [构建与身份](docs/agent/development-builds.md)、[更新协议与发布](docs/agent/updates.md)。

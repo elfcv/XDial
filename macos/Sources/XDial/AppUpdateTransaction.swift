@@ -371,6 +371,24 @@ enum AppUpdateRelaunchIntentStore {
         defaults.set(try JSONEncoder().encode(intent), forKey: key)
     }
 
+    /// The launching app's own short version and build decide whether the
+    /// intent was written for it.
+    static func loadDecision(
+        bundleInfo: [String: Any],
+        activeScenarioID: String,
+        now: Date = Date(),
+        defaults: UserDefaults = xdialDefaults
+    ) -> AppUpdateRelaunchDecision? {
+        loadDecision(
+            currentVersion: bundleInfo["CFBundleShortVersionString"]
+                as? String ?? "0",
+            currentBuild: bundleInfo["CFBundleVersion"] as? String ?? "0",
+            activeScenarioID: activeScenarioID,
+            now: now,
+            defaults: defaults
+        )
+    }
+
     static func loadDecision(
         currentVersion: String,
         currentBuild: String,
@@ -394,6 +412,27 @@ enum AppUpdateRelaunchIntentStore {
             return nil
         }
         return decision
+    }
+
+    /// A staged bundle installs only as the version and build the outgoing app
+    /// recorded, both read from the staged bundle itself.
+    static func permitsStagedSuccessor(
+        bundleAt bundleURL: URL,
+        now: Date = Date(),
+        defaults: UserDefaults = xdialDefaults
+    ) -> Bool {
+        permitsStagedSuccessor(
+            targetVersion: ApplicationBundleInfo.string(
+                forKey: "CFBundleShortVersionString",
+                at: bundleURL
+            ) ?? "",
+            targetBuild: ApplicationBundleInfo.string(
+                forKey: "CFBundleVersion",
+                at: bundleURL
+            ) ?? "",
+            now: now,
+            defaults: defaults
+        )
     }
 
     static func permitsStagedSuccessor(

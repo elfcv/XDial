@@ -171,7 +171,8 @@ enum AppUpdateManifestError: Error, Equatable, Sendable {
     case unexpectedFields
     case unsupportedSchema
     case invalidRevision
-    case invalidChannel
+    /// The manifest names another channel than the feed it was read from.
+    case invalidChannel(expected: AppUpdateChannel)
     case invalidGeneratedAt
     case invalidPublishedAt
 }
@@ -184,7 +185,9 @@ extension AppUpdateManifestError: LocalizedError {
         case .unexpectedFields: "更新清单包含缺失或未定义的字段"
         case .unsupportedSchema: "更新清单版本不受支持"
         case .invalidRevision: "更新清单修订号无效"
-        case .invalidChannel: "更新清单通道与所读的清单地址不符"
+        // stable keeps the wording released clients already show.
+        case let .invalidChannel(expected):
+            "更新清单通道不是 \(expected.rawValue)"
         case .invalidGeneratedAt: "更新清单生成时间无效"
         case .invalidPublishedAt: "更新清单发布时间无效"
         }
@@ -241,7 +244,9 @@ enum AppUpdateManifestParser {
             throw AppUpdateManifestError.invalidRevision
         }
         guard wire.channel == expectedChannel.rawValue else {
-            throw AppUpdateManifestError.invalidChannel
+            throw AppUpdateManifestError.invalidChannel(
+                expected: expectedChannel
+            )
         }
         guard let generatedAt = ISO8601Timestamp.parse(wire.generatedAt) else {
             throw AppUpdateManifestError.invalidGeneratedAt
@@ -924,6 +929,25 @@ enum AppUpdateFeedOutcome: Equatable, Sendable {
         guard case let .failed(error) = self else { return nil }
         return error
     }
+
+    /// With the preference off, an installed beta follows only its own X.Y.Z
+    /// line: beta.json may fix it, but never carries it into another line.
+    func confined(toLineOf installed: InstalledRelease) -> AppUpdateFeedOutcome {
+        guard case let .checked(result) = self,
+              let line = installed.tag?.version else { return self }
+        let tag: String
+        switch result.availability {
+        case let .available(candidate): tag = candidate.tag
+        case let .buildNotNewer(detail): tag = detail.tag
+        case .upToDate, .noRelease: return self
+        }
+        guard ReleaseTag(tag)?.version != line else { return self }
+        return .checked(AppUpdateReleaseLookupResult(
+            availability: .upToDate,
+            checkedAt: result.checkedAt,
+            revision: result.revision
+        ))
+    }
 }
 
 struct AppUpdateChannelLookupResult: Equatable, Sendable {
@@ -943,11 +967,22 @@ struct AppUpdateChannelLookupResult: Equatable, Sendable {
     var availability: AppUpdateReleaseAvailability {
         .merged([stable, beta].compactMap { $0?.result?.availability })
     }
+
+    /// Every feed's reversed build, also when another feed's candidate or
+    /// failure decides the outcome: each one is a publishing fault to record.
+    var reversedBuilds: [AppUpdateBuildNotNewer] {
+        [stable, beta].compactMap {
+            guard case let .buildNotNewer(detail)? = $0?.result?.availability
+            else { return nil }
+            return detail
+        }
+    }
 }
 
 /// Reads stable.json, and beta.json only while the beta preference is on or
-/// the installed beta has not been passed by stable. Each feed keeps its own
-/// backoff, ETag cache and revision chain.
+/// the installed beta has not been passed by stable; with the preference off,
+/// beta.json only offers fixes on the installed beta's line. Each feed keeps
+/// its own backoff, ETag cache and revision chain.
 actor AppUpdateChannelLookup {
     private let stable: AppUpdateReleaseLookup
     private let beta: AppUpdateReleaseLookup
@@ -994,12 +1029,14 @@ actor AppUpdateChannelLookup {
             installed: installed,
             stable: stableOutcome
         ) {
-            betaOutcome = try await outcome(
+            let answer = try await outcome(
                 of: beta,
                 installed: installed,
                 currentSystemVersion: currentSystemVersion,
                 now: now
             )
+            betaOutcome = receivesBeta
+                ? answer : answer.confined(toLineOf: installed)
         } else {
             betaOutcome = nil
         }

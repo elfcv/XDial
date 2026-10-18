@@ -3549,6 +3549,17 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             finishActivation(.success(()))
         case .activate:
             submitExtensionActivation()
+        case let .newerActive(activeVersion):
+            // Installing an older host over a newer one, by any route, leaves
+            // the newer extension in place; only an uninstall clears it.
+            let error = ManagerError.newerExtensionActive(
+                activeVersion: activeVersion,
+                bundledVersion: expectedVersion
+            )
+            if phase == .connection {
+                activationStatusHandler?(.failed(error.localizedDescription))
+            }
+            finishActivation(.failure(error))
         case .unavailable:
             let error = ManagerError.extensionVerificationFailed(
                 expectedVersion: expectedVersion
@@ -4165,6 +4176,7 @@ private enum ManagerError: LocalizedError {
     case underlayUnavailable
     case systemDNSUnavailable
     case extensionVerificationFailed(expectedVersion: String)
+    case newerExtensionActive(activeVersion: String, bundledVersion: String)
     case deactivationDeferredBySystem
     case rebootRequired
     case stopTimedOut
@@ -4205,6 +4217,9 @@ private enum ManagerError: LocalizedError {
             "无法读取 XDial 启动前的系统 DNS"
         case let .extensionVerificationFailed(expectedVersion):
             "macOS 未登记并启用当前 \(XDialBuildIdentity.transparentProxyDisplayName)（build \(expectedVersion)）；请先完成 XDial 安装"
+        case let .newerExtensionActive(activeVersion, bundledVersion):
+            "macOS 已启用构建号更高的 \(XDialBuildIdentity.transparentProxyDisplayName)（build \(activeVersion)，可能来自 beta），"
+                + "不会换成当前 App 带的 build \(bundledVersion)；请先在 \(XDialBuildIdentity.applicationDisplayName) 内卸载（不勾选删除数据），再安装这个版本"
         case .deactivationDeferredBySystem:
             "macOS 仍在占用 \(XDialBuildIdentity.transparentProxyDisplayName)；请退出其他正在运行的 XDial 后重试卸载"
         case .rebootRequired:

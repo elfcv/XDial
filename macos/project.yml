@@ -32,8 +32,9 @@ settings:
     XDIAL_BUILD_FLAVOR: release
     XDIAL_UPDATE_ACCEPTANCE_ID: ""
     # The published tag (vX.Y.Z or vX.Y.Z-beta.N), empty unless a build passes
-    # it. It only identifies the installed release for display and diagnostics;
-    # it never selects a feed or authorizes an update.
+    # it. A beta package must carry its tag: only this tells an installed beta
+    # apart, which decides its line, tag comparison and reading beta.json too.
+    # It never replaces or locks stable.json and never authorizes an update.
     XDIAL_RELEASE_TAG: ""
     XDIAL_SOURCE_REVISION: "unversioned"
   configs:

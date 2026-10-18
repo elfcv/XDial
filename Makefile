@@ -249,10 +249,12 @@ test-macos-transaction: test-release-contract test-debug-rollback macos-identity
 	@test "$$(plutil -extract LSUIElement raw macos/Info.plist)" = true
 	@rg -q '^[[:space:]]+LSUIElement: true$$' macos/project.yml
 	@! rg -n 'URLSession|ip-api\.com' macos/Sources/XDial/NetworkInfo.swift
-	@# XDialReleaseTag only identifies the installed release; it never picks a feed or authorizes a bundle.
+	@# XDialReleaseTag only tells an installed beta apart; it never replaces or locks stable.json or authorizes a bundle.
 	@test "$$(rg -l 'XDialReleaseTag|releaseTagInfoKey' macos/Sources macos/Shared | sort)" = macos/Sources/XDial/AppUpdateChecker.swift
 	@! awk '/^(enum AutomaticUpdateBundlePolicy|struct AppUpdateFeedConfiguration)/,/^}/' macos/Sources/XDial/AppUpdateTransaction.swift macos/Sources/XDial/AppUpdateReleaseLookup.swift | rg -n 'InstalledRelease|ReleaseTag'
 	@! rg -n 'InstalledRelease|ReleaseTag' macos/Sources/XDial/ApplicationRelocator.swift
+	@# Every installer, --install-only included, rechecks the downgrade gate under the installation lock.
+	@rg -U -q 'private static func install\((?s:.)*?withExclusiveAccess \{(?s:.)*?BundleBuildNumber\.installationLowersBuild\((?s:.)*?try artifacts\.perform' macos/Sources/XDial/ApplicationRelocator.swift
 	@! rg -U -n '\.on(Appear|Disappear)[[:space:]]*\{[^}]{0,500}(probeNetwork|prepareTailscale|closeTailscaleSetup|URLSession|127\.0\.0\.1:9090)' macos/Sources/XDial/SettingsView.swift
 	@test "$$(rg -U -o 'AXUIElementCopyAttributeValue\([^)]*kAXValueAttribute' macos/Sources/XDial/DebugServer.swift | wc -l | tr -d ' ')" -eq 1
 	@rg -U -q 'private static func safeAXValue\([^}]+guard subrole != secureTextFieldSubrole else \{ return nil \}[^}]+guard role as\? String != kAXTextAreaRole else \{ return nil \}[^}]+AXUIElementCopyAttributeValue\([^)]*kAXValueAttribute' macos/Sources/XDial/DebugServer.swift

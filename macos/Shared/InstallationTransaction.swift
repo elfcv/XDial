@@ -247,6 +247,25 @@ enum BundleBuildNumber {
         else { return false }
         return value.utf8.allSatisfy { (48 ... 57).contains($0) }
     }
+
+    static func read(at bundleURL: URL) -> String? {
+        ApplicationBundleInfo.string(forKey: "CFBundleVersion", at: bundleURL)
+    }
+
+    /// An unreadable or non-canonical build is not evidence of a downgrade.
+    static func lowers(_ source: String?, below destination: String?) -> Bool {
+        guard let source, let destination else { return false }
+        return compare(source, destination) == .orderedAscending
+    }
+
+    /// Whether installing the bundle at `sourceURL` over the one at
+    /// `destinationURL` would put an older host beside a newer extension.
+    static func installationLowersBuild(
+        from sourceURL: URL,
+        over destinationURL: URL
+    ) -> Bool {
+        lowers(read(at: sourceURL), below: read(at: destinationURL))
+    }
 }
 
 enum ApplicationRelocationDecision: Equatable {
@@ -257,6 +276,27 @@ enum ApplicationRelocationDecision: Equatable {
     /// The installed bundle has a higher build, possibly a beta. Replacing it
     /// would leave its newer System Extension active beside an older host.
     case rejectDowngrade
+
+    /// Reads both builds from the bundles themselves: the same values macOS
+    /// compares before it replaces the active System Extension.
+    static func decide(
+        currentIsCanonical: Bool,
+        sourceURL: URL,
+        destinationURL: URL,
+        destinationExists: Bool,
+        destinationMatchesIdentity: Bool,
+        destinationIsRecognizedProduct: Bool
+    ) -> ApplicationRelocationDecision {
+        decide(
+            currentIsCanonical: currentIsCanonical,
+            destinationExists: destinationExists,
+            destinationMatchesIdentity: destinationMatchesIdentity,
+            destinationIsRecognizedProduct: destinationIsRecognizedProduct,
+            sourceBuild: BundleBuildNumber.read(at: sourceURL),
+            destinationBuild: destinationExists
+                ? BundleBuildNumber.read(at: destinationURL) : nil
+        )
+    }
 
     static func decide(
         currentIsCanonical: Bool,
@@ -276,9 +316,7 @@ enum ApplicationRelocationDecision: Equatable {
             || destinationIsRecognizedProduct else {
             return .rejectExisting
         }
-        if let sourceBuild, let destinationBuild,
-           BundleBuildNumber.compare(sourceBuild, destinationBuild)
-            == .orderedAscending {
+        if BundleBuildNumber.lowers(sourceBuild, below: destinationBuild) {
             return .rejectDowngrade
         }
         return .replace
@@ -343,6 +381,10 @@ enum SystemExtensionActivationVerifier {
         case ready
         case activate
         case unavailable
+        /// A higher build of this extension stays active, typically a beta
+        /// whose app was replaced by an older one. macOS does not replace it
+        /// with a lower build, so only an uninstall can clear it.
+        case newerActive(bundleVersion: String)
     }
 
     static func action(
@@ -358,9 +400,40 @@ enum SystemExtensionActivationVerifier {
         ) {
             return .ready
         }
+        // Whatever installed the older host, activation cannot replace a
+        // newer extension; say so instead of reporting a missing one.
+        if let newer = newerVersion(
+            properties,
+            expectedIdentifier: expectedIdentifier,
+            expectedVersion: expectedVersion
+        ) {
+            return .newerActive(bundleVersion: newer)
+        }
         // Only installation may repair a missing/disabled/outdated extension.
         // A failed post-activation verification must not resubmit indefinitely.
         return phase == .installationPreflight ? .activate : .unavailable
+    }
+
+    /// The highest build of this extension above the bundled one that is not
+    /// already being uninstalled.
+    static func newerVersion(
+        _ properties: [SystemExtensionPropertySnapshot],
+        expectedIdentifier: String,
+        expectedVersion: String
+    ) -> String? {
+        properties
+            .filter {
+                $0.bundleIdentifier == expectedIdentifier
+                    && !$0.isUninstalling
+                    && BundleBuildNumber.compare(
+                        $0.bundleVersion,
+                        expectedVersion
+                    ) == .orderedDescending
+            }
+            .map(\.bundleVersion)
+            .max {
+                BundleBuildNumber.compare($0, $1) == .orderedAscending
+            }
     }
 
     static func containsReadyCurrentVersion(

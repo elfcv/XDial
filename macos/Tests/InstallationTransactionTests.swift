@@ -803,6 +803,141 @@ final class InstallationTransactionTests: XCTestCase {
         XCTAssertNil(BundleBuildNumber.compare("1.2", "1"))
     }
 
+    func testRelocationReadsBothBuildsFromTheBundles() throws {
+        let fixture = try BuildNumberBundleFixture()
+        defer { fixture.cleanup() }
+        let installed = try fixture.bundle("Installed", build: "1792000001")
+        let older = try fixture.bundle("Older", build: "1792000000")
+        let newer = try fixture.bundle("Newer", build: "1792000002")
+        let unreadable = try fixture.bundle("Unreadable", build: nil)
+
+        for (source, destination, expected) in [
+            (older, installed, ApplicationRelocationDecision.rejectDowngrade),
+            (newer, installed, .replace),
+            (installed, installed, .replace),
+            (older, unreadable, .replace),
+        ] {
+            XCTAssertEqual(
+                ApplicationRelocationDecision.decide(
+                    currentIsCanonical: false,
+                    sourceURL: source,
+                    destinationURL: destination,
+                    destinationExists: true,
+                    destinationMatchesIdentity: true,
+                    destinationIsRecognizedProduct: false
+                ),
+                expected,
+                "\(source.lastPathComponent) over "
+                    + destination.lastPathComponent
+            )
+        }
+
+        // The installer repeats the rule under its lock, so --install-only
+        // and a racing installer meet the same gate.
+        XCTAssertTrue(
+            BundleBuildNumber.installationLowersBuild(
+                from: older,
+                over: installed
+            )
+        )
+        for (source, destination) in [
+            (newer, installed),
+            (installed, installed),
+            (older, unreadable),
+            (unreadable, installed),
+        ] {
+            XCTAssertFalse(
+                BundleBuildNumber.installationLowersBuild(
+                    from: source,
+                    over: destination
+                ),
+                "\(source.lastPathComponent) over "
+                    + destination.lastPathComponent
+            )
+        }
+    }
+
+    func testOlderHostReportsANewerActiveExtensionInsteadOfActivating() {
+        let identifier = "com.kafeifei.xdial.app.transparent-proxy"
+        func snapshot(
+            _ version: String,
+            enabled: Bool = true,
+            awaitingApproval: Bool = false,
+            uninstalling: Bool = false
+        ) -> SystemExtensionPropertySnapshot {
+            .init(
+                bundleIdentifier: identifier,
+                bundleVersion: version,
+                isEnabled: enabled,
+                isAwaitingUserApproval: awaitingApproval,
+                isUninstalling: uninstalling
+            )
+        }
+        func action(
+            _ properties: [SystemExtensionPropertySnapshot],
+            expectedVersion: String = "1792000000",
+            phase: SystemExtensionActivationVerifier.Phase
+        ) -> SystemExtensionActivationVerifier.Action {
+            SystemExtensionActivationVerifier.action(
+                for: properties,
+                expectedIdentifier: identifier,
+                expectedVersion: expectedVersion,
+                phase: phase
+            )
+        }
+
+        // However the older host was installed, Finder included, a newer
+        // extension that macOS will not replace is named as such.
+        for phase in [
+            SystemExtensionActivationVerifier.Phase.installationPreflight,
+            .installationCompletion,
+            .connection,
+        ] {
+            XCTAssertEqual(
+                action([snapshot("1792000001")], phase: phase),
+                .newerActive(bundleVersion: "1792000001")
+            )
+            XCTAssertEqual(
+                action(
+                    [
+                        snapshot("1792000001", enabled: false),
+                        snapshot(
+                            "1792000003",
+                            enabled: false,
+                            awaitingApproval: true
+                        ),
+                        snapshot("1792000002", uninstalling: true),
+                    ],
+                    phase: phase
+                ),
+                .newerActive(bundleVersion: "1792000003")
+            )
+            XCTAssertEqual(
+                action(
+                    [snapshot("1792000001"), snapshot("1792000000")],
+                    phase: phase
+                ),
+                .ready
+            )
+        }
+        // A newer build already being uninstalled no longer blocks, and an
+        // unreadable bundled build keeps the earlier verdicts.
+        let uninstalling = [snapshot("1792000001", enabled: false, uninstalling: true)]
+        XCTAssertEqual(
+            action(uninstalling, phase: .installationPreflight),
+            .activate
+        )
+        XCTAssertEqual(action(uninstalling, phase: .connection), .unavailable)
+        XCTAssertEqual(
+            action(
+                [snapshot("1792000001")],
+                expectedVersion: "unknown",
+                phase: .installationPreflight
+            ),
+            .activate
+        )
+    }
+
     func testBundleReplacementKeepsBackupUntilValidationSucceeds()
         throws {
         let fixture = try ReplacementFixture()
@@ -874,6 +1009,52 @@ final class InstallationTransactionTests: XCTestCase {
             ApplicationBundleInfo.identifier(at: fixture.destinationURL),
             XDialApplicationIdentifierPolicy.release
         )
+    }
+}
+
+private final class BuildNumberBundleFixture {
+    let rootURL: URL
+
+    init() throws {
+        rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "xdial-build-number-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true
+        )
+    }
+
+    func bundle(_ name: String, build: String?) throws -> URL {
+        let url = rootURL.appendingPathComponent(
+            "\(name)/XDial.app",
+            isDirectory: true
+        )
+        let contentsURL = url.appendingPathComponent(
+            "Contents",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: contentsURL,
+            withIntermediateDirectories: true
+        )
+        var info: [String: Any] = [
+            "CFBundleIdentifier": XDialApplicationIdentifierPolicy.release,
+            "CFBundleShortVersionString": "0.10.0",
+        ]
+        info["CFBundleVersion"] = build
+        try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        ).write(to: contentsURL.appendingPathComponent("Info.plist"))
+        return url
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: rootURL)
     }
 }
 

@@ -3,8 +3,9 @@ import Combine
 import Foundation
 
 /// The running release as the update channel sees it. XDialReleaseTag only
-/// identifies an installed beta for display, diagnostics and the beta-line
-/// rule; it never selects a feed URL or authorizes a bundle.
+/// tells an installed beta apart, which decides its line, how tags compare and
+/// whether beta.json is read as well. It can only add beta.json: it never
+/// replaces or locks stable.json and never authorizes a bundle.
 struct InstalledRelease: Equatable, Sendable {
     static let releaseTagInfoKey = "XDialReleaseTag"
 
@@ -76,8 +77,26 @@ enum AppUpdateChannelPreference {
     }
 }
 
+/// beta.json could not be read. stable still concludes the check, except
+/// for an installed beta that stable has not passed.
+private struct AppUpdateBetaFeedUnavailable: LocalizedError {
+    let underlying: AppUpdateReleaseLookupError
+
+    var errorDescription: String? {
+        "beta 清单暂时无法读取：\(underlying.localizedDescription)"
+    }
+}
+
 @MainActor
 final class AppUpdateChecker: ObservableObject {
+    typealias ArchiveDownload = @Sendable (
+        _ url: URL,
+        _ destination: URL,
+        _ expectedSize: Int64,
+        _ expectedSHA256: String,
+        _ progress: @escaping AppUpdateDownloader.ProgressHandler
+    ) async throws -> URL
+
     #if DEBUG
     static private(set) weak var current: AppUpdateChecker?
     #endif
@@ -141,9 +160,10 @@ final class AppUpdateChecker: ObservableObject {
         }
         secondaryNotice = nil
         // The check reads the preference when it starts, so the latest switch
-        // always decides which feeds it requests.
+        // always decides which feeds it requests. It also runs while an update
+        // waits to be installed, keeping it unless the feeds now offer another.
         channelCheckTask = Task { [weak self] in
-            await self?.check(manual: true)
+            await self?.check(manual: true, revisitingPreparedUpdate: true)
         }
         return true
     }
@@ -200,6 +220,7 @@ final class AppUpdateChecker: ObservableObject {
     private let automaticUpdatesPermitted: @MainActor () -> Bool
     private let currentRelease: @MainActor () -> InstalledRelease
     private let preferenceDefaults: UserDefaults
+    private let downloadArchive: ArchiveDownload
     private var checkInFlight = false
     private var downloadTask: Task<Void, Never>?
     private var handoffTask: Task<Void, Never>?
@@ -219,6 +240,16 @@ final class AppUpdateChecker: ObservableObject {
                 InstalledRelease.current()
             },
         preferenceDefaults: UserDefaults = xdialDefaults,
+        downloadArchive: @escaping ArchiveDownload = {
+            url, destination, expectedSize, expectedSHA256, progress in
+            try await AppUpdateDownloader().download(
+                from: url,
+                to: destination,
+                expectedSize: expectedSize,
+                expectedSHA256: expectedSHA256,
+                progress: progress
+            )
+        },
         pruneStaleStaging:
             @escaping @MainActor () -> Void = {
                 AppUpdateStager.pruneStaleRoots()
@@ -228,6 +259,7 @@ final class AppUpdateChecker: ObservableObject {
         self.automaticUpdatesPermitted = automaticUpdatesPermitted
         currentRelease = installedRelease
         self.preferenceDefaults = preferenceDefaults
+        self.downloadArchive = downloadArchive
         receivesBetaUpdates = AppUpdateChannelPreference.receivesBeta(
             defaults: preferenceDefaults
         )
@@ -337,17 +369,23 @@ final class AppUpdateChecker: ObservableObject {
     }
     #endif
 
-    private func check(manual: Bool) async {
+    private func check(
+        manual: Bool,
+        revisitingPreparedUpdate: Bool = false
+    ) async {
         guard !checkInFlight,
               downloadTask == nil,
               handoffTask == nil,
-              phase != .ready,
+              phase != .ready || revisitingPreparedUpdate,
               phase != .handingOff,
               automaticUpdatesPermitted() else {
             return
         }
         checkInFlight = true
         let previousCandidate = releaseCandidate
+        // A prepared update stays staged unless the feeds now offer another
+        // release; a check that cannot conclude never discards it.
+        let previousPhase = phase
         failure = nil
         secondaryNotice = nil
         phase = .checking
@@ -360,39 +398,65 @@ final class AppUpdateChecker: ObservableObject {
                 installed: installed,
                 receivesBeta: receivesBeta
             )
+            recordReversedBuilds(in: result)
             // stable.json is the baseline every subscription reads; a beta
             // failure alone only becomes a secondary notice.
             if let error = result.stable.error { throw error }
-            lastCheckedAt = result.checkedAt
-            secondaryNotice = result.beta?.error.map {
-                "beta 清单暂时无法读取：\($0.localizedDescription)"
+            let availability = result.availability
+            if let error = result.beta?.error {
+                let unavailable = AppUpdateBetaFeedUnavailable(
+                    underlying: error
+                )
+                // Until stable passes an installed beta, beta.json is its only
+                // source of updates: stable alone cannot call it up to date.
+                if installed.isBeta,
+                   availability == .upToDate || availability == .noRelease {
+                    throw unavailable
+                }
+                secondaryNotice = unavailable.localizedDescription
             }
-            switch result.availability {
+            lastCheckedAt = result.checkedAt
+            let keepsPreparedUpdate: Bool
+            if previousPhase == .ready,
+               case let .available(candidate) = availability {
+                keepsPreparedUpdate =
+                    candidate.identity == previousCandidate?.identity
+            } else {
+                keepsPreparedUpdate = false
+            }
+            if previousPhase == .ready, !keepsPreparedUpdate {
+                discardPreparedUpdate()
+            }
+            switch availability {
             case let .available(candidate):
                 releaseCandidate = candidate
-                phase = .available
+                phase = keepsPreparedUpdate ? .ready : .available
             case let .buildNotNewer(detail):
                 releaseCandidate = nil
-                reportBuildNotNewer(detail, at: result.checkedAt)
+                reportBuildNotNewer(detail)
             case .upToDate, .noRelease:
                 releaseCandidate = nil
                 if installed.isBeta && !receivesBeta {
                     phase = .awaitingStable
                 } else {
-                    phase = result.availability == .upToDate
+                    phase = availability == .upToDate
                         ? .upToDate : .noRelease
                 }
             }
         } catch is CancellationError {
             releaseCandidate = previousCandidate
-            phase = previousCandidate == nil ? .idle : .available
+            phase = previousPhase == .ready
+                ? .ready
+                : previousCandidate == nil ? .idle : .available
         } catch {
             releaseCandidate = previousCandidate
             failure = AppUpdateFailure(
                 code: .checkUnavailable,
                 detail: error.localizedDescription
             )
-            phase = previousCandidate == nil ? .failed : .available
+            phase = previousPhase == .ready
+                ? .ready
+                : previousCandidate == nil ? .failed : .available
             if !manual {
                 NSLog(
                     "XDial update check unavailable: %@",
@@ -422,12 +486,11 @@ final class AppUpdateChecker: ObservableObject {
             let rootURL = try AppUpdateStager.makeStagingRoot()
             stagingRoot = rootURL
             let archiveURL = AppUpdateStager.archiveURL(in: rootURL)
-            let downloader = AppUpdateDownloader()
-            _ = try await downloader.download(
-                from: candidate.archiveURL,
-                to: archiveURL,
-                expectedSize: candidate.archiveSize,
-                expectedSHA256: candidate.archiveSHA256
+            _ = try await downloadArchive(
+                candidate.archiveURL,
+                archiveURL,
+                candidate.archiveSize,
+                candidate.archiveSHA256
             ) { progress in
                 Task { @MainActor [weak self] in
                     guard self?.phase == .downloading else { return }
@@ -477,6 +540,7 @@ final class AppUpdateChecker: ObservableObject {
                 installed: currentRelease(),
                 receivesBeta: receivesBetaUpdates
             )
+            recordReversedBuilds(in: result)
             if let error = result.outcome(for: expected.channel)?.error {
                 throw error
             }
@@ -496,7 +560,7 @@ final class AppUpdateChecker: ObservableObject {
             case let .buildNotNewer(detail):
                 discardPreparedUpdate()
                 releaseCandidate = nil
-                reportBuildNotNewer(detail, at: result.checkedAt)
+                reportBuildNotNewer(detail)
             case .upToDate, .noRelease:
                 discardPreparedUpdate()
                 releaseCandidate = nil
@@ -616,11 +680,7 @@ final class AppUpdateChecker: ObservableObject {
         self.handoffTerminationObserver = nil
     }
 
-    private func reportBuildNotNewer(
-        _ detail: AppUpdateBuildNotNewer,
-        at date: Date
-    ) {
-        lastBuildNotNewer = (detail, date)
+    private func reportBuildNotNewer(_ detail: AppUpdateBuildNotNewer) {
         failure = AppUpdateFailure(
             code: .buildNotNewer,
             detail: "\(detail.tag) 的构建号 \(detail.build) 不高于当前的 "
@@ -628,13 +688,23 @@ final class AppUpdateChecker: ObservableObject {
                 + "已停止这次更新。"
         )
         phase = .failed
-        NSLog(
-            "XDial update %@ %@ build %@ is not newer than installed build %@",
-            detail.channel.rawValue,
-            detail.tag,
-            detail.build,
-            detail.installedBuild
-        )
+    }
+
+    /// Every reversed build is a publishing fault worth a diagnostic, also
+    /// when another feed's candidate decides the outcome.
+    private func recordReversedBuilds(
+        in result: AppUpdateChannelLookupResult
+    ) {
+        for detail in result.reversedBuilds {
+            lastBuildNotNewer = (detail, result.checkedAt)
+            NSLog(
+                "XDial update %@ %@ build %@ is not newer than installed build %@",
+                detail.channel.rawValue,
+                detail.tag,
+                detail.build,
+                detail.installedBuild
+            )
+        }
     }
 
     #if XDIAL_TESTING

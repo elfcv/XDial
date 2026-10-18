@@ -1,5 +1,19 @@
 import SwiftUI
 
+/// Marks a beta candidate the same way in the update window and the popover.
+struct AppUpdateBetaBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(verbatim: text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(XDialPalette.warning)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(XDialPalette.warning.opacity(0.1), in: Capsule())
+    }
+}
+
 struct AppUpdateView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var updater: AppUpdateChecker
@@ -28,15 +42,7 @@ struct AppUpdateView: View {
                     Text(versionTitle)
                         .font(.title2.weight(.semibold))
                     if updater.releaseCandidate?.channel == .beta {
-                        Text(verbatim: "Beta")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(XDialPalette.warning)
-                            .padding(.horizontal, 6)
-                            .frame(height: 18)
-                            .background(
-                                XDialPalette.warning.opacity(0.1),
-                                in: Capsule()
-                            )
+                        AppUpdateBetaBadge(text: "Beta")
                             .accessibilityLabel(
                                 state.tr("beta 版本", "Beta version")
                             )
