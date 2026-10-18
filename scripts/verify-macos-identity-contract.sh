@@ -205,4 +205,22 @@ set -e
 [[ -z "$retired_identity_matches" ]] \
     || fail "macos still references XDIAL_NEXT_IDENTITY:"$'\n'"$retired_identity_matches"
 
-echo "macOS development isolation, formal identity, component-name, and location-access contracts verified"
+# System Settings, the Applications folder, Force Quit and the menu bar show
+# Debug as "XDial Debug". Copy that sends the user there names the app through
+# XDialBuildIdentity.applicationDisplayName, never a literal "XDial".
+python3 - <<'PYTHON'
+import pathlib, re
+surface = re.compile(r"系统设置|System Settings|登录项|Login Items|位置服务|Location Services"
+                     r"|“应用程序”|Applications folder|强制退出|Force Quit|菜单栏|menu bar")
+literal = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+bare_name = re.compile(r"(?<![\w.])XDial(?!\w)")
+failures = [
+    f"{path}:{number}: {line.strip()}"
+    for path in sorted(pathlib.Path("macos").rglob("*.swift")) if "Tests" not in path.parts
+    for number, line in enumerate(path.read_text().splitlines(), 1)
+    if any(surface.search(text) and bare_name.search(text) for text in literal.findall(line))
+]
+assert not failures, "system-surface copy hard-codes XDial:\n" + "\n".join(failures)
+PYTHON
+
+echo "macOS development isolation, formal identity, component-name, system-surface copy, and location-access contracts verified"

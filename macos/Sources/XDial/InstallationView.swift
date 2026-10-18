@@ -420,7 +420,7 @@ struct InstallationView: View {
         case .waitingForApproval:
             return state.tr(
                 "请按下方提示在系统设置中批准；批准后会自动继续。",
-                "Approve XDial in System Settings as shown below; setup then continues."
+                "Approve \(XDialBuildIdentity.applicationDisplayName) in System Settings as shown below; setup then continues."
             )
         case .ready:
             if needsSSIDAccess {
@@ -612,9 +612,10 @@ struct InstallationView: View {
                 "macOS requires location access to provide the current Wi-Fi name; XDial only uses it to match scenarios."
             )
         case .denied:
+            let name = XDialBuildIdentity.applicationDisplayName
             return state.tr(
-                "请在系统设置中允许 XDial 访问位置，否则场景不会随 Wi-Fi 自动切换。",
-                "Allow XDial location access in System Settings, or scenarios cannot switch automatically with Wi-Fi."
+                "请在系统设置中允许 \(name) 访问位置，否则场景不会随 Wi-Fi 自动切换。",
+                "Allow \(name) location access in System Settings, or scenarios cannot switch automatically with Wi-Fi."
             )
         case .unavailable:
             return state.tr(
