@@ -111,18 +111,30 @@ Next 的旧配置仍是首次只读迁移的来源，也仍在“删除数据”
 2. `XDial Next.app` 还在时，用它自己的卸载流程卸载，**不要勾选“同时删除新旧版本的配置与密码”**。
    这一步会注销 Next 的 helper。
 3. 卸载后扩展可能显示 `terminated waiting to uninstall on reboot`，重启后由系统移除。
-4. 删 Next 的旧配置前，先确认共享库已经建立：`ls ~/.xdial/configuration/profiles.enc`。不存在时，
-   先启动一次 Debug 或正式版完成首启转换（整库复制 `.xdial`、`.xdial-debug`、`.xdial-next` 中修改时间最新的
-   `profiles.enc`，用对应身份的钥匙串项解密），在配置窗口确认需要的 Profile 都在，再做下一步。否则
-   `~/.xdial-next` 和它的钥匙串项可能是 Next 多 Profile 配置库仅有的一份，删掉无法恢复。
+4. 删 Next 的旧配置前，在 Debug 或正式版的配置窗口确认 Next 用过的 Profile 都已在共享库里；共享库已经存在时也要确认。
+   共享库只在 `~/.xdial/configuration/profiles.enc` 不存在时由首启转换建立一次：整库复制 `.xdial`、`.xdial-debug`、
+   `.xdial-next` 中修改时间最新的 `profiles.enc`（用对应身份的钥匙串项解密），建立后不再读 `~/.xdial-next`。
+   共享库当初从 `.xdial` 或 `.xdial-debug` 转换而来时，Next 的多 Profile 配置库从没进过共享库。
+   `ls ~/.xdial/configuration/profiles.enc` 没有输出时，先启动一次 Debug 或正式版完成首启转换，再确认。
 5. 不要用任何版本的“卸载并删除数据”清理 Next：它会同时删掉所有版本共用的配置库、正式版与 Debug
-   的旧数据和全部配置密钥，还会卸载执行它的那个 App。只用定点命令：
+   的旧数据和全部配置密钥，还会卸载执行它的那个 App。只用定点命令。第 4 步确认 Profile 都在时：
 
    ```sh
    rm -rf ~/.xdial-next
    defaults delete com.kafeifei.xdial.next
    security delete-generic-password -s com.kafeifei.xdial.next   # 重复执行，直到提示找不到
    ```
+
+   缺 Profile 或无法确认时不要删：`~/.xdial-next`、它的偏好设置和钥匙串项可能是 Next 配置库仅有的一份，
+   删掉无法恢复。只把目录改名备份，偏好设置和钥匙串项都先保留；备份里的 `profiles.enc` 要用钥匙串项
+   `com.kafeifei.xdial.next` 里的密钥解密：
+
+   ```sh
+   mv ~/.xdial-next ~/.xdial-next.bak-$(date +%Y%m%d)
+   ```
+
+   保留备份期间，卸载任何版本都不要勾选“同时删除新旧版本的配置与密码”，它会删掉这个钥匙串项。确认不再需要备份后，
+   再删除备份目录，并执行上面的 `defaults delete` 和 `security delete-generic-password`。
 
 6. 其余路径按第 1 步的结果手动删除：两处 App Group 容器（root 那份需要 `sudo`）及
    `~/Library/Application Scripts` 下的同名目录、`~/Library/Logs/XDial Next`、`~/Library/Application Support/XDial Next`、
