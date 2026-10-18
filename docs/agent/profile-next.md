@@ -2,7 +2,7 @@
 
 Next 的 Profile 配置库已合入 main，正式版、Debug 与 Next 使用同一份源码和共享配置库。
 Next 保留独立身份作为测试通道，从远程分支 `xdial-next` 发布；Next 发布不会替换正式版或 Debug 的组件。
-产品设计依据 [Profile v0.3](../plans/profile-subscriptions.md)，分发见 [Next 发布](next-releases.md)。
+产品设计依据 [Profile v0.3](../plans/profile-subscriptions.md)。
 
 ## 构建与隔离
 

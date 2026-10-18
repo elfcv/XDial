@@ -216,15 +216,21 @@ mkdir -p "$git_fixture"
     "$contract" assert-git-tag v1.2.5
 )
 
-# This independent Next branch must not enable the stable publisher or its
-# acceptance bypass, even though the shared stable verification contract works.
+# Release inputs must match the checked-in notes before anything is fetched,
+# acceptance builds included.
 expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
     release-inputs RELEASE_TAG=v2.3.4 RELEASE_BUILD_NUMBER=234
 expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
     release-inputs RELEASE_TAG=v9.9.9 RELEASE_BUILD_NUMBER=999 \
     RELEASE_UPDATE_ACCEPTANCE_ID=pages-fixture
-expect_failure make -s --no-print-directory -f "$repository_root/Makefile" \
-    publish RELEASE_TAG=v9.9.9
+
+# An acceptance build is refused offline, before the stable publisher runs.
+if publish_output="$(make -s --no-print-directory -f "$repository_root/Makefile" \
+    publish RELEASE_TAG=v9.9.9 RELEASE_UPDATE_ACCEPTANCE_ID=pages-fixture 2>&1)"; then
+    fail "an acceptance build reached the stable publisher"
+fi
+grep -Fq 'an acceptance build cannot be published to stable' <<<"$publish_output" \
+    || fail "publish did not refuse the acceptance build before running"
 
 fixture_root="$test_root/archive-fixture"
 fixture_app="$fixture_root/XDial.app"

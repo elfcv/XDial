@@ -3,7 +3,7 @@
 日常 Debug 由 `make app`（等同 `make app-debug`）生成 `build/XDial Debug.app`，使用 Apple Development 签名，
 不提交公证。`FormalDevelopment` 保留正式身份，仅用于该身份的专项验证。
 正式归档由 `make release` 生成，签名、公证与发布机制见 [updates.md](updates.md)。
-Next 测试通道由 `make app-next` 构建，分发见 [next-releases.md](next-releases.md)。
+Next 测试通道由 `make app-next` 构建，已冻结、不再分发。
 
 ## 通道身份
 
