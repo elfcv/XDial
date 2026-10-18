@@ -4218,7 +4218,7 @@ private enum ManagerError: LocalizedError {
         case let .extensionVerificationFailed(expectedVersion):
             "macOS 未登记并启用当前 \(XDialBuildIdentity.transparentProxyDisplayName)（build \(expectedVersion)）；请先完成 XDial 安装"
         case let .newerExtensionActive(activeVersion, bundledVersion):
-            "macOS 已启用构建号更高的 \(XDialBuildIdentity.transparentProxyDisplayName)（build \(activeVersion)，可能来自 beta），"
+            "macOS 中已有构建号更高的 \(XDialBuildIdentity.transparentProxyDisplayName)（build \(activeVersion)，可能来自 beta），"
                 + "不会换成当前 App 带的 build \(bundledVersion)；请先在 \(XDialBuildIdentity.applicationDisplayName) 内卸载（不勾选删除数据），再安装这个版本"
         case .deactivationDeferredBySystem:
             "macOS 仍在占用 \(XDialBuildIdentity.transparentProxyDisplayName)；请退出其他正在运行的 XDial 后重试卸载"
