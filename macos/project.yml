@@ -4,8 +4,6 @@ options:
     macOS: "15.0"
 configs:
   Debug: debug
-  Next: debug
-  NextRelease: release
   FormalDevelopment: release
   Release: release
 
@@ -19,8 +17,9 @@ settings:
     # and monotonically increasing build number.
     MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
-    # Formal configurations retain their installed identity. Debug owns a
-    # separate app, helper, extension, and data namespace.
+    # Formal configurations retain their installed identity, which beta
+    # releases share. Debug is the only other identity and owns a separate
+    # app, helper, extension, and data namespace.
     XDIAL_APPLICATION_BUNDLE_IDENTIFIER: com.kafeifei.xdial.app
     XDIAL_TRANSPARENT_PROXY_BUNDLE_IDENTIFIER: com.kafeifei.xdial.app.transparent-proxy
     XDIAL_SETTINGS_UI_BUNDLE_IDENTIFIER: com.kafeifei.xdial.app.settings-ui
@@ -34,23 +33,6 @@ settings:
     XDIAL_UPDATE_ACCEPTANCE_ID: ""
     XDIAL_SOURCE_REVISION: "unversioned"
   configs:
-    Next: &nextIdentity
-      XDIAL_APPLICATION_BUNDLE_IDENTIFIER: com.kafeifei.xdial.next
-      XDIAL_TRANSPARENT_PROXY_BUNDLE_IDENTIFIER: com.kafeifei.xdial.next.transparent-proxy
-      XDIAL_SETTINGS_UI_BUNDLE_IDENTIFIER: com.kafeifei.xdial.next.settings-ui
-      XDIAL_HELPER_IDENTIFIER: com.kafeifei.xdial.next.helper
-      XDIAL_DAEMON_PLIST: com.kafeifei.xdial.next.daemon.plist
-      XDIAL_DAEMON_ENTITLEMENTS: XDialDaemonNext.entitlements
-      XDIAL_HELPER_SOURCE: "$(SRCROOT)/../build/xdial-next"
-      XDIAL_PRODUCT_DISPLAY_NAME: XDial Next
-      XDIAL_SETTINGS_ENTRY_IDENTIFIER: com.kafeifei.xdial.next.settings-entry
-      XDIAL_BUILD_FLAVOR: next
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG XDIAL_NEXT_IDENTITY"
-
-    NextRelease:
-      <<: *nextIdentity
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) XDIAL_NEXT_IDENTITY"
-
     Debug:
       XDIAL_APPLICATION_BUNDLE_IDENTIFIER: com.kafeifei.xdial.debug
       XDIAL_TRANSPARENT_PROXY_BUNDLE_IDENTIFIER: com.kafeifei.xdial.debug.transparent-proxy
@@ -92,18 +74,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: "$(XDIAL_TRANSPARENT_PROXY_BUNDLE_IDENTIFIER)"
         ENABLE_APP_SANDBOX: YES
       configs:
-        Next:
-          CODE_SIGN_STYLE: Automatic
-          CODE_SIGN_IDENTITY: Apple Development
-          CODE_SIGN_ENTITLEMENTS: TransparentProxyExtension/XDialTransparentProxyNext.entitlements
-        NextRelease:
-          CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: Developer ID Application
-          PROVISIONING_PROFILE_SPECIFIER: XDial Next Developer ID Transparent Proxy
-          CODE_SIGN_ENTITLEMENTS: TransparentProxyExtension/XDialTransparentProxyNextRelease.entitlements
-          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
-          OTHER_CODE_SIGN_FLAGS: "--timestamp"
-          ENABLE_HARDENED_RUNTIME: YES
         Debug:
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: Apple Development
@@ -156,15 +126,6 @@ targets:
         ENABLE_APP_SANDBOX: NO
         SKIP_INSTALL: YES
       configs:
-        Next:
-          CODE_SIGN_STYLE: Automatic
-          CODE_SIGN_IDENTITY: Apple Development
-        NextRelease:
-          CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: Developer ID Application
-          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
-          OTHER_CODE_SIGN_FLAGS: "--timestamp"
-          ENABLE_HARDENED_RUNTIME: YES
         Debug:
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: Apple Development
@@ -219,24 +180,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: "$(XDIAL_APPLICATION_BUNDLE_IDENTIFIER)"
         ENABLE_USER_SCRIPT_SANDBOXING: NO
       configs:
-        Next:
-          CODE_SIGN_STYLE: Automatic
-          CODE_SIGN_IDENTITY: Apple Development
-          CODE_SIGN_ENTITLEMENTS: XDialNext.entitlements
-          PRODUCT_NAME: XDial Next
-          PRODUCT_MODULE_NAME: XDial
-          EXECUTABLE_NAME: XDial
-        NextRelease:
-          CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: Developer ID Application
-          PROVISIONING_PROFILE_SPECIFIER: XDial Next Developer ID Host
-          CODE_SIGN_ENTITLEMENTS: XDialNextRelease.entitlements
-          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
-          OTHER_CODE_SIGN_FLAGS: "--timestamp"
-          ENABLE_HARDENED_RUNTIME: YES
-          PRODUCT_NAME: XDial Next
-          PRODUCT_MODULE_NAME: XDial
-          EXECUTABLE_NAME: XDial
         Debug:
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: Apple Development
@@ -282,7 +225,7 @@ targets:
           if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ]; then
             exit 0
           fi
-          if [ "${CONFIGURATION}" = "Release" ] || [ "${CONFIGURATION}" = "NextRelease" ]; then
+          if [ "${CONFIGURATION}" = "Release" ]; then
             /usr/bin/codesign --force --options runtime --timestamp \
               --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
               "${carrier_destination}"
@@ -304,10 +247,6 @@ targets:
           # An explicit path must exist; only the ignored PrivateConfig default is optional.
           embed() {
             explicit="$1" fallback="$2" destination="${resource_dir}/$3"
-            if [ "${CONFIGURATION}" = "NextRelease" ]; then
-              rm -f "${destination}"
-              return
-            fi
             if [ -n "${explicit}" ] && [ ! -f "${explicit}" ]; then
               echo "error: private build configuration not found: ${explicit}" >&2
               exit 1
@@ -330,7 +269,7 @@ targets:
               if [ -f "${candidate}" ]; then seed_source="${candidate}"; break; fi
             done
           fi
-          if [ "${CONFIGURATION}" != "NextRelease" ] && [ -n "${seed_source}" ]; then
+          if [ -n "${seed_source}" ]; then
             case "${seed_source}" in
               *.json) ;;
               *) echo "error: seed Profile must be a .json file: ${seed_source}" >&2; exit 1 ;;
@@ -378,7 +317,7 @@ targets:
           if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ]; then
             exit 0
           fi
-          if [ "${CONFIGURATION}" = "Release" ] || [ "${CONFIGURATION}" = "NextRelease" ]; then
+          if [ "${CONFIGURATION}" = "Release" ]; then
             /usr/bin/codesign --force --options runtime --timestamp \
               --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
               --identifier "${XDIAL_HELPER_IDENTIFIER}" \

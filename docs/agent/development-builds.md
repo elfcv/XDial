@@ -3,7 +3,8 @@
 日常 Debug 由 `make app`（等同 `make app-debug`）生成 `build/XDial Debug.app`，使用 Apple Development 签名，
 不提交公证。`FormalDevelopment` 保留正式身份，仅用于该身份的专项验证。
 正式归档由 `make release` 生成，签名、公证与发布机制见 [updates.md](updates.md)。
-Next 测试通道由 `make app-next` 构建，已冻结、不再分发。
+编译期只有 Debug 与正式两个身份；beta 发布使用正式身份，不另设构建配置。`make app` 只接受
+`DEVELOPMENT_CHANNEL=debug`（默认值），传入其他值直接报错。
 
 ## 通道身份
 
@@ -21,7 +22,7 @@ Next 测试通道由 `make app-next` 构建，已冻结、不再分发。
 | helper socket | `/tmp/xdial-debug.sock` | `/tmp/xdial.sock` |
 | 诊断 HTTP | `127.0.0.1:19877` | 当前构建不包含；旧正式身份 Debug 可能使用 `19876` |
 
-新版 Profile 库跨通道共享，首次转换和显式删除数据的边界见 [Next 配置说明](profile-next.md)。
+新版 Profile 库跨通道共享，首次转换和显式删除数据的边界见 [Profile 配置库](profiles.md)。
 系统组件及运行目录仍独立，Debug 不消费正式更新包。身份定义在
 [XDialBuildIdentity.swift](../../macos/Shared/XDialBuildIdentity.swift)；通道隔离合同见
 [ARCHITECTURE.md](../../ARCHITECTURE.md)。独立安装不表示两个数据面同时接管已经过验证。
@@ -38,7 +39,7 @@ Debug 的开发证书与 host、extension provisioning profiles 必须匹配 Deb
 make app-debug MACOS_DEBUG_XCODEBUILD_FLAGS=-allowProvisioningUpdates
 ```
 
-两个开发构建入口末尾的 [verify-macos-debug-app.py](../../scripts/verify-macos-debug-app.py)
+开发构建入口末尾的 [verify-macos-debug-app.py](../../scripts/verify-macos-debug-app.py)
 校验嵌套组件身份、签名、开发 profile、App Group、daemon plist 与 helper 编译通道，
 不启动 App。host、Settings UI 和 extension 使用同次构建的 `DEBUG_BUILD_VERSION`，
 默认取 Unix 时间戳；构建号用于系统识别扩展升级，不等于源码提交。
@@ -48,7 +49,6 @@ make app-debug MACOS_DEBUG_XCODEBUILD_FLAGS=-allowProvisioningUpdates
 | 入口 | 实际效果 |
 |---|---|
 | `make app` / `make app-debug` | 构建并校验 Debug 开发候选包，不替换 `/Applications`，不启动 App |
-| `make app-next` | 构建并校验 Next 开发候选包，不替换 `/Applications`，不启动 App |
 | 候选包的 `Contents/MacOS/XDial --install-only` | 安装到该通道的 `/Applications` 路径；替换时终止同通道旧 App，并维护旧 helper；不启动后继 App |
 | `make restart` | 完整构建 Debug 后退出旧 Debug、安装、启动最终 App，等待安装与连接意图收敛 |
 | 从 `/Applications` 外正常启动 App | 自动定位、替换同通道安装并启动最终 App，不是隔离的源码运行 |
@@ -61,7 +61,7 @@ make app-debug MACOS_DEBUG_XCODEBUILD_FLAGS=-allowProvisioningUpdates
 
 Debug 曾安装为 `/Applications/XDail Debug.app`。新包发现该路径上签名相同的 Debug 时，先结束旧 App，
 由新包注销旧容器注册的 helper，再装到新路径；新版 helper 与 System Extension 就绪后才把旧包移入废纸篓，
-仍有进程占用时留给下一次安装事务。正式版与 Next 按新旧两个路径识别 Debug；此前发布的版本只认旧路径，
+仍有进程占用时留给下一次安装事务。正式版按新旧两个路径识别 Debug；此前发布的版本只认旧路径，
 新 Debug 运行期间它们的 helper 维护会因进程状态未知而停止，退出 Debug 后恢复。
 
 `--install-only` 不提供保留旧进程或连接的安装能力。实现见
@@ -80,3 +80,44 @@ daemon plist 使用标准 `Program` 指向各通道的固定安装路径，保�
 
 候选包校验、磁盘安装、Host 进程与实际运行的 Provider 是不同状态。新扩展代码只有在
 系统激活对应扩展后才生效；安装报告与运行态字段见 [debug-server.md](debug-server.md)。
+
+## 开发机 Next 残留清理
+
+Next 身份已移除，产品不再把它当作已知的兄弟版本；它从未分发，只可能残留在开发机上。
+Next 的旧配置仍是首次只读迁移的来源，也仍在“删除数据”的清单里，所以下面只做定点清理。
+
+1. 先只读自查，有输出才需要处理：
+
+   ```sh
+   ls -d "/Applications/XDial Next.app" ~/.xdial-next ~/Library/Preferences/com.kafeifei.xdial.next.plist \
+     ~/Library/Logs/"XDial Next" "/Library/Application Support/XDial Next" \
+     /Applications/.XDial-next.installation.lock \
+     ~/Library/"Group Containers"/UVZM439VGU.com.kafeifei.xdial.next.network 2>/dev/null
+   sudo ls -d "/private/var/root/Library/Group Containers/UVZM439VGU.com.kafeifei.xdial.next.network" 2>/dev/null
+   find /tmp/ -maxdepth 1 -name 'xdial-next*'
+   security find-generic-password -s com.kafeifei.xdial.next >/dev/null 2>&1 && echo "keychain item present"
+   systemextensionsctl list | grep -F com.kafeifei.xdial.next
+   launchctl print system/com.kafeifei.xdial.next.daemon >/dev/null 2>&1 && echo "daemon loaded"
+   launchctl print-disabled system | grep -F com.kafeifei.xdial.next
+   pgrep -fl 'XDial Next.app'
+   ```
+
+2. `XDial Next.app` 还在时，用它自己的卸载流程卸载，**不要勾选“同时删除新旧版本的配置与密码”**。
+3. 卸载后扩展可能显示 `terminated waiting to uninstall on reboot`，重启后由系统移除。
+4. 不要用任何版本的“卸载并删除数据”清理 Next：它会同时删掉所有版本共用的配置库、正式版与 Debug
+   的旧数据和全部配置密钥，还会卸载执行它的那个 App。只用定点命令：
+
+   ```sh
+   rm -rf ~/.xdial-next
+   defaults delete com.kafeifei.xdial.next
+   security delete-generic-password -s com.kafeifei.xdial.next   # 重复执行，直到提示找不到
+   ```
+
+5. 其余路径按第 1 步的结果手动删除：两处 App Group 容器（root 那份需要 `sudo`）、`~/Library/Logs/XDial Next`、
+   root 属主的 `/Library/Application Support/XDial Next`、`/Applications/.XDial-next.installation.lock`
+   和 `/tmp/xdial-next*`。`launchctl print-disabled` 里只剩的启用记录不对应已加载的服务，可以不处理。
+6. 升级 Debug 或正式版前，确认没有 Next 进程在运行。Next 不再是已知的兄弟身份，它的进程会让
+   helper 维护停在“进程状态未知”；这只暂停维护，不会结束任何进程，退出 Next 后恢复。
+
+另外：Apple 开发者后台里 Next 的 App ID、App Group 和两份 Developer ID profile 可以作废；
+tailnet 里 `xdial-next-*` 的陈旧设备可以手动删除；本地 `build/` 下名字含 `next` 的目录可以删除。

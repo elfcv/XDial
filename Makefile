@@ -2,17 +2,15 @@ BUILD_DIR := build
 # $(abspath) 按空格拆分参数，带空格的 bundle 路径必须由无空格的绝对
 # BUILD_DIR 拼出，不能整体交给 abspath/realpath。
 BUILD_DIR_ABS := $(abspath $(BUILD_DIR))
+# Debug is the only development identity. A caller still passing another
+# channel fails here instead of silently getting a Debug build.
 DEVELOPMENT_CHANNEL ?= debug
-ifeq ($(DEVELOPMENT_CHANNEL),next)
-DEVELOPMENT_CONFIGURATION := Next
-APP_BUNDLE_NAME := XDial Next.app
-else ifeq ($(DEVELOPMENT_CHANNEL),debug)
+ifneq ($(DEVELOPMENT_CHANNEL),debug)
+$(error DEVELOPMENT_CHANNEL must be debug, the only development identity)
+endif
 DEVELOPMENT_CONFIGURATION := Debug
 APP_BUNDLE_NAME := XDial Debug.app
-else
-$(error DEVELOPMENT_CHANNEL must be next or debug)
-endif
-DEVELOPMENT_DERIVED_DATA := $(BUILD_DIR)/macos-$(DEVELOPMENT_CHANNEL)-xcode
+DEVELOPMENT_DERIVED_DATA := $(BUILD_DIR)/macos-debug-xcode
 DEVELOPMENT_PRODUCT := $(DEVELOPMENT_DERIVED_DATA)/Build/Products/$(DEVELOPMENT_CONFIGURATION)/$(APP_BUNDLE_NAME)
 APP_BUNDLE := $(BUILD_DIR)/$(APP_BUNDLE_NAME)
 APP_BUNDLE_ABS := $(BUILD_DIR_ABS)/$(APP_BUNDLE_NAME)
@@ -193,7 +191,7 @@ test-patched-sslcon: $(PATCHED_WORKFILE)
 			./session ./vpn -count=1
 
 test: public-content-gate $(PATCHED_WORKFILE) test-patched-tailscale test-patched-sing-box test-patched-sslcon sing-box-test-validator
-	PATH="$(dir $(SING_BOX_TEST_BINARY)):$(PATH)" $(PATCHED_GO_ENV) go test -tags '$(MOBILE_LIBBOX_TAGS)' ./core/... -v -count=1
+	PATH="$(dir $(SING_BOX_TEST_BINARY)):$(PATH)" $(PATCHED_GO_ENV) go test -tags '$(MOBILE_LIBBOX_TAGS)' ./core/... ./cmd/xdial/ -v -count=1
 
 test-release-contract:
 	bash test/release_contract_test.sh
@@ -279,22 +277,14 @@ cli-debug: $(PATCHED_WORKFILE)
 	@mkdir -p $(BUILD_DIR)
 	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -ldflags "$(GO_LDFLAGS) -X main.buildFlavor=debug" -o $(BUILD_DIR)/xdial-debug ./cmd/xdial/
 
-cli-next: $(PATCHED_WORKFILE)
-	@mkdir -p $(BUILD_DIR)
-	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -ldflags "$(GO_LDFLAGS) -X main.buildFlavor=next" -o $(BUILD_DIR)/xdial-next ./cmd/xdial/
-
 # Development builds include DebugServer and must never be distributed.
-.PHONY: app-debug app-next cli-next test-scenario-layout
-app-debug:
-	$(MAKE) app DEVELOPMENT_CHANNEL=debug
-
-app-next:
-	$(MAKE) app DEVELOPMENT_CHANNEL=next
+.PHONY: app-debug test-scenario-layout
+app-debug: app
 
 test-scenario-layout:
 	python3 test/scenario_layout_test.py "$(APP_BUNDLE)"
 
-app: cli-$(DEVELOPMENT_CHANNEL) libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns $(MACOS_APP_LAUNCHER) macos-identity-contract
+app: cli-debug libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns $(MACOS_APP_LAUNCHER) macos-identity-contract
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDialTransparentProxy -configuration $(DEVELOPMENT_CONFIGURATION) \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath $(DEVELOPMENT_DERIVED_DATA) \
@@ -313,19 +303,19 @@ app: cli-$(DEVELOPMENT_CHANNEL) libbox-macos-xcframework macos/AppIcon.icns maco
 	@test -f '$(DEVELOPMENT_PRODUCT)/Contents/Helpers/XDial Settings UI.app/Contents/Resources/SettingsDockIcon.icns'
 	rm -rf "$(APP_BUNDLE)"
 	ditto "$(DEVELOPMENT_PRODUCT)" "$(APP_BUNDLE)"
-	python3 scripts/verify-macos-debug-app.py "$(APP_BUNDLE)" $(DEVELOPMENT_CHANNEL)
+	python3 scripts/verify-macos-debug-app.py "$(APP_BUNDLE)"
 
 # GitHub 托管 runner 不持有 System Extension 的签名证书和 provisioning profile。
 # 这里分别编译 Debug / Release 的扩展与宿主，只验证源码和链接；产物没有签名、不可分发。
-ci-macos-build: cli cli-debug cli-next libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
-	@set -e; for configuration in Debug Next Release NextRelease; do \
+ci-macos-build: cli cli-debug libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
+	@set -e; for configuration in Debug Release; do \
 		xcodebuild -project macos/XDial.xcodeproj -scheme XDialTransparentProxy \
 			-configuration "$$configuration" -destination 'platform=macOS,arch=arm64' \
 			-derivedDataPath $(BUILD_DIR)/macos-xcode-ci CODE_SIGNING_ALLOWED=NO build; \
 		xcodebuild -project macos/XDial.xcodeproj -scheme XDial \
 			-configuration "$$configuration" -destination 'platform=macOS,arch=arm64' \
 			-derivedDataPath $(BUILD_DIR)/macos-xcode-ci CODE_SIGNING_ALLOWED=NO build; \
-		case "$$configuration" in Debug) product_name='XDial Debug';; Next*) product_name='XDial Next';; *) product_name=XDial;; esac; \
+		case "$$configuration" in Debug) product_name='XDial Debug';; *) product_name=XDial;; esac; \
 		test "$$(plutil -extract LSUIElement raw "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app/Contents/Info.plist")" = true; \
 		python3 $(MACOS_DEPLOYMENT_VERIFIER) "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app" >/dev/null; \
 		python3 $(MACOS_COMPONENT_NAMES_VERIFIER) "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app" "$$product_name" >/dev/null; \
@@ -402,7 +392,7 @@ publish:
 # 安装前再查一次，挡住构建期间其他工作区装上的 Debug。
 restart:
 	@bash scripts/check-debug-rollback.sh
-	@$(MAKE) app DEVELOPMENT_CHANNEL=debug DEBUG_BUILD_VERSION=$(DEBUG_BUILD_VERSION)
+	@$(MAKE) app DEBUG_BUILD_VERSION=$(DEBUG_BUILD_VERSION)
 	@bash scripts/check-debug-rollback.sh
 	@bash scripts/restart-macos-app.sh "$(BUILD_DIR_ABS)/XDial Debug.app" \
 		"$(MACOS_APP_LAUNCHER_ABS)"

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Configuration belongs to the product, not its release/debug/next channel.
-/// Runtime directories and system component identities remain channel-owned.
+/// Configuration belongs to the product, not its formal or Debug identity.
+/// Runtime directories and system component identities remain identity-owned.
 enum ConfigurationStorage {
     static let keychainService = "com.kafeifei.xdial.configuration"
     static let directoryPath = ".xdial/configuration"
@@ -21,6 +21,8 @@ enum ConfigurationStorage {
               dataPath: ".xdial", keychainService: "com.kafeifei.xdial"),
         .init(preferencesPath: "Library/Preferences/com.kafeifei.xdial.debug.plist",
               dataPath: ".xdial-debug", keychainService: "com.kafeifei.xdial.debug"),
+        // The retired Next identity is still a read-only migration source and
+        // part of "delete data": developer machines can hold its library.
         .init(preferencesPath: "Library/Preferences/com.kafeifei.xdial.next.plist",
               dataPath: ".xdial-next", keychainService: "com.kafeifei.xdial.next"),
     ]

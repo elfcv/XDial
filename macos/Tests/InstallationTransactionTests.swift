@@ -296,14 +296,14 @@ final class InstallationTransactionTests: XCTestCase {
     func testFreshOrExplicitlyUninstalledApplicationDoesNotRegisterAutomatically() {
         XCTAssertFalse(InstallationBuildMarker.shouldPrepareAtLaunch(
             serviceRegistered: false, registrationRecoveryPending: false,
-            previousCompletedInstallation: nil, bundleIdentifier: "com.kafeifei.xdial.next"
+            previousCompletedInstallation: nil, bundleIdentifier: "com.kafeifei.xdial.app"
         ))
     }
 
     func testAnotherChannelsInstallationDoesNotAuthorizeRegistration() {
         XCTAssertFalse(InstallationBuildMarker.shouldPrepareAtLaunch(
             serviceRegistered: false, registrationRecoveryPending: false,
-            previousCompletedInstallation: "com.kafeifei.xdial.next:79:installation-v4",
+            previousCompletedInstallation: "com.kafeifei.xdial.app:79:installation-v4",
             bundleIdentifier: "com.kafeifei.xdial.debug"
         ))
     }

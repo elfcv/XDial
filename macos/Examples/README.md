@@ -14,7 +14,7 @@
 企业包可在构建时通过 `XDIAL_SEED_PROFILE_FILE=/absolute/path/<名称>.json` 注入一份可移植
 Profile 文档（与「导出配置」格式相同）；未设置时只尝试读取被忽略的
 `macos/PrivateConfig/SeedProfile/<名称>.json`。文件名即 Profile 名称，与「从文件导入」一致。
-显式指定的文件不存在或不是 `.json` 时构建失败。Next 分发包不嵌入预置 Profile。
+显式指定的文件不存在或不是 `.json` 时构建失败。
 
 同名预置在共享配置目录的 `seed-profiles.json` 中记录它对应的 Profile 和内容指纹；该记录不写进
 配置库，因为旧版本保存配置库时会丢弃不认识的字段。

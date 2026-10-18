@@ -688,10 +688,6 @@ final class DebugServer {
                 "configDirty": state.configDirty,
             ]
             return ok(result)
-        #if XDIAL_NEXT_IDENTITY
-        case "reimport-profile-scenario", "separate-imported-rule-resources", "group-rules-by-destination", "compact-profile-rule-sets":
-            return ("409 Conflict", json(["error": "Legacy per-Profile routing migrations are unavailable for the global configuration library"]))
-        #endif
         case "open-settings":
             // Editor navigation only: never select a runtime Scenario or save
             // configuration while reproducing a settings layout problem.

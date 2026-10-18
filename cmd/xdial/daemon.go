@@ -279,7 +279,7 @@ func handleClient(
 			}
 			switch req.Cmd {
 			case "start":
-				projected, err := config.ProfileWithTailscaleChannel(req.Profile, buildFlavor)
+				projected, err := config.ProfileWithTailscaleChannel(req.Profile, currentRuntimeIdentity().tailscaleDeviceChannel)
 				if err != nil {
 					client.SendResponse(Response{ID: req.ID, OK: false, Message: "invalid profile"})
 					return
@@ -370,7 +370,7 @@ func handleClient(
 				}
 
 			case "tailscale-prepare":
-				profileJSON, err := config.ProfileWithTailscaleChannel(req.Profile, buildFlavor)
+				profileJSON, err := config.ProfileWithTailscaleChannel(req.Profile, currentRuntimeIdentity().tailscaleDeviceChannel)
 				if err != nil {
 					req.AuthKey = ""
 					client.SendResponse(Response{ID: req.ID, OK: false, Message: "invalid Tailscale profile"})

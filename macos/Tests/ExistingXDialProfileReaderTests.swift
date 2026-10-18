@@ -2,6 +2,10 @@ import Foundation
 import XCTest
 
 final class ExistingXDialProfileReaderTests: XCTestCase {
+    private let debugSource = ConfigurationStorage.desktopLocations.first {
+        $0.keychainService == "com.kafeifei.xdial.debug"
+    }!
+
     func testConvertsOldFieldNamesWithoutLosingReferences() throws {
         let data = Data(#"{"exits":[{"id":"direct","name":"Direct","type":"direct"}],"rules":[{"id":"rule","name":"Rule","type":"manual","domains":["example.com"]}],"strategies":[{"id":"scene","name":"Scene","bindings":[{"rule_id":"rule","exit_id":"direct"}],"default_exit_id":"direct"}],"active_strategy_id":"scene"}"#.utf8)
         let profile = try ExistingXDialProfileReader.restore(profileData: data, vaultData: nil)
@@ -33,10 +37,10 @@ final class ExistingXDialProfileReaderTests: XCTestCase {
         try preferencesData.write(to: preferences)
         try vaultData.write(to: vaultURL)
 
-        let imported = try ExistingXDialProfileReader.readDebug(home: home, keychainVault: {
+        let imported = try XCTUnwrap(ExistingXDialProfileReader.read(debugSource, home: home, keychainVault: {
             XCTFail("A file-backed vault must not access Keychain")
             return nil
-        })
+        }))
         XCTAssertEqual(imported.lines[1].vpnPassword, "vpn-secret")
         XCTAssertEqual(imported.lines[2].anytlsPassword, "proxy-secret")
         XCTAssertFalse(imported.lines[1].verified)
@@ -44,7 +48,7 @@ final class ExistingXDialProfileReaderTests: XCTestCase {
         XCTAssertEqual(imported.scenarios, source.scenarios)
         XCTAssertEqual(try Data(contentsOf: preferences), preferencesData)
         XCTAssertEqual(try Data(contentsOf: vaultURL), vaultData)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".xdial-next").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ConfigurationStorage.directory(home: home).path))
     }
 
     func testKeychainFallbackDoesNotCreateSourceVault() throws {
@@ -56,9 +60,9 @@ final class ExistingXDialProfileReaderTests: XCTestCase {
         source.lines.append(Line(id: "vmess", name: "Proxy", type: "vmess"))
         let data = try PropertyListSerialization.data(fromPropertyList: ["xdial.profile": JSONEncoder().encode(source)], format: .binary, options: 0)
         try data.write(to: preferences)
-        let imported = try ExistingXDialProfileReader.readDebug(home: home, keychainVault: {
+        let imported = try XCTUnwrap(ExistingXDialProfileReader.read(debugSource, home: home, keychainVault: {
             try JSONEncoder().encode(["vmess-vmess": "private-uuid"])
-        })
+        }))
         XCTAssertEqual(imported.lines[1].vmessUUID, "private-uuid")
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".xdial-debug").path))
         XCTAssertEqual(try Data(contentsOf: preferences), data)
@@ -73,7 +77,7 @@ final class ExistingXDialProfileReaderTests: XCTestCase {
         let data = try JSONEncoder().encode(source)
         try PropertyListSerialization.data(fromPropertyList: ["xdial.profile": data], format: .binary, options: 0).write(to: preferences)
         var generation = 0
-        XCTAssertThrowsError(try ExistingXDialProfileReader.readDebug(home: home, keychainVault: {
+        XCTAssertThrowsError(try ExistingXDialProfileReader.read(debugSource, home: home, keychainVault: {
             generation += 1
             return try JSONEncoder().encode(["vpn-vpn": "revision-\(generation)"])
         }))

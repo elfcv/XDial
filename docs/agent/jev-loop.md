@@ -53,12 +53,12 @@ python3 scripts/jev_loop.py --watch --publish --repair --decision-provider api
 不要把密钥写入仓库、验收文件或聊天。切换 provider 会重新分析当前观察；预算和问题去重继续保留。
 
 默认读取 `~/Library/Logs/XDial Debug/jev/scenario-switch-observations.json`。
-Next、正式版分别使用 `XDial Next`、`XDial` 日志目录，可显式指定：
+正式版使用 `XDial` 日志目录，可显式指定：
 
 ```sh
 python3 scripts/jev_loop.py --watch --publish --repair \
-  --observations "$HOME/Library/Logs/XDial Next/jev/scenario-switch-observations.json" \
-  --state-dir build/jev-next
+  --observations "$HOME/Library/Logs/XDial/jev/scenario-switch-observations.json" \
+  --state-dir build/jev-stable
 ```
 
 同一状态目录只有一个 worker。默认目标仓库为 `kafeifei/XDial`，可用 `--repo owner/repo`
