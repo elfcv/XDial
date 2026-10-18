@@ -31,7 +31,10 @@ fi
 git rev-parse --verify --quiet HEAD >/dev/null \
 	|| fail "rollback check must run inside a git work tree with a HEAD commit"
 
-installed_revision="$(plutil -extract XDialSourceRevision raw -o - "$info_plist" 2>/dev/null || true)"
+# Older plutil (macOS 15) prints extraction errors on stdout, so its output
+# counts only when it succeeds.
+installed_revision="$(plutil -extract XDialSourceRevision raw -o - "$info_plist" 2>/dev/null)" \
+	|| installed_revision=""
 [[ -n "$installed_revision" ]] \
 	|| fail "cannot read XDialSourceRevision from ${info_plist}; ${override_hint}"
 
