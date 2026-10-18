@@ -25,7 +25,7 @@ func main() {
 	case "sub":
 		runSubCmd(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Printf("xdial %s\n", version)
+		fmt.Println(versionLine())
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -33,6 +33,16 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+// versionLine names any build flavor. Release builds use -trimpath, which
+// drops -ldflags from the Go build information, so the release contract's
+// exact "xdial <tag>" check is what refuses a flavored helper.
+func versionLine() string {
+	if buildFlavor == "" {
+		return "xdial " + version
+	}
+	return fmt.Sprintf("xdial %s (buildFlavor=%s)", version, buildFlavor)
 }
 
 func printUsage() {

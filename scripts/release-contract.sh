@@ -183,6 +183,83 @@ assert_get_task_allow_absent_in_plist() {
     fi
 }
 
+# codesign prints Timestamp= only for a timestamp authority's countersignature;
+# a local signing time appears as Signed Time= instead.
+assert_hardened_signature_details() {
+    local path="$1"
+    local details="$2"
+    local flags
+    flags="$(sed -nE \
+        's/^CodeDirectory .* flags=0x[0-9a-fA-F]+\(([^)]*)\).*$/\1/p' \
+        <<<"$details")"
+    [[ ",$flags," == *,runtime,* ]] \
+        || fail "$path is not signed with the hardened runtime"
+    grep -Eq '^Timestamp=.+' <<<"$details" \
+        || fail "$path has no secure signing timestamp"
+}
+
+assert_hardened_signature() {
+    local path="$1"
+    local details
+    details="$(/usr/bin/codesign -dvvv "$path" 2>&1)" \
+        || fail "cannot read the code signature of $path"
+    assert_hardened_signature_details "$path" "$details"
+}
+
+# DebugServer and its log prefix exist only in DEBUG builds of the host. The
+# Debug configuration keeps the host's code in Contents/MacOS/*.debug.dylib
+# behind a stub executable, so every file in that directory is scanned.
+assert_debug_server_absent() {
+    local executable_directory="$1"
+    local file status
+    for file in "$executable_directory"/*; do
+        [[ -f "$file" && ! -L "$file" && -r "$file" ]] \
+            || fail "unexpected or unreadable executable entry: $file"
+        status=0
+        LC_ALL=C grep -aFq 'DebugServer:' "$file" || status=$?
+        case "$status" in
+            0) fail "$file contains the development DebugServer" ;;
+            1) ;;
+            *) fail "cannot scan $file" ;;
+        esac
+    done
+}
+
+# An unknown build flavor falls back to the production identity at run time,
+# so the release gate is where a flavored helper is refused. -trimpath omits
+# -ldflags from the build information; the helper's version line, which names
+# any flavor, covers that case.
+assert_helper_without_build_flavor() {
+    local helper_path="$1"
+    local build_info
+    build_info="$(go version -m "$helper_path" 2>/dev/null)" \
+        || fail "cannot read Go build information from $helper_path"
+    if grep -Eq '^[[:space:]]+build[[:space:]].*main\.buildFlavor' <<<"$build_info"; then
+        fail "$helper_path was built with a main.buildFlavor override"
+    fi
+}
+
+# Independent of signing, so it also holds for an unsigned Release build.
+assert_distribution_binaries() {
+    local app_path="$1"
+    local helper_path="$2"
+    local host_executable
+    host_executable="$(plist_value "$app_path/Contents/Info.plist" \
+        CFBundleExecutable)" || exit 1
+    [[ -f "$app_path/Contents/MacOS/$host_executable" ]] \
+        || fail "missing host executable: $app_path/Contents/MacOS/$host_executable"
+    assert_debug_server_absent "$app_path/Contents/MacOS"
+    assert_helper_without_build_flavor "$helper_path"
+}
+
+assert_distribution_signatures() {
+    local component
+    for component in "$@"; do
+        assert_hardened_signature "$component"
+        assert_get_task_allow_absent "$component"
+    done
+}
+
 assert_location_entitlement() {
     local path="$1"
     local entitlements actual
@@ -303,6 +380,7 @@ verify_app() {
 
     assert_app_deployment_target "$app_path"
     assert_component_names "$app_path"
+    assert_distribution_binaries "$app_path" "$helper_path"
 
     assert_plist_value "$app_path/Contents/Info.plist" CFBundleIdentifier \
         "$RELEASE_APPLICATION_IDENTIFIER"
@@ -321,8 +399,11 @@ verify_app() {
             CFBundleVersion "$build_number"
     done
 
-    [[ "$("$helper_path" version)" == "xdial $tag" ]] \
-        || fail "bundled helper version does not match $tag"
+    local helper_version
+    helper_version="$("$helper_path" version)" \
+        || fail "bundled helper cannot report its version"
+    [[ "$helper_version" == "xdial $tag" ]] \
+        || fail "bundled helper reports '$helper_version', expected 'xdial $tag'"
 
     assert_developer_id_signature "$helper_path" "$RELEASE_HELPER_IDENTIFIER"
     assert_developer_id_signature "$settings_path" "$RELEASE_SETTINGS_IDENTIFIER"
@@ -331,8 +412,8 @@ verify_app() {
     assert_system_extension_authorization "$app_path" "$RELEASE_APPLICATION_IDENTIFIER"
     assert_system_extension_authorization "$extension_path" "$RELEASE_EXTENSION_IDENTIFIER"
     assert_location_entitlement "$app_path"
-    assert_get_task_allow_absent "$app_path"
-    assert_get_task_allow_absent "$extension_path"
+    assert_distribution_signatures "$app_path" "$settings_path" \
+        "$extension_path" "$helper_path"
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 
     if [[ "$notarized" == "--notarized" ]]; then
