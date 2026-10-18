@@ -241,6 +241,7 @@ test-macos-transaction: test-release-contract test-debug-rollback macos-identity
 	@! rg -n 'NSApp\.hide\(' macos/Sources/XDial/XDialApp.swift
 	@rg -q 'NSApp\.deactivate\(\)' macos/Sources/XDial/XDialApp.swift
 	@! rg -n '/usr/bin/open|open -n' scripts/restart-macos-app.sh macos/Sources/XDial/ApplicationRelocator.swift
+	@test "$$(awk '/^restart:/ { recipe = 1; next } recipe && !/^\t/ { exit } recipe && /check-debug-rollback\.sh/ { print "check" } recipe && /\$$\(MAKE\) app / { print "build" } recipe && /restart-macos-app\.sh/ { print "install" }' Makefile | paste -sd ' ' -)" = 'check build check install'
 	@rg -q 'ApplicationLaunchPolicy\.configure' tools/launch-macos-app.swift macos/Sources/XDial/ApplicationRelocator.swift macos/Sources/XDial/SettingsDockProxyCoordinator.swift
 	@rg -q 'addsToRecentItems = false' macos/Sources/XDial/ApplicationLaunchPolicy.swift
 	@! rg -n '@State[^\n]*dismissedScenarioSwitchFailure' macos/Sources/XDial/MainPopover.swift

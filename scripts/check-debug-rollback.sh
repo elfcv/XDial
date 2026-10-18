@@ -48,9 +48,26 @@ if git merge-base --is-ancestor "$installed_revision" HEAD; then
 	exit 0
 fi
 
+# Captured rather than streamed so git never starts a pager on a terminal.
+# "=" marks a commit whose change HEAD already carries under another ID.
+dropped="$(git --no-pager log --oneline --no-decorate --cherry-mark --right-only "HEAD...${installed_revision}")"
+main_revision="$(git rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' || true)"
 {
 	echo "✗ installed Debug ${installed_revision:0:12} has commits that HEAD lacks; installing this build would drop:"
-	git log --oneline "HEAD..${installed_revision}"
-	echo "merge them into this branch first, or ${override_hint}"
+	echo "$dropped"
+	if grep -q '^=' <<<"$dropped"; then
+		echo "(= HEAD already has that change as an amended or rebased copy)"
+	fi
+	# Work branches carry one fix or feature and target main, so another
+	# branch's commits are never the remedy; only main is.
+	if [[ -n "$main_revision" ]] && git merge-base --is-ancestor "$installed_revision" "$main_revision"; then
+		echo "they are all on origin/main: merge the latest main into this branch first"
+	else
+		containing="$(git --no-pager branch --all --no-color --contains "$installed_revision" --format='  %(refname:short)')"
+		echo "they are not on origin/main: another branch's unmerged work, or an earlier version of this branch since amended or rebased"
+		echo "branches containing ${installed_revision:0:12}:"
+		echo "${containing:-  none}"
+		echo "do not merge them into this work branch; confirm with the user that this Debug may be replaced, then ${override_hint}"
+	fi
 } >&2
 exit 1

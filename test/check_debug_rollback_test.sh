@@ -34,6 +34,12 @@ expect_output() {
     grep -qF -- "$1" "$output" || fail "output lacks \"$1\": $(cat "$output")"
 }
 
+expect_no_output() {
+    if grep -qF -- "$1" "$output"; then
+        fail "output contains \"$1\": $(cat "$output")"
+    fi
+}
+
 expect_pass() {
     local expected="$1"
     shift
@@ -80,6 +86,7 @@ git -C "$repository" config user.name 'XDial Test'
 git -C "$repository" config user.email 'xdial-test@example.invalid'
 commit 'base' >/dev/null
 main_revision="$(commit 'main fix')"
+git -C "$repository" update-ref refs/remotes/origin/main "$main_revision"
 git -C "$repository" switch -q -c installed-work
 installed_revision="$(commit 'installed experiment')"
 git -C "$repository" switch -q -c current-work main
@@ -98,20 +105,51 @@ plutil -convert binary1 "$installed_app/Contents/Info.plist"
 expect_pass 'is contained in HEAD'
 
 # The installed build carries a sibling branch's commit: list only what the
-# install would drop, and stop.
+# install would drop, name its branch, and stop without suggesting a merge.
 install_revision "$installed_revision"
 expect_reject 'installed experiment'
-expect_output "${installed_revision:0:7}"
-if grep -qF 'current fix' "$output"; then
-    fail "commits already in HEAD were listed: $(cat "$output")"
-fi
+expect_output "+ ${installed_revision:0:7}"
+expect_no_output 'current fix'
+expect_output '  installed-work'
+expect_output 'do not merge them into this work branch'
+expect_no_output 'merge the latest main'
 expect_reject 'installed experiment' ALLOW_DEBUG_ROLLBACK=0
 expect_pass 'ALLOW_DEBUG_ROLLBACK=1' ALLOW_DEBUG_ROLLBACK=1
+
+# A terminal must not start git's pager in the middle of make restart.
+(cd "$repository" && env -u ALLOW_DEBUG_ROLLBACK XDIAL_DEBUG_APP_PATH="$installed_app" \
+    GIT_PAGER='echo PAGER_STARTED; cat' script -q /dev/null bash "$check") \
+    </dev/null >"$output" 2>&1 || true
+expect_output 'installed experiment'
+expect_no_output 'PAGER_STARTED'
 
 # A main-only checkout must not overwrite a Debug built from a work branch.
 git -C "$repository" switch -q main
 install_revision "$current_revision"
 expect_reject 'current fix'
+expect_output '  current-work'
+expect_output 'do not merge them into this work branch'
+git -C "$repository" switch -q current-work
+
+# A branch behind main is told to merge main, and only main.
+git -C "$repository" switch -q -c stale-work "${main_revision}^"
+commit 'stale fix' >/dev/null
+install_revision "$main_revision"
+expect_reject 'main fix'
+expect_output 'merge the latest main into this branch first'
+expect_no_output 'do not merge'
+
+# An amended or rebased build is marked as already carried by HEAD, and is
+# not mistaken for work to merge back.
+git -C "$repository" switch -q -c amended-work main
+drafted_revision="$(commit 'drafted fix')"
+install_revision "$drafted_revision"
+git -C "$repository" commit -q --amend -m 'drafted fix, reworded'
+expect_reject "= ${drafted_revision:0:7} drafted fix"
+expect_output 'amended or rebased copy'
+expect_output "branches containing ${drafted_revision:0:12}:"
+expect_output '  none'
+expect_output 'do not merge them into this work branch'
 git -C "$repository" switch -q current-work
 
 # A revision that cannot be proven contained in HEAD is a hard stop.
