@@ -52,6 +52,14 @@ def main():
     host = plist(bundle / "Contents/Info.plist")
     require(host.get("CFBundleExecutable") == "XDial", "unexpected host executable")
     require(host.get("CFBundleDisplayName") == product, "unexpected development display name")
+    names_result = subprocess.run(
+        [sys.executable, str(pathlib.Path(__file__).with_name("verify-macos-component-names.py")),
+         str(bundle), product],
+        capture_output=True,
+        text=True,
+    )
+    require(names_result.returncode == 0,
+            names_result.stderr.strip() or "component names do not follow the development identity")
     require(host.get("XDialBuildFlavor") == flavor, "bundle is not a development build")
     require(host.get("XDialTransparentProxyBundleIdentifier") == components[2][1],
             "host points to another channel's extension")

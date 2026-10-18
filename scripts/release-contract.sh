@@ -26,6 +26,7 @@ readonly RELEASE_HELPER_IDENTIFIER="$RELEASE_APPLICATION_IDENTIFIER.helper"
 readonly RELEASE_TEAM_IDENTIFIER="UVZM439VGU"
 readonly RELEASE_CONTRACT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEPLOYMENT_TARGET_VERIFIER="$RELEASE_CONTRACT_DIRECTORY/verify-macos-deployment-target.py"
+readonly COMPONENT_NAMES_VERIFIER="$RELEASE_CONTRACT_DIRECTORY/verify-macos-component-names.py"
 
 cleanup_root=""
 cleanup() {
@@ -149,6 +150,12 @@ assert_app_deployment_target() {
     local app_path="$1"
     python3 "$DEPLOYMENT_TARGET_VERIFIER" "$app_path" >/dev/null \
         || fail "$app_path contains an executable newer than its declared macOS minimum"
+}
+
+assert_component_names() {
+    local app_path="$1"
+    python3 "$COMPONENT_NAMES_VERIFIER" "$app_path" "$PRODUCT_NAME" >/dev/null \
+        || fail "$app_path component names do not follow the $PRODUCT_NAME identity"
 }
 
 assert_developer_id_signature() {
@@ -309,6 +316,7 @@ verify_app() {
         || fail "missing bundled helper: $helper_path"
 
     assert_app_deployment_target "$app_path"
+    assert_component_names "$app_path"
 
     if [[ "$RELEASE_CHANNEL" == next ]]; then
         python3 "$RELEASE_CONTRACT_DIRECTORY/verify-next-release-identity.py" \

@@ -4174,7 +4174,7 @@ private enum ManagerError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .activationInProgress:
-            "XDial 网络扩展正在启用，请稍候"
+            "\(XDialBuildIdentity.transparentProxyDisplayName) 正在启用，请稍候"
         case .missingProfile:
             "当前配置为空，无法启动"
         case .missingTransaction:
@@ -4204,17 +4204,17 @@ private enum ManagerError: LocalizedError {
         case .systemDNSUnavailable:
             "无法读取 XDial 启动前的系统 DNS"
         case let .extensionVerificationFailed(expectedVersion):
-            "macOS 未登记并启用当前 XDial 网络扩展（build \(expectedVersion)）；请先完成 XDial 安装"
+            "macOS 未登记并启用当前 \(XDialBuildIdentity.transparentProxyDisplayName)（build \(expectedVersion)）；请先完成 XDial 安装"
         case .deactivationDeferredBySystem:
-            "macOS 仍在占用 XDial 网络扩展；请退出其他正在运行的 XDial 后重试卸载"
+            "macOS 仍在占用 \(XDialBuildIdentity.transparentProxyDisplayName)；请退出其他正在运行的 XDial 后重试卸载"
         case .rebootRequired:
-            "XDial 网络扩展需要重启 macOS 后才能启用"
+            "\(XDialBuildIdentity.transparentProxyDisplayName) 需要重启 macOS 后才能启用"
         case .stopTimedOut:
             "旧的 XDial 网络会话未能在 10 秒内断开"
         case .startTimedOut:
             "XDial 数据面未能在 45 秒内启动"
         case .unknownStatus:
-            "XDial 网络扩展返回了未知状态"
+            "\(XDialBuildIdentity.transparentProxyDisplayName) 返回了未知状态"
         }
     }
 }

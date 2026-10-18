@@ -1056,11 +1056,11 @@ enum ApplicationRelocator {
             case .extensionIdentifierMissing:
                 "安装包没有声明网络扩展标识"
             case .extensionMissing:
-                "安装包内找不到 XDial 网络扩展"
+                "安装包内找不到 \(XDialBuildIdentity.transparentProxyDisplayName)"
             case .extensionFilenameMismatch:
                 "网络扩展文件名必须与其 Bundle Identifier 完全一致"
             case .extensionSignatureMismatch:
-                "XDial 网络扩展与主程序的签名身份不一致"
+                "\(XDialBuildIdentity.transparentProxyDisplayName) 与主程序的签名身份不一致"
             case .copiedBundleIdentityChanged:
                 "复制后的 XDial 签名发生变化"
             case .installedBundleIdentityChanged:

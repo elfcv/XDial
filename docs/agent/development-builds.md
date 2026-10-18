@@ -10,6 +10,7 @@ Next 测试通道由 `make app-next` 构建，分发见 [next-releases.md](next-
 | 所有权 | Debug | 正式身份 |
 |---|---|---|
 | 安装路径 | `/Applications/XDial Debug.app` | `/Applications/XDial.app` |
+| 系统设置显示名（App / 网络扩展） | `XDial Debug` / `XDial Debug Network Extension` | `XDial` / `XDial Network Extension` |
 | Host | `com.kafeifei.xdial.debug` | `com.kafeifei.xdial.app` |
 | Settings UI / Extension / Helper / Daemon | Host 加 `.settings-ui` / `.transparent-proxy` / `.helper` / `.daemon` | 同左 |
 | 通道偏好域 | `com.kafeifei.xdial.debug` | `com.kafeifei.xdial` |
@@ -24,6 +25,8 @@ Next 测试通道由 `make app-next` 构建，分发见 [next-releases.md](next-
 系统组件及运行目录仍独立，Debug 不消费正式更新包。身份定义在
 [XDialBuildIdentity.swift](../../macos/Shared/XDialBuildIdentity.swift)；通道隔离合同见
 [ARCHITECTURE.md](../../ARCHITECTURE.md)。独立安装不表示两个数据面同时接管已经过验证。
+显示名只来自 `XDIAL_PRODUCT_DISPLAY_NAME`，各组件的 `.lproj/InfoPlist.strings` 不得定义名字键，所以中文系统里扩展名也是英文；
+开发构建、CI 构建和正式归档都经 [verify-macos-component-names.py](../../scripts/verify-macos-component-names.py) 只读核对。
 
 ## 签名与构建产物
 

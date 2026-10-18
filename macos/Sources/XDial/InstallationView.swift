@@ -164,16 +164,17 @@ struct InstallationView: View {
     /// exactly where it lives instead of assuming System Settings stayed open.
     private func approvalGuidance(for task: InstallationTaskReport) -> String? {
         guard task.state == .waitingForApproval else { return nil }
+        let name = XDialBuildIdentity.applicationDisplayName
         switch task.id {
         case "helper":
             return state.tr(
-                "在「通用 → 登录项与扩展」的「App 后台活动」中，打开 XDial。",
-                "In General → Login Items & Extensions, turn on XDial under App Background Activity."
+                "在「通用 → 登录项与扩展」的「App 后台活动」中，打开 \(name)。",
+                "In General → Login Items & Extensions, turn on \(name) under App Background Activity."
             )
         case "system-extension":
             return state.tr(
-                "在「通用 → 登录项与扩展」最下方的「扩展」里找到 XDial，点右侧的 ⓘ，打开「网络扩展」。",
-                "In General → Login Items & Extensions, find XDial under Extensions at the bottom, click ⓘ and turn on Network Extensions."
+                "在「通用 → 登录项与扩展」最下方的「扩展」里找到 \(name)，点右侧的 ⓘ，打开「网络扩展」。",
+                "In General → Login Items & Extensions, find \(name) under Extensions at the bottom, click ⓘ and turn on Network Extensions."
             )
         default:
             return nil
