@@ -318,7 +318,7 @@ enum ApplicationRelocator {
             case .rejectExisting:
                 return .failed(
                     message:
-                        "“应用程序”中已有另一份签名或标识不同的 XDial。"
+                        "“应用程序”中已有另一份签名或标识不同的 \(XDialBuildIdentity.applicationDisplayName)。"
                         + "为避免覆盖未知程序，XDial 已停止自动安装。",
                     canRetry: false
                 )
@@ -1064,7 +1064,7 @@ enum ApplicationRelocator {
             case .copiedBundleIdentityChanged:
                 "复制后的 XDial 签名发生变化"
             case .installedBundleIdentityChanged:
-                "安装到“应用程序”后的 XDial 未通过签名验证"
+                "安装到“应用程序”后的 \(XDialBuildIdentity.applicationDisplayName) 未通过签名验证"
             case .backupCleanupFailed:
                 "新版已验证，但旧版临时备份未能清理"
             case let .signatureUnreadable(name):
@@ -1074,20 +1074,20 @@ enum ApplicationRelocator {
             case let .signatureMetadataMissing(name):
                 "\(name) 的签名缺少开发团队信息"
             case .relaunchFailed:
-                "XDial 已安装，但无法从“应用程序”重新启动"
+                "\(XDialBuildIdentity.applicationDisplayName) 已安装，但无法从“应用程序”重新启动"
             case .installedSuccessorLocationMismatch:
-                "XDial 已复制到“应用程序”，但系统仍从下载隔离位置启动它。"
-                    + "请退出此窗口，再从“应用程序”打开 XDial。"
+                "\(XDialBuildIdentity.applicationDisplayName) 已复制到“应用程序”，但系统仍从下载隔离位置启动它。"
+                    + "请退出此窗口，再从“应用程序”打开 \(XDialBuildIdentity.applicationDisplayName)。"
             case .existingApplicationDidNotTerminate:
-                "旧版 XDial 被强制结束后仍未退出，无法替换。"
-                    + "请在「强制退出应用程序」（⌥⌘⎋）中结束 XDial 后重试。"
+                "旧版 \(XDialBuildIdentity.applicationDisplayName) 被强制结束后仍未退出，无法替换。"
+                    + "请在「强制退出应用程序」（⌥⌘⎋）中结束 \(XDialBuildIdentity.applicationDisplayName) 后重试。"
             case .existingApplicationNotReplaceable:
-                "“应用程序”中的 XDial 与当前构建签名或标识不一致，"
+                "“应用程序”中的 \(XDialBuildIdentity.applicationDisplayName) 与当前构建签名或标识不一致，"
                     + "已拒绝覆盖"
             case .helperReplacementPreparationFailed:
                 "旧版后台服务未能确认完成注销，已保留原应用并停止替换。"
             case .applicationNotInstalled:
-                "XDial 不在“应用程序”目录，无法完成卸载"
+                "\(XDialBuildIdentity.applicationDisplayName) 不在“应用程序”目录，无法完成卸载"
             case .launchServicesRegistrarMissing:
                 "系统缺少 LaunchServices 注册工具，无法清理旧版 XDial"
             case .applicationUnregistrationFailed:
