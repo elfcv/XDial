@@ -142,7 +142,8 @@ beta 与正式版走同一条流水线：同一 Release 配置、签名、公证
 共享格式门禁，执行 `make release RELEASE_CHANNEL=beta`，再核对归档的 `XDialReleaseTag` 和
 私有载荷，上传为 draft prerelease。beta 的 `release-inputs` 刷新 `origin/xdial-beta` 和 `v*`
 标签后检查标签；带 `RELEASE_UPDATE_ACCEPTANCE_ID` 的验收构建跳过这项分支门禁，包仍须通过
-beta 合约，`make publish` 和 release.yml 都拒绝验收包。
+beta 合约，`make publish` 和 release.yml 都拒绝验收包。本机只构建验收用的 beta 包，并且在只含
+已跟踪文件的临时 worktree 里构建，见[三包验收](#三包--beta)。
 
 **公开。** `make publish RELEASE_CHANNEL=beta RELEASE_TAG=vX.Y.Z-beta.N` 重新从源码仓库获取
 `xdial-beta`、`main`、这个标签和最新正式标签，核对 first-parent、包含关系和版本，并对这个
@@ -223,10 +224,25 @@ tailscale、sslcon 的全部本地补丁与组装它们的 `prepare-patched-go-m
 - `make publish RELEASE_CHANNEL=beta`：公开前检查远端标签。它用操作者检出里的脚本，所以要在
   main 的检出上运行；前两处的脚本取自 `xdial-beta` 自身。
 
-## 正式身份双包验收
+## 正式身份更新验收
 
-[build-update-acceptance.py](../../scripts/build-update-acceptance.py) 从同一个干净源码提交
-构建 A/B，仅改变版本号与递增 build，要求新的输出目录：
+> **验收包是正式身份（`com.kafeifei.xdial.app`）的公证包，安装会替换本机的正式 App
+> `/Applications/XDial.app`，重启可能中断当前连接。构建、上传、安装和每一步核对都由作者执行。**
+> 脚本只产出本地文件：不安装、不启动、不上传，也不改清单仓库。
+
+[build-update-acceptance.py](../../scripts/build-update-acceptance.py) 对每个包调用正式
+`make release`（签名、公证、归档校验），要求干净的源码提交和新的输出目录。输出目录里每个包
+一个子目录（App、`XDial-<tag>.zip` 与 `.sha256`、公证记录、说明文件、`build.log`），另有
+`BUILD-INFO.json`。`RELEASE_UPDATE_ACCEPTANCE_ID` 使验收构建跳过 tag 与分支门禁（stable 的
+main、beta 的 `xdial-beta`）；`make publish` 和 release.yml 拒绝验收包。
+
+所有包签名 Info.plist 的 `XDialUpdateAcceptanceID` 相同，客户端只读
+`https://saymiao.github.io/xdial-updates/acceptance/<ID>/<channel>.json`（清单仓库的
+`site/acceptance/<ID>/`），归档只接受 `saymiao/xdial-updates` 的 Release 资产
+`releases/download/<tag>/XDial-<tag>.zip`。当前与传入 App 的 acceptance ID 必须相同。
+清单仓库已有的 Release 标签不能再用，每次验收选新的版本号和新的 ID。
+
+### 双包
 
 ```sh
 python3 scripts/build-update-acceptance.py \
@@ -234,15 +250,90 @@ python3 scripts/build-update-acceptance.py \
   --output /absolute/path/to/new-acceptance-run --notary-profile xdial-notary
 ```
 
-脚本调用正式 `make release`，保存两份公证包和含 `sourceCommit` 的 `BUILD-INFO.json`，
-不安装、启动或上传。`RELEASE_UPDATE_ACCEPTANCE_ID` 使本地验收构建跳过稳定版 tag/main
-门禁；稳定版发布脚本仍拒绝验收包。
-
-两包签名 Info.plist 的 `XDialUpdateAcceptanceID` 相同，清单地址固定为
-`https://saymiao.github.io/xdial-updates/acceptance/<ID>/stable.json`，资产使用
-`saymiao/xdial-updates` 的 prerelease。当前与传入 App 的 acceptance ID 必须相同。
-这些包使用正式身份，安装会替换正式 App，重启可能中断当前连接。
+在当前检出从同一个源码提交构建 stable A/B，仅改变版本号与递增 build；`BUILD-INFO.json`
+含 `sourceCommit`，清单由作者按[清单合同](#清单合同)手写。
 
 同源码 A→B 覆盖该实现的更新机制，不证明旧正式客户端的升级兼容，也不证明修改前后
 工作流一致。包签名校验不包含实际 UI、helper、扩展交接、连接恢复或流量结果。
 旧客户端仍执行旧更新逻辑，进入新逻辑依赖手动安装或旧通道成功更新。
+
+### 跨版本（`--lower-ref`）
+
+`--lower-ref <ref>` 在临时 git worktree 里从该 ref（例如当前正式标签 `v0.9.6`）构建 A，
+高版本包仍从 HEAD 构建；worktree 在成功和失败时都会删除。同一 HEAD 的两个包测不出跨版本
+问题，例如 v0.9.x 写出的 schema 1 重启意图能否被新版本接受。要覆盖 schema 2 → schema 2，
+A 取第一个含客户端 beta 通道的正式标签，确认它写出的重启意图（带 `targetBuild`）被高版本
+接受、暂存继任通过、原场景恢复连接。
+
+- ref 必须能解析为本地提交（先 fetch 标签），它的 Makefile 必须已有
+  `RELEASE_UPDATE_ACCEPTANCE_ID` 和 `RELEASE_NOTES_FILE`；否则开始前报错。
+- 只传该 ref 的 Makefile 声明过的变量：没有 `RELEASE_CHANNEL` 的旧 Makefile 只构建 stable，
+  不传通道。旧 ref 不写 `XDialReleaseTag`，客户端把这样的包当作 `v<短版本>`。
+- `BUILD-INFO.json` 为每个包写 `sourceRef` 和 `sourceCommit`。
+
+### 三包（`--beta`）
+
+```sh
+python3 scripts/build-update-acceptance.py --beta \
+  --id pages-beta-YYYYMMDD --lower-version 0.9.7 --higher-version 0.9.8 \
+  --output /absolute/path/to/new-acceptance-run --notary-profile xdial-notary
+```
+
+用同一个 acceptance ID 构建三个包。L、H 是两个版本参数，n 是开始构建时的 Unix 秒：
+
+| 包 | 标签 | 通道 | 短版本 | 构建号 | 归档 | 说明文件与标题 |
+|---|---|---|---|---|---|---|
+| A | `vL` | stable | L | n | `XDial-vL.zip` | `RELEASE_NOTES.md`，`# XDial vL` |
+| B | `vH-beta.1` | beta | H | n+1 | `XDial-vH-beta.1.zip` | `BETA_RELEASE_NOTES.md`，`# XDial vH-beta.1` |
+| C | `vH` | stable | H | n+2 | `XDial-vH.zip` | `RELEASE_NOTES.md`，`# XDial vH` |
+
+- B 以 `RELEASE_CHANNEL=beta` 构建，须满足 beta 合约：`XDialReleaseTag` 等于标签，不含
+  `SeedProfile` 与 `RuleSetPresets.json`。所以三个包都在 HEAD 的临时 worktree 里构建：它只有
+  已跟踪文件，本机被忽略的 `macos/PrivateConfig` 进不了包。设置了
+  `XDIAL_RULE_SET_PRESETS_FILE`、`XDIAL_SEED_PROFILE_FILE`，或 HEAD 跟踪了 `macos/PrivateConfig`
+  下的文件时，脚本在构建前报错，不会等到 B 被合约拒绝。
+- 可与 `--lower-ref` 合用：A 从该 ref 构建，B、C 仍从 HEAD。该 ref 必须已有“接收 beta 版本”
+  开关（`xdial.update.channel`），否则第 1 步无从开始，脚本在构建前报错。
+- `BUILD-INFO.json` 为每个包写明 `tag`、`channel`、`version`、`build`、`archiveName`、
+  `archiveSHA256`、`notesTitle`、`sourceRef`、`sourceCommit`，`feeds` 列出每一步的清单文件。
+
+三个包都构建成功后，脚本在 `feeds/` 下生成每一步的 `acceptance/<ID>/stable.json` 与
+`beta.json`：键、顺序和格式与正式清单相同（2 空格缩进的 UTF-8 JSON，末尾换行），归档 URL
+指向清单仓库的 Release。`revision` 取生成时刻的毫秒数，同一 ID 重跑也不会让客户端缓存的
+修订号倒退；`generatedAt` 与 `publishedAt` 取生成时刻。
+
+| 目录 | stable.json | beta.json | 用于 |
+|---|---|---|---|
+| `feeds/step-1/acceptance/<ID>/` | A | B | 第 1、2 步 |
+| `feeds/step-3/acceptance/<ID>/` | C，revision 加 1 | B，与 step-1 逐字节相同 | 第 3 步 |
+
+作者执行：
+
+0. 在 `saymiao/xdial-updates` 为 A、B、C 各建一个以标签命名的 prerelease，上传
+   `XDial-<tag>.zip` 与 `.sha256`；把 step-1 的两个文件放进清单仓库的 `site/acceptance/<ID>/`
+   并部署。从 A 的 zip 手动安装 A，保持 beta 关闭检查更新：只读 stable.json，应显示已是最新。
+1. A 开启“接收 beta 版本”：立即检查，应提供 B 并升级到 B。
+2. B 关闭开关：应停留在 B，显示“等待正式版”。B 仍读 beta.json，但不降级。
+3. 用 step-3 的两个文件替换同一目录并部署，即发布 C：B 检查后应升级到 C。
+4. 每一步完成后核对 host、settings、extension、daemon 的版本和构建号，应与
+   `BUILD-INFO.json` 中这一步应装的包一致（命令见下）。
+
+```sh
+app=/Applications/XDial.app
+for bundle in "$app" "$app/Contents/Helpers/XDial Settings UI.app" \
+  "$app/Contents/Library/SystemExtensions/com.kafeifei.xdial.app.transparent-proxy.systemextension"; do
+  echo "$bundle: $(plutil -extract CFBundleShortVersionString raw "$bundle/Contents/Info.plist")" \
+    "$(plutil -extract CFBundleVersion raw "$bundle/Contents/Info.plist")"
+done
+plutil -extract XDialReleaseTag raw "$app/Contents/Info.plist"
+systemextensionsctl list | grep -F com.kafeifei.xdial.app.transparent-proxy
+python3 -c 'import json, socket
+s = socket.socket(socket.AF_UNIX); s.settimeout(5); s.connect("/tmp/xdial.sock")
+s.sendall(b"{\"id\":\"acceptance\",\"cmd\":\"daemon-info\"}\n")
+print(next(r["data"] for r in map(json.loads, s.makefile()) if r.get("id") == "acceptance"))'
+shasum -a 256 "$app/Contents/MacOS/xdial-daemon"
+```
+
+`XDialReleaseTag` 在 B 上是 beta 标签。`systemextensionsctl list` 显示已激活扩展的
+`(版本/构建号)`。daemon 没有构建号：`daemon-info` 给出运行中 daemon 的版本（即发布标签）、
+PID 与二进制 SHA-256，版本应等于这一步的标签，SHA-256 应等于包内 `xdial-daemon`。

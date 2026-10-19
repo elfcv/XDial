@@ -206,6 +206,7 @@ test: public-content-gate $(PATCHED_WORKFILE) test-patched-tailscale test-patche
 test-release-contract:
 	bash test/release_contract_test.sh
 	python3 -m unittest discover -s test -p 'publish_release_test.py'
+	python3 -m unittest discover -s test -p 'build_update_acceptance_test.py'
 	python3 -m unittest discover -s test -p 'restart_macos_test.py'
 	python3 -m unittest discover -s test -p 'component_names_test.py'
 
