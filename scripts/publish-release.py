@@ -705,8 +705,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--beta-followup", choices=BETA_FOLLOWUPS,
-        help="stable only: confirms how a beta.json entry that this release leaves "
-             "with a lower build is handled in the same batch",
+        help="stable only: confirms how a beta.json entry with a newer tag but a "
+             "build not above this release's is handled in the same batch",
     )
     parser.add_argument("--pages-timeout", type=int, default=900)
     args = parser.parse_args()

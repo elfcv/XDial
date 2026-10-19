@@ -873,7 +873,7 @@ class BetaChannelTests(unittest.TestCase):
              "beta": feed("beta", feed_release(beta_tag, beta_build))},
         )
 
-    def test_stable_requires_a_follow_up_for_a_beta_entry_left_with_a_lower_build(self):
+    def test_stable_requires_a_follow_up_for_a_beta_entry_left_with_a_build_not_higher(self):
         responses = lambda: [[[release_fixture("v1.2.3")]], {"tag_name": "v1.2.2"},
                              release_fixture("v1.2.3", draft=False)]
         state = self.lagging_state("v1.3.0-beta.1", 110)
