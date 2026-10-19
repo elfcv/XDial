@@ -7,6 +7,7 @@ import os
 import plistlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ ACCEPTANCE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ACCEPTANCE
 SPEC.loader.exec_module(ACCEPTANCE)
 REAL_RUN = subprocess.run
+REAL_RMTREE = shutil.rmtree
 
 ACCEPTANCE_ID = "pages-test"
 PRIVATE_VARIABLES = ("XDIAL_RULE_SET_PRESETS_FILE", "XDIAL_SEED_PROFILE_FILE")
@@ -38,6 +40,10 @@ RELEASE_KEYS = ["tag", "version", "build", "minimumSystemVersion", "publishedAt"
 CORE = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 CHANNEL_TAGS = {"stable": re.compile(CORE + r"\Z"),
                 "beta": re.compile(CORE + r"-beta\.[1-9][0-9]*\Z")}
+# Each package carries its own minimum, so a feed cannot borrow another's.
+MINIMUM_SYSTEM = {"v1.0.0": "15.0", "v1.1.0-beta.1": "15.4", "v1.1.0": "15.5"}
+TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+STOP_SIGNALS = {signal.SIGINT, *TERMINATION_SIGNALS}
 
 
 def git(directory: Path, *arguments: str) -> str:
@@ -70,7 +76,18 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.head = git(self.root, "rev-parse", "HEAD")
         self.builds = []
         self.fail_on = None
+        self.signal_on = None
+        self.signal_on_cleanup = None
+        self.worktree_remove_fails = False
         self.plist_overrides = {}
+        # A stop signal the script leaves unhandled fails the test instead of
+        # ending the test process.
+        for signum in TERMINATION_SIGNALS:
+            self.addCleanup(signal.signal, signum, signal.signal(signum, self.unexpected_signal))
+        self.addCleanup(signal.pthread_sigmask, signal.SIG_UNBLOCK, STOP_SIGNALS)
+
+    def unexpected_signal(self, signum, frame):
+        raise AssertionError(f"signal {signum} reached the test")
 
     def commit(self, tag, makefile):
         (self.root / "Makefile").write_text("\n".join(makefile) + "\n")
@@ -84,9 +101,25 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         return [Path(line[len("worktree "):]).resolve()
                 for line in listing.splitlines() if line.startswith("worktree ")]
 
+    def signal_cleanup(self, step):
+        """Send the stop signal once, as the named cleanup step begins."""
+        if self.signal_on_cleanup and self.signal_on_cleanup[0] == step:
+            signum = self.signal_on_cleanup[1]
+            self.signal_on_cleanup = None
+            os.kill(os.getpid(), signum)
+
+    def fake_rmtree(self, path, *arguments, **options):
+        if Path(path).name.startswith("xdial-acceptance-"):
+            self.signal_cleanup("scratch")
+        return REAL_RMTREE(path, *arguments, **options)
+
     def fake_run(self, command, *arguments, **options):
         if command[0] == "make":
             return self.fake_make(command, **options)
+        if command[:3] == ["git", "worktree", "remove"]:
+            self.signal_cleanup("worktree")
+            if self.worktree_remove_fails:
+                return subprocess.CompletedProcess(command, 128)
         if command[0] == "ditto":
             source, target = map(Path, command[1:])
             if source.is_dir():
@@ -113,6 +146,8 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         tag = values["RELEASE_TAG"]
         if tag == self.fail_on:
             raise subprocess.CalledProcessError(2, command)
+        if self.signal_on and self.signal_on[0] == tag:
+            os.kill(os.getpid(), self.signal_on[1])
         release = directory / "build/release"
         contents = release / "XDial.app/Contents"
         contents.mkdir(parents=True, exist_ok=True)
@@ -121,7 +156,7 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
             "CFBundleVersion": values["RELEASE_BUILD_NUMBER"],
             "CFBundleIdentifier": "com.kafeifei.xdial.app",
             "XDialUpdateAcceptanceID": values["RELEASE_UPDATE_ACCEPTANCE_ID"],
-            "LSMinimumSystemVersion": "15.0",
+            "LSMinimumSystemVersion": MINIMUM_SYSTEM[tag],
         }
         # Only Makefiles with the channel also write the release tag key.
         if "RELEASE_CHANNEL" in values:
@@ -144,6 +179,7 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(ACCEPTANCE, "ROOT", self.root))
             stack.enter_context(patch.object(ACCEPTANCE.subprocess, "run", self.fake_run))
+            stack.enter_context(patch.object(ACCEPTANCE.shutil, "rmtree", self.fake_rmtree))
             stack.enter_context(patch.dict(os.environ, values, clear=True))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             ACCEPTANCE.main(argv)
@@ -281,6 +317,8 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.run_main("--beta")
 
         packages = {record["role"]: record for record in self.build_info()["packages"]}
+        self.assertEqual([packages[role]["minimumSystemVersion"] for role in "ABC"],
+                         [MINIMUM_SYSTEM[tag] for tag in ["v1.0.0", "v1.1.0-beta.1", "v1.1.0"]])
         feeds = self.output / "feeds"
         self.assertEqual(sorted(path.name for path in feeds.iterdir()), ["step-1", "step-3"])
         files = {}
@@ -323,7 +361,13 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
              "beta": {"revision": revision, "tag": "v1.1.0-beta.1"}},
         ])
 
-    def test_lower_ref_builds_A_in_a_temporary_worktree(self):
+    def test_lower_ref_builds_both_packages_in_temporary_worktrees(self):
+        # Ignored private configuration in the checkout reaches neither package,
+        # so A and B differ only in their source refs.
+        private = self.root / "macos/PrivateConfig/SeedProfile/preset.json"
+        private.parent.mkdir(parents=True)
+        private.write_text("{}\n")
+
         self.run_main("--lower-ref", "v1.0.0")
 
         number = self.first_build_number()
@@ -334,10 +378,12 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.assertEqual(higher["command"], self.expected_command(
             "v1.1.0", number + 1, "stable", "B-1.1.0/RELEASE_NOTES.md"))
         self.assertEqual(lower["head"], git(self.root, "rev-parse", "v1.0.0^{commit}"))
-        self.assertNotEqual(lower["cwd"], self.root)
-        self.assertTrue(lower["registered"])
-        self.assertEqual(higher["cwd"], self.root)
-        self.assertFalse(lower["cwd"].exists())
+        self.assertEqual(higher["head"], self.head)
+        self.assertEqual(len({self.root, lower["cwd"], higher["cwd"]}), 3)
+        for build in self.builds:
+            self.assertTrue(build["registered"])
+            self.assertFalse(build["private"])
+            self.assertFalse(build["cwd"].exists())
         self.assertEqual(self.worktrees(), [self.root])
         info = self.build_info()
         self.assertEqual([(record["sourceRef"], record["sourceCommit"], record["channel"])
@@ -376,10 +422,76 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.assertEqual([record["role"] for record in self.build_info()["packages"]], ["A"])
         self.assertFalse((self.output / "feeds").exists())
 
+    def test_worktrees_are_unregistered_when_git_cannot_remove_them(self):
+        self.worktree_remove_fails = True
+        self.run_main("--beta", "--lower-ref", "v1.1.0")
+
+        self.assertEqual(len(self.builds), 3)
+        for build in self.builds:
+            self.assertTrue(build["registered"])
+            self.assertFalse(build["cwd"].exists())
+        self.assertEqual(self.worktrees(), [self.root])
+
+    def assert_stopped_and_cleaned(self, raised, signum):
+        self.assertEqual(raised.exception.code, 128 + signum)
+        for build in self.builds:
+            self.assertTrue(build["registered"])
+            self.assertFalse(build["cwd"].exists())
+            self.assertFalse(build["cwd"].parent.exists())
+        self.assertEqual(self.worktrees(), [self.root])
+        self.assertFalse((self.output / "feeds").exists())
+        # The script hands the signals back as it found them.
+        for name in TERMINATION_SIGNALS:
+            self.assertEqual(signal.getsignal(name), self.unexpected_signal)
+        self.assertFalse(signal.pthread_sigmask(signal.SIG_BLOCK, set()) & STOP_SIGNALS)
+
+    def test_termination_signals_still_remove_the_worktrees(self):
+        # kill and a closed terminal end Python without finally blocks by default.
+        for signum in TERMINATION_SIGNALS:
+            with self.subTest(signal=signum):
+                shutil.rmtree(self.output, ignore_errors=True)
+                self.builds = []
+                self.signal_on = ("v1.1.0-beta.1", signum)
+                with self.assertRaises(SystemExit) as raised:
+                    self.run_main("--beta", "--lower-ref", "v1.1.0")
+                self.assertEqual(len(self.builds), 2)
+                self.assert_stopped_and_cleaned(raised, signum)
+
+    def test_a_stop_signal_during_cleanup_waits_for_it(self):
+        for step in ["worktree", "scratch"]:
+            for signum in TERMINATION_SIGNALS:
+                with self.subTest(step=step, signal=signum):
+                    shutil.rmtree(self.output, ignore_errors=True)
+                    self.builds = []
+                    self.signal_on_cleanup = (step, signum)
+                    with self.assertRaises(SystemExit) as raised:
+                        self.run_main("--beta", "--lower-ref", "v1.1.0")
+                    self.assertIsNone(self.signal_on_cleanup)
+                    self.assertEqual(len(self.builds), 3)
+                    self.assert_stopped_and_cleaned(raised, signum)
+
+    def test_one_stop_request_is_enough(self):
+        cleaned = False
+        with self.assertRaises(SystemExit) as raised:
+            with ACCEPTANCE.exit_on_termination():
+                try:
+                    os.kill(os.getpid(), signal.SIGTERM)
+                finally:
+                    # A second request while cleaning up must not cut it short.
+                    os.kill(os.getpid(), signal.SIGHUP)
+                    cleaned = True
+        self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
+        self.assertTrue(cleaned)
+        for name in TERMINATION_SIGNALS:
+            self.assertEqual(signal.getsignal(name), self.unexpected_signal)
+
     def test_rejects_a_package_whose_identity_differs_and_still_cleans_up(self):
         for tag, override in [("v1.1.0-beta.1", {"XDialReleaseTag": ""}),
                               ("v1.1.0", {"XDialReleaseTag": "v1.1.0-beta.1"}),
-                              ("v1.0.0", {"XDialUpdateAcceptanceID": "other"})]:
+                              ("v1.0.0", {"XDialUpdateAcceptanceID": "other"}),
+                              ("v1.1.0-beta.1", {"CFBundleVersion": "1"}),
+                              ("v1.1.0", {"CFBundleShortVersionString": "1.0.0"}),
+                              ("v1.0.0", {"CFBundleIdentifier": "com.kafeifei.xdial.debug"})]:
             with self.subTest(tag=tag, override=override):
                 shutil.rmtree(self.output, ignore_errors=True)
                 self.builds = []
@@ -398,20 +510,32 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.assertIn("has no beta switch (xdial.update.channel)", message)
         self.assertFalse(self.output.exists())
 
-    def test_beta_refuses_private_configuration_before_building(self):
-        for name in PRIVATE_VARIABLES:
-            with self.subTest(name=name):
-                message = self.rejected("--beta", environment={name: "/private/preset.json"})
-                self.assertIn(f"${name}", message)
-                self.assertFalse(self.output.exists())
-        tracked = self.root / "macos/PrivateConfig/RuleSetPresets.json"
+    def test_worktree_sets_refuse_private_configuration_before_building(self):
+        modes = [("--beta",), ("--lower-ref", "v1.0.0"), ("--beta", "--lower-ref", "v1.1.0")]
+        for mode in modes:
+            for name in PRIVATE_VARIABLES:
+                with self.subTest(mode=mode, name=name):
+                    message = self.rejected(*mode, environment={name: "/private/preset.json"})
+                    self.assertIn(f"${name}", message)
+                    self.assertFalse(self.output.exists())
+        path = "macos/PrivateConfig/RuleSetPresets.json"
+        tracked = self.root / path
         tracked.parent.mkdir(parents=True)
         tracked.write_text("{}\n")
         git(self.root, "add", "--force", str(tracked))
         git(self.root, "commit", "--quiet", "-m", "tracked private configuration")
-        message = self.rejected("--beta")
-        self.assertIn("macos/PrivateConfig/RuleSetPresets.json", message)
-        self.assertFalse(self.output.exists())
+        git(self.root, "tag", "v1.2.0")
+        for mode in modes:
+            with self.subTest(mode=mode, tracked="HEAD"):
+                self.assertIn(path, self.rejected(*mode))
+                self.assertFalse(self.output.exists())
+        # A lower ref that tracks it is refused too, though HEAD no longer does.
+        git(self.root, "rm", "--quiet", "--cached", path)
+        git(self.root, "commit", "--quiet", "-m", "untrack private configuration")
+        for mode in [("--lower-ref", "v1.2.0"), ("--beta", "--lower-ref", "v1.2.0")]:
+            with self.subTest(mode=mode, tracked="v1.2.0"):
+                self.assertIn(path, self.rejected(*mode))
+                self.assertFalse(self.output.exists())
 
         # Stable packages may carry it, so the pair keeps its old behavior.
         self.run_main(environment={"XDIAL_SEED_PROFILE_FILE": "/private/preset.json"})

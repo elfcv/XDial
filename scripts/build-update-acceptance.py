@@ -21,6 +21,7 @@ import os
 import plistlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,9 @@ PRIVATE_CONFIGURATION_PATH = "macos/PrivateConfig"
 BETA_SWITCH_KEY = "xdial.update.channel"
 # Variables an older ref's Makefile must declare to build an acceptance package.
 LOWER_REF_VARIABLES = ("RELEASE_UPDATE_ACCEPTANCE_ID", "RELEASE_NOTES_FILE")
+# `kill` sends SIGTERM and a closed terminal SIGHUP; by default either ends
+# Python without running finally blocks. Ctrl-C (SIGINT) already raises.
+TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -120,12 +124,47 @@ def has_beta_switch(commit: str) -> bool:
                            "--", "macos/Sources"], cwd=ROOT).returncode == 0
 
 
-def private_configuration(commit: str, environment: dict) -> list:
-    """Private inputs a build of commit would embed. A temporary worktree holds
-    only tracked files, so the ignored macos/PrivateConfig never reaches it."""
+def private_configuration(commits: list, environment: dict) -> list:
+    """Private inputs a build of the commits would embed. A temporary worktree
+    holds only tracked files, so the ignored macos/PrivateConfig never reaches it."""
     found = [f"${name}" for name in PRIVATE_CONFIGURATION_VARIABLES if environment.get(name)]
-    return found + git("ls-tree", "-r", "--name-only", commit, "--",
-                       PRIVATE_CONFIGURATION_PATH).splitlines()
+    for commit in dict.fromkeys(commits):
+        found += git("ls-tree", "-r", "--name-only", commit, "--",
+                     PRIVATE_CONFIGURATION_PATH).splitlines()
+    return found
+
+
+@contextlib.contextmanager
+def exit_on_termination():
+    """Raise SystemExit for SIGTERM and SIGHUP, as Ctrl-C raises
+    KeyboardInterrupt, so the temporary worktrees are still removed. One stop
+    request is enough: later termination signals are ignored."""
+    def terminate(signum, frame):
+        for name in TERMINATION_SIGNALS:
+            signal.signal(name, signal.SIG_IGN)
+        sys.exit(128 + signum)
+    previous = {name: signal.signal(name, terminate) for name in TERMINATION_SIGNALS}
+    try:
+        yield
+    finally:
+        for name, handler in previous.items():
+            signal.signal(name, handler)
+
+
+@contextlib.contextmanager
+def signals_deferred():
+    """Hold stop signals while a cleanup runs, so none can cut it short; they
+    arrive once it is done."""
+    held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, *TERMINATION_SIGNALS})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, held)
+
+
+def remove_directory(directory: Path) -> None:
+    with signals_deferred():
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 @contextlib.contextmanager
@@ -136,13 +175,14 @@ def temporary_worktree(commit: str, directory: Path):
                        cwd=ROOT, check=True)
         yield directory
     finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(directory)],
-                       cwd=ROOT, stderr=subprocess.DEVNULL, check=False)
-        shutil.rmtree(directory, ignore_errors=True)
-        subprocess.run(["git", "worktree", "prune"], cwd=ROOT, check=False)
-        if directory.exists():
-            print(f"warning: could not remove the temporary worktree {directory}; run "
-                  f"git worktree remove --force {directory}", file=sys.stderr, flush=True)
+        with signals_deferred():
+            subprocess.run(["git", "worktree", "remove", "--force", str(directory)],
+                           cwd=ROOT, stderr=subprocess.DEVNULL, check=False)
+            shutil.rmtree(directory, ignore_errors=True)
+            subprocess.run(["git", "worktree", "prune"], cwd=ROOT, check=False)
+            if directory.exists():
+                print(f"warning: could not remove the temporary worktree {directory}; run "
+                      f"git worktree remove --force {directory}", file=sys.stderr, flush=True)
 
 
 def plan_packages(lower: str, higher: str, beta: bool, build_number: int,
@@ -284,8 +324,8 @@ def main(argv: list | None = None) -> None:
                         help="build stable A, beta B and stable C in a clean temporary worktree "
                              "of HEAD, and write the acceptance feeds for each step")
     parser.add_argument("--lower-ref", metavar="REF",
-                        help="build A from this git ref (for example the current stable tag) in "
-                             "a temporary worktree; the higher packages still build from HEAD")
+                        help="build A from this git ref (for example the current stable tag) and "
+                             "the higher packages from HEAD, each in a clean temporary worktree")
     args = parser.parse_args(argv)
     if not ACCEPTANCE_ID.fullmatch(args.acceptance_id):
         parser.error("invalid acceptance ID")
@@ -315,21 +355,25 @@ def main(argv: list | None = None) -> None:
             parser.error(f"--lower-ref {args.lower_ref} has no beta switch ({BETA_SWITCH_KEY}), so "
                          "step 1 cannot run; pick the first stable tag with the client beta "
                          "channel, or test this ref without --beta")
-    if args.beta:
-        found = private_configuration(commit, environment)
-        if found:
-            parser.error("the beta contract rejects private configuration, which this build "
-                         f"would embed: {', '.join(found)}; unset the variables and remove "
-                         f"tracked {PRIVATE_CONFIGURATION_PATH} files before building the set")
     extended = args.beta or args.lower_ref is not None
+    # B's beta contract rejects private configuration, and a lower ref's A must
+    # not differ from the higher packages in it, so these sets carry none.
+    if extended:
+        commits = [commit] if lower_commit is None else [commit, lower_commit]
+        found = private_configuration(commits, environment)
+        if found:
+            parser.error("--beta and --lower-ref build every package without private "
+                         f"configuration, which this build would embed: {', '.join(found)}; "
+                         f"unset the variables and remove tracked {PRIVATE_CONFIGURATION_PATH} "
+                         "files first")
     output.mkdir(parents=True)
     build_number = int(time.time())
     with contextlib.ExitStack() as stack:
+        stack.enter_context(exit_on_termination())
         higher = Source("HEAD", commit, ROOT, makefile_variables(commit))
         if extended:
             scratch = Path(tempfile.mkdtemp(prefix="xdial-acceptance-"))
-            stack.callback(shutil.rmtree, scratch, ignore_errors=True)
-        if args.beta:
+            stack.callback(remove_directory, scratch)
             # Only tracked files: the ignored macos/PrivateConfig stays behind.
             higher = dataclasses.replace(higher, directory=stack.enter_context(
                 temporary_worktree(commit, scratch / "head")))
