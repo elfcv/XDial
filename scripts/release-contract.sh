@@ -327,11 +327,13 @@ assert_system_extension_authorization() {
         "$identifier" "$signed" "$profile" "$(/bin/date -u +%s)"
 }
 
-# Prints the key's value; a missing key prints nothing.
+# Prints the key's value; a missing key prints nothing. Older plutil (macOS 15)
+# prints extraction errors on stdout, so its output counts only when it succeeds.
 release_tag_value() {
-    local plist="$1"
+    local plist="$1" value
     [[ -f "$plist" ]] || fail "missing Info.plist: $plist"
-    if /usr/bin/plutil -extract XDialReleaseTag raw -expect string -o - "$plist" 2>/dev/null; then
+    if value="$(/usr/bin/plutil -extract XDialReleaseTag raw -expect string -o - "$plist" 2>/dev/null)"; then
+        printf '%s\n' "$value"
         return 0
     fi
     if /usr/bin/plutil -extract XDialReleaseTag raw -o - "$plist" >/dev/null 2>&1; then
