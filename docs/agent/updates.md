@@ -48,10 +48,10 @@ revision 或相同 revision 的不同字节，429 按 `Retry-After` 退避。下
   更低的构建号替换不了已激活的网络扩展。每份清单的构建号倒序都写诊断（NSLog 与 Debug Server
   的 `lastBuildNotNewer`），被另一份清单的候选盖过时也一样；stable 已是最新而 beta 倒序时
   显示为失败。
-- 代价：beta 线开放期间发 stable 热修复后，beta.json 当前条目的构建号低于这个热修复。装了
+- 代价：beta 线开放期间发 stable 热修复后，beta.json 当前条目的构建号不高于这个热修复。装了
   热修复又开着 beta 的用户每次检查都会看到 `build_not_newer`，直到发出包含该热修复的
   beta.N+1 或撤回 beta 条目。所以每次发 stable 后，都要尽快重发或撤回 beta.json 中构建号
-  已落后的条目；`make publish` 发 stable 前会检查，见[beta 发布机制](#beta-发布机制)。
+  不高于新 stable 的条目；`make publish` 发 stable 前会检查，见[beta 发布机制](#beta-发布机制)。
 - 包内 `XDialReleaseTag` 取自构建设置 `XDIAL_RELEASE_TAG`，默认为空；`make release` 把
   发布标签写进它，正式版和 beta 都写，此前构建的正式包为空。它是判断“已装 beta”的唯一
   依据：只有它能解析为 beta、且 X.Y.Z 等于短版本时才算已装 beta，其余一律视为正式版
@@ -113,10 +113,12 @@ Pages 发布器串行生成清单、历史与审计记录，拒绝旧版本覆�
   Release 下载归档读取构建号。X.Y.Z 更高的包不构成约束，所以 beta 线开放期间发 X.Y.Z
   更低的 stable 热修复，不要求高于 beta 的构建号。
 - 同一通道只能前进；撤回过的标签不能再发。
-- 派发前等待更新仓库里排队或运行中的 `publish.yml` 结束，派发后等这次运行成功结束；
-  读回清单时，除 `revision`、`generatedAt` 和 `release` 的值以外，字节必须与既有格式
-  一致，`release` 的标签、build、SHA-256 和说明必须与这次发布一致。stable 的派发参数
-  与此前相同，不传 `channel`。
+- 更新仓库里有排队或运行中的 `publish.yml` 时，先在 draft 公开之前等它结束，派发前再确认
+  一次。两次等待各有一份 `--pages-timeout`（默认 900 秒）；这次运行的计时从派发开始，也是
+  一份完整的 `--pages-timeout`，等待前一个运行不占用它。运行须成功结束；读回清单时，除
+  `revision`、`generatedAt` 和 `release` 的值以外，字节必须与既有格式一致，`release` 的
+  标签、build、SHA-256 和说明必须与这次发布一致。stable 的派发参数与此前相同，不传
+  `channel`。
 
 ## beta 发布机制
 
@@ -136,18 +138,19 @@ beta 与正式版走同一条流水线：同一 Release 配置、签名、公证
 
 **构建。** beta 只在 CI 构建：本机构建会按 project.yml 回退嵌入 `macos/PrivateConfig`，beta
 合约拒绝这样的包。推送 `vX.Y.Z-beta.N` 后，release.yml（`tags: v*` 同样匹配 beta 标签）按
-标签形态选通道和说明文件，取 `origin/xdial-beta` 做合约检查，执行
-`make release RELEASE_CHANNEL=beta`，再核对归档的 `XDialReleaseTag` 和私有载荷，上传为 draft
-prerelease。beta 的 `release-inputs` 刷新 `origin/xdial-beta` 和 `v*` 标签后检查标签；带
-`RELEASE_UPDATE_ACCEPTANCE_ID` 的验收构建跳过这项分支门禁，包仍须通过 beta 合约，
-`make publish` 和 release.yml 都拒绝验收包。
+标签形态选通道和说明文件，取 `origin/xdial-beta` 做合约检查，取 `origin/main` 做下文的
+共享格式门禁，执行 `make release RELEASE_CHANNEL=beta`，再核对归档的 `XDialReleaseTag` 和
+私有载荷，上传为 draft prerelease。beta 的 `release-inputs` 刷新 `origin/xdial-beta` 和 `v*`
+标签后检查标签；带 `RELEASE_UPDATE_ACCEPTANCE_ID` 的验收构建跳过这项分支门禁，包仍须通过
+beta 合约，`make publish` 和 release.yml 都拒绝验收包。
 
 **公开。** `make publish RELEASE_CHANNEL=beta RELEASE_TAG=vX.Y.Z-beta.N` 重新从源码仓库获取
-`xdial-beta`、这个标签和最新正式标签，核对 first-parent、包含关系和版本；要求 Release 是
-prerelease，归档的 `XDialReleaseTag` 等于标签、不含私有载荷；X.Y.Z 必须高于所有公开过的
-正式版（GitHub Releases、`releases/latest` 和 stable ledger，含已撤回的）；更新仓库必须已有
-beta.json；再做上面的构建号检查。通过后以 `--prerelease --latest=false` 公开 draft，复查
-`releases/latest` 仍是原来的正式标签，派发 `channel=beta` 的 `publish.yml` 并读回 beta.json。
+`xdial-beta`、`main`、这个标签和最新正式标签，核对 first-parent、包含关系和版本，并对这个
+标签跑共享格式门禁；要求 Release 是 prerelease，归档的 `XDialReleaseTag` 等于标签、不含
+私有载荷；X.Y.Z 必须高于所有公开过的正式版（GitHub Releases、`releases/latest` 和 stable
+ledger，含已撤回的）；更新仓库必须已有 beta.json；再做上面的构建号检查。通过后以
+`--prerelease --latest=false` 公开 draft，复查 `releases/latest` 仍是原来的正式标签，派发
+`channel=beta` 的 `publish.yml` 并读回 beta.json。
 
 **与更新仓库的接口。**
 
@@ -174,7 +177,8 @@ gh workflow run publish.yml -R saymiao/xdial-updates -f operation=<publish|withd
    已经发出。
 2. `xdial-beta` 合入最新 main（含最新正式标签），写 `BETA_RELEASE_NOTES.md`，推送
    `vX.Y.Z-beta.N`。
-3. CI 生成 draft prerelease 后执行 `make publish RELEASE_CHANNEL=beta RELEASE_TAG=vX.Y.Z-beta.N`。
+3. CI 生成 draft prerelease 后，在 main 的检出上执行
+   `make publish RELEASE_CHANNEL=beta RELEASE_TAG=vX.Y.Z-beta.N`。
 4. 核对：`releases/latest` 仍是正式标签；stable.json 的 revision 和 SHA-256 不变；beta.json
    是新标签和新构建号。
 
@@ -194,10 +198,10 @@ gh workflow run publish.yml -R saymiao/xdial-updates -f operation=<publish|withd
   选错 revision 可以再 restore 回去；细节见更新仓库的 README。
 
 **stable 热修复后的 beta。** beta 线开放期间发 X.Y.Z 更低的 stable 热修复后，beta.json 的
-条目标签比热修复新、构建号却更低，装了热修复又开着 beta 的用户每次检查都报
-`build_not_newer`。`make publish`（stable）在公开之前读取更新仓库的 beta.json，发现这样的
-条目就停下，要求用 `RELEASE_BETA_FOLLOWUP=republish` 或 `withdraw`（脚本参数
-`--beta-followup`）确认同批的后续动作，发布完成后打印下一步命令：
+条目标签比热修复新、构建号却不高于它（客户端要求构建号严格更高，相等也报错），装了热修复
+又开着 beta 的用户每次检查都报 `build_not_newer`。`make publish`（stable）在公开之前读取
+更新仓库的 beta.json，发现这样的条目就停下，要求用 `RELEASE_BETA_FOLLOWUP=republish` 或
+`withdraw`（脚本参数 `--beta-followup`）确认同批的后续动作，发布完成后打印下一步命令：
 
 - republish：`xdial-beta` 合入含热修复标签的 main，打 beta.N+1，CI 构建后
   `make publish RELEASE_CHANNEL=beta`；
@@ -207,9 +211,17 @@ beta 条目的标签不高于这次 stable 时（例如 stable 追上了这条 b
 后续动作。
 
 **共享格式门禁。** 持久格式、跨进程协议和依赖版本只经 main 演进，beta 专属数据只能放在
-独立文件或 `xdial.beta.*` 键。`xdial-beta` 的 push 和以它为目标的 PR 在 CI 里多一项检查
-（[ci.yml](../../.github/workflows/ci.yml) 的 `beta-shared-formats`）：相对上次合入的 main，
-依赖与补丁入口、配置库模型与 schema 所在文件必须没有改动，文件清单见该任务。
+独立文件或 `xdial.beta.*` 键。[check-beta-shared-formats.sh](../../scripts/check-beta-shared-formats.sh)
+维护文件清单：依赖版本（`go.mod`、`go.sum`、`third_party`）、`patches/` 下对 sing-box、
+tailscale、sslcon 的全部本地补丁与组装它们的 `prepare-patched-go-mod.sh`、配置库模型与 schema
+所在文件，以及这个脚本本身。相对它与 main 的合并基点，beta 一侧不得改动其中任何文件；main
+自己的改动不算。三处运行同一个脚本：
+
+- CI：`xdial-beta` 的 push 和以它为目标的 PR（[ci.yml](../../.github/workflows/ci.yml) 的
+  `beta-shared-formats`）。`xdial-beta` 没有分支保护，这一项只是提示，拦不住已经推上去的提交。
+- release.yml：beta 标签构建前检查标签所在提交，不通过就不构建。
+- `make publish RELEASE_CHANNEL=beta`：公开前检查远端标签。它用操作者检出里的脚本，所以要在
+  main 的检出上运行；前两处的脚本取自 `xdial-beta` 自身。
 
 ## 正式身份双包验收
 

@@ -196,6 +196,7 @@ class PublishReleaseTests(unittest.TestCase):
             patch.object(PUBLISH.subprocess, "run", side_effect=run),
             patch.object(PUBLISH, "verify_archive", return_value=("123", "digest")),
             patch.object(PUBLISH, "load_feed_state", return_value=PUBLISH.FeedState()),
+            patch.object(PUBLISH, "wait_for_idle_publisher"),
             patch.object(PUBLISH, "dispatch_and_wait", side_effect=lambda *_: events.append(("pages",))),
             patch.object(PUBLISH, "verify_feed"),
         ):
@@ -254,6 +255,7 @@ class PublishReleaseTests(unittest.TestCase):
                     patch.object(PUBLISH.subprocess, "run"),
                     patch.object(PUBLISH, "verify_archive", return_value=("123", "digest")),
                     patch.object(PUBLISH, "load_feed_state", return_value=PUBLISH.FeedState()),
+                    patch.object(PUBLISH, "wait_for_idle_publisher"),
                     patch.object(PUBLISH, "dispatch_and_wait") as dispatch,
                     patch.object(PUBLISH, "verify_feed"),
                 ):
@@ -381,6 +383,8 @@ class BetaChannelTests(unittest.TestCase):
             run.verify_archive = enter(
                 patch.object(PUBLISH, "verify_archive", return_value=(build, "digest")))
             enter(patch.object(PUBLISH, "load_feed_state", return_value=feed_state))
+            run.idle = enter(patch.object(PUBLISH, "wait_for_idle_publisher",
+                                          side_effect=lambda *_: run.events.append(("idle",))))
             run.dispatch = enter(patch.object(PUBLISH, "dispatch_and_wait"))
             run.verify_feed = enter(patch.object(PUBLISH, "verify_feed"))
             enter(contextlib.redirect_stdout(run.stdout))
@@ -484,6 +488,52 @@ class BetaChannelTests(unittest.TestCase):
             push("xdial-beta", "refs/tags/v1.3.0-beta.4")
             with self.assertRaisesRegex(ValueError, "xdial-beta's first-parent history"):
                 PUBLISH.verify_remote_beta_tag("v1.3.0-beta.4", str(source))
+
+    def test_remote_beta_tag_must_keep_the_formats_shared_with_main(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            source = directory / "source.git"
+            work = directory / "work"
+            self.git(directory, "init", "--bare", "--quiet", str(source))
+            self.git(directory, "init", "--quiet", "--initial-branch=main", str(work))
+            self.git(work, "config", "user.name", "XDial Test")
+            self.git(work, "config", "user.email", "xdial-test@example.invalid")
+            self.git(work, "remote", "add", "source", str(source))
+
+            def commit(path, text):
+                (work / path).parent.mkdir(parents=True, exist_ok=True)
+                (work / path).write_text(text, encoding="utf-8")
+                self.git(work, "add", path)
+                self.git(work, "commit", "--quiet", "-m", path)
+                return self.git(work, "rev-parse", "HEAD")
+
+            def push(*refs):
+                self.git(work, "push", "--quiet", "source", *refs)
+
+            commit("go.mod", "module fixture\n")
+            commit("patches/tailscale/0001-fixture.patch", "main\n")
+            self.git(work, "tag", "-a", "v1.2.3", "-m", "v1.2.3")
+            push("main", "refs/tags/v1.2.3")
+            self.git(work, "switch", "--quiet", "-c", "xdial-beta")
+            commit("experiment.txt", "experiment\n")
+            # Main may move its own dependencies; only the beta side counts.
+            self.git(work, "switch", "--quiet", "main")
+            commit("go.mod", "module fixture\n\ngo 1.25\n")
+            push("main")
+            self.git(work, "switch", "--quiet", "xdial-beta")
+            beta_commit = commit("experiment.txt", "more\n")
+            self.git(work, "tag", "v1.3.0-beta.1")
+            push("xdial-beta", "refs/tags/v1.3.0-beta.1")
+            self.assertEqual(PUBLISH.verify_remote_beta_tag("v1.3.0-beta.1", str(source)), beta_commit)
+
+            # A dependency patch changed on xdial-beta alone.
+            commit("patches/tailscale/0001-fixture.patch", "beta\n")
+            self.git(work, "tag", "v1.3.0-beta.2")
+            push("xdial-beta", "refs/tags/v1.3.0-beta.2")
+            with self.assertRaisesRegex(
+                ValueError, r"(?s)must keep the formats it shares.*patches/tailscale/0001-fixture\.patch"
+            ):
+                PUBLISH.verify_remote_beta_tag("v1.3.0-beta.2", str(source))
 
     def test_build_gate_skips_only_packages_with_a_newer_version(self):
         packages = [package("v1.3.0", 100), package("v1.4.0-beta.1", 200)]
@@ -670,6 +720,42 @@ class BetaChannelTests(unittest.TestCase):
                 {"workflow_runs": []}, found, {"conclusion": "cancelled"},
             ])
 
+    def test_waiting_for_another_run_leaves_the_dispatched_run_its_whole_timeout(self):
+        clock = types.SimpleNamespace(now=0)
+        queued = {"workflow_runs": [{"status": "queued", "html_url": "https://example.invalid/6"}]}
+        found = {"workflow_runs": [{"id": 7, "display_title": "publish stable v1.2.3 [req]",
+                                    "html_url": "https://example.invalid/7"}]}
+        commands = []
+
+        def run(arguments, **kwargs):
+            commands.append((tuple(arguments), kwargs))
+            return subprocess.CompletedProcess(arguments, 0)
+
+        def dispatch(replies):
+            commands.clear()
+            with (
+                patch.object(PUBLISH, "gh_json", side_effect=replies),
+                patch.object(PUBLISH.subprocess, "run", side_effect=run),
+                patch.object(PUBLISH.uuid, "uuid4", return_value=types.SimpleNamespace(hex="req")),
+                patch.object(PUBLISH.time, "monotonic", side_effect=lambda: clock.now),
+                patch.object(PUBLISH.time, "sleep",
+                             side_effect=lambda seconds: setattr(clock, "now", clock.now + seconds)),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                PUBLISH.dispatch_and_wait("v1.2.3", 60)
+
+        # The earlier run takes 50 of the 60 seconds; the dispatched run still gets 60.
+        dispatch([queued] * 5 + [{"workflow_runs": []}, found, {"conclusion": "success"}])
+        watch = next(kwargs for command, kwargs in commands if command[:3] == ("gh", "run", "watch"))
+        self.assertEqual(clock.now, 50)
+        self.assertEqual(watch["timeout"], 60)
+
+        # A run that outlasts the wait's own budget stops before anything is dispatched.
+        clock.now = 0
+        with self.assertRaisesRegex(TimeoutError, "still queued or running"):
+            dispatch([queued] * 7)
+        self.assertEqual(commands, [])
+
     def served(self, payload, *arguments):
         response = MagicMock()
         response.status = 200
@@ -732,6 +818,9 @@ class BetaChannelTests(unittest.TestCase):
             "gh", "release", "edit", "v1.4.0-beta.1", "--repo", "kafeifei/XDial",
             "--draft=false", "--prerelease", "--latest=false",
         )])
+        # A pending Pages run is waited out while the release is still a draft.
+        run.idle.assert_called_once_with(900)
+        self.assertLess(run.events.index(("idle",)), run.events.index(self.edits(run)[0]))
         run.dispatch.assert_called_once_with("v1.4.0-beta.1", 900, "beta")
         run.verify_feed.assert_called_once_with(
             "v1.4.0-beta.1", "200", "digest", "beta", "- 修复更新检查。")
@@ -749,26 +838,32 @@ class BetaChannelTests(unittest.TestCase):
 
     def test_beta_is_refused_before_publication_by_the_feed_rules(self):
         beta_feed = {"stable": feed("stable", None), "beta": feed("beta", None)}
+        # A public stable release that neither feed recorded and that is not Latest.
+        unrecorded_stable = [release_fixture("v1.4.0", draft=False)]
         cases = [
-            (PUBLISH.FeedState(), "no beta feed"),
+            (PUBLISH.FeedState(), [], "no beta feed"),
             # Every published stable counts, withdrawn ones included.
-            (PUBLISH.FeedState((package("v1.4.0", 150),), beta_feed, frozenset({"v1.4.0"})),
+            (PUBLISH.FeedState((package("v1.4.0", 150),), beta_feed, frozenset({"v1.4.0"})), [],
              "newer than every published stable release"),
-            (PUBLISH.FeedState((package("v1.4.0-beta.2", 150),), beta_feed),
+            (PUBLISH.FeedState((), beta_feed), unrecorded_stable,
+             "newer than every published stable release"),
+            (PUBLISH.FeedState((package("v1.4.0-beta.2", 150),), beta_feed), [],
              "not newer than every release the beta feed has published"),
             (PUBLISH.FeedState((package("v1.4.0-beta.1", 150),), beta_feed,
-                               frozenset({"v1.4.0-beta.1"})), "withdrawn"),
-            (PUBLISH.FeedState((package("v1.3.0", 300),), beta_feed),
+                               frozenset({"v1.4.0-beta.1"})), [], "withdrawn"),
+            (PUBLISH.FeedState((package("v1.3.0", 300),), beta_feed), [],
              "must be greater than build 300"),
         ]
-        for state, error in cases:
-            with self.subTest(error=error):
+        for state, others, error in cases:
+            with self.subTest(error=error, others=others):
                 draft = release_fixture("v1.4.0-beta.1", draft=True, prerelease=True)
                 with self.publication(["--channel", "beta", "v1.4.0-beta.1"],
-                                      [[[draft]], {"tag_name": "v1.3.0"}], state, "200") as run:
+                                      [[[draft, *others]], {"tag_name": "v1.3.0"}],
+                                      state, "200") as run:
                     with self.assertRaisesRegex(ValueError, error):
                         PUBLISH.main()
                 self.assertEqual(self.edits(run), [])
+                run.idle.assert_not_called()
                 run.dispatch.assert_not_called()
 
     def lagging_state(self, beta_tag, beta_build):
@@ -782,12 +877,17 @@ class BetaChannelTests(unittest.TestCase):
         responses = lambda: [[[release_fixture("v1.2.3")]], {"tag_name": "v1.2.2"},
                              release_fixture("v1.2.3", draft=False)]
         state = self.lagging_state("v1.3.0-beta.1", 110)
-        with self.publication(["v1.2.3"], responses(), state) as run:
-            with self.assertRaisesRegex(ValueError, "build_not_newer") as raised:
-                PUBLISH.main()
-        self.assertIn("nothing was published", str(raised.exception))
-        self.assertEqual(self.edits(run), [])
-        run.dispatch.assert_not_called()
+        # Clients need a strictly higher build, so a beta entry with the same
+        # build as this stable (123) fails the same way.
+        for lagging in (state, self.lagging_state("v1.3.0-beta.1", 123)):
+            with self.subTest(beta=lagging.feeds["beta"]["release"]["build"]):
+                with self.publication(["v1.2.3"], responses(), lagging) as run:
+                    with self.assertRaisesRegex(ValueError, "build_not_newer") as raised:
+                        PUBLISH.main()
+                self.assertIn("nothing was published", str(raised.exception))
+                self.assertEqual(self.edits(run), [])
+                run.idle.assert_not_called()
+                run.dispatch.assert_not_called()
 
         for choice, step in [("withdraw", "-f operation=withdraw -f release_tag=v1.3.0-beta.1"),
                              ("republish", "RELEASE_TAG=v1.3.0-beta.2")]:

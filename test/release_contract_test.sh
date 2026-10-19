@@ -517,6 +517,21 @@ for channel_tag in stable:v1.4.0 beta:v1.4.0-beta.1; do
         <<<"$release_app_plan" || fail "$plan_channel verify-app does not carry the channel"
 done
 
+# publish hands the channel, and a confirmed beta follow-up, to the publisher.
+publish_plan() {
+    make -n -s --no-print-directory -C "$repository_root" publish "$@" \
+        | tr -d '\\' | tr '\n\t' '  ' | tr -s ' '
+}
+grep -Fq 'scripts/publish-release.py --channel "beta" "v2.4.0-beta.1"' \
+    <<<"$(publish_plan RELEASE_CHANNEL=beta RELEASE_TAG=v2.4.0-beta.1)" \
+    || fail "beta publish does not pass --channel beta"
+grep -Fq 'scripts/publish-release.py --channel "stable" "v2.3.5"' \
+    <<<"$(publish_plan RELEASE_TAG=v2.3.5)" \
+    || fail "stable publish changed"
+grep -Fq 'scripts/publish-release.py --channel "stable" --beta-followup "withdraw" "v2.3.5"' \
+    <<<"$(publish_plan RELEASE_TAG=v2.3.5 RELEASE_BETA_FOLLOWUP=withdraw)" \
+    || fail "publish does not pass RELEASE_BETA_FOLLOWUP"
+
 # XDialReleaseTag is how clients recognize an installed beta: beta requires the
 # exact tag, stable also accepts an empty key. Private configuration is
 # refused only by beta here; official CI refuses it for both channels.
@@ -592,5 +607,114 @@ mkdir -p "$private_root/presets/XDial.app/Contents/Resources"
 printf '%s\n' '{}' >"$private_root/presets/XDial.app/Contents/Resources/RuleSetPresets.json"
 expect_failure_with 'beta releases must not embed private configuration' \
     check_release_bundle beta "$beta_tag" "$private_root/presets/XDial.app"
+
+# The same checks through verify-app's entry point. Checks that need a real
+# build (deployment target, component names, and the distribution binaries
+# where the contract has them) are stubbed. Every bundle's short version is
+# wrong, so a bundle that passes both checks stops right after them, before
+# the helper would run.
+verify_release_app() (
+    XDIAL_RELEASE_CHANNEL="$1"
+    source "$contract"
+    assert_app_deployment_target() { :; }
+    assert_component_names() { :; }
+    assert_distribution_binaries() { :; }
+    verify_app "$3" "$2" 98
+)
+
+write_component_plist() {
+    mkdir -p "$1/Contents"
+    cat >"$1/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>$2</string>
+<key>CFBundleShortVersionString</key><string>9.9.9</string>
+$3
+</dict></plist>
+EOF
+}
+
+verify_app_bundle() {
+    local app="$test_root/verify-app/$1/XDial.app"
+    write_component_plist "$app" com.kafeifei.xdial.app \
+        "<key>NSLocationUsageDescription</key><string>fixture</string>$2"
+    write_component_plist "$app/Contents/Helpers/XDial Settings UI.app" \
+        com.kafeifei.xdial.app.settings-ui ''
+    write_component_plist \
+        "$app/Contents/Library/SystemExtensions/com.kafeifei.xdial.app.transparent-proxy.systemextension" \
+        com.kafeifei.xdial.app.transparent-proxy ''
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    printf '%s\n' '#!/bin/sh' 'exit 1' >"$app/Contents/MacOS/xdial-daemon"
+    chmod +x "$app/Contents/MacOS/xdial-daemon"
+    if [[ -n "${3:-}" ]]; then
+        mkdir -p "$(dirname "$app/Contents/Resources/$3")"
+        printf '%s\n' '{}' >"$app/Contents/Resources/$3"
+    fi
+    printf '%s\n' "$app"
+}
+
+past_release_checks="CFBundleShortVersionString is '9.9.9'"
+untagged_app="$(verify_app_bundle untagged '')"
+expect_failure_with "XDialReleaseTag is '', expected '$beta_tag'" \
+    verify_release_app beta "$beta_tag" "$untagged_app"
+expect_failure_with "$past_release_checks" verify_release_app stable v1.4.0 "$untagged_app"
+tagged_app="$(verify_app_bundle tagged "$(tag_key "$beta_tag")")"
+expect_failure_with "$past_release_checks" verify_release_app beta "$beta_tag" "$tagged_app"
+for private_name in SeedProfile/Preset.json RuleSetPresets.json; do
+    private_app="$(verify_app_bundle "beta-${private_name%%/*}" \
+        "$(tag_key "$beta_tag")" "$private_name")"
+    expect_failure_with 'beta releases must not embed private configuration' \
+        verify_release_app beta "$beta_tag" "$private_app"
+    # Preset configuration packages share the stable contract and embed it.
+    private_app="$(verify_app_bundle "stable-${private_name%%/*}" '' "$private_name")"
+    expect_failure_with "$past_release_checks" \
+        verify_release_app stable v1.4.0 "$private_app"
+done
+
+# Formats beta shares with stable change only through main. Every listed path
+# exists here, and only what the beta side changed since its merge base with
+# main counts.
+shared_formats="$repository_root/scripts/check-beta-shared-formats.sh"
+shared_paths="$("$shared_formats" --paths)"
+while IFS= read -r shared_path; do
+    [[ -n "$(git -C "$repository_root" ls-files -- "$shared_path")" ]] \
+        || fail "shared format path is not tracked: $shared_path"
+done <<<"$shared_paths"
+for shared_path in go.mod go.sum third_party patches scripts/prepare-patched-go-mod.sh; do
+    grep -Fxq "$shared_path" <<<"$shared_paths" \
+        || fail "the shared format gate must cover $shared_path"
+done
+shared_fixture="$test_root/shared-formats"
+mkdir -p "$shared_fixture/patches/tailscale"
+(
+    cd "$shared_fixture"
+    git init -q -b main
+    git config user.name 'XDial Test'
+    git config user.email 'xdial-test@example.invalid'
+    printf '%s\n' 'module fixture' >go.mod
+    printf '%s\n' main >patches/tailscale/0001-fixture.patch
+    git add go.mod patches
+    git commit -qm main
+    git update-ref refs/remotes/origin/main HEAD
+    git switch -qc xdial-beta
+    printf '%s\n' experiment >experiment.txt
+    git add experiment.txt
+    git commit -qm experiment
+    "$shared_formats" >/dev/null
+    # Main moving its own dependencies does not count against the beta.
+    git switch -q main
+    printf '%s\n' 'go 1.25' >>go.mod
+    git commit -qam 'main dependency'
+    git update-ref refs/remotes/origin/main HEAD
+    git switch -q xdial-beta
+    "$shared_formats" origin/main HEAD >/dev/null
+    printf '%s\n' beta >patches/tailscale/0001-fixture.patch
+    git commit -qam 'beta patch'
+    expect_failure_with 'patches/tailscale/0001-fixture.patch' \
+        "$shared_formats" origin/main HEAD
+    expect_failure_with 'cannot resolve origin/missing' \
+        "$shared_formats" origin/missing HEAD
+)
 
 echo "release contract tests passed"

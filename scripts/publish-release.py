@@ -129,7 +129,9 @@ def verify_remote_tag(tag: str, channel: str = STABLE, source_url: str = SOURCE_
 
     The tag must be on the first-parent history of main (stable) or xdial-beta
     (beta). A beta must also contain the newest stable tag and sort above it,
-    so it carries every stable fix and the next stable release replaces it.
+    so it carries every stable fix and the next stable release replaces it,
+    and must keep main's shared formats. That gate runs this checkout's
+    scripts/check-beta-shared-formats.sh, so a beta cannot shorten the list.
     """
     tag_key(tag, channel)
     branch = RELEASE_BRANCHES[channel]
@@ -143,9 +145,10 @@ def verify_remote_tag(tag: str, channel: str = STABLE, source_url: str = SOURCE_
         branch_ref = f"refs/xdial-release/{branch}"
         tag_ref = "refs/xdial-release/tag"
         stable_ref = "refs/xdial-release/stable"
+        main_ref = "refs/xdial-release/main"
         refspecs = [f"+refs/heads/{branch}:{branch_ref}", f"+refs/tags/{tag}:{tag_ref}"]
         if latest_stable:
-            refspecs.append(f"+refs/tags/{latest_stable}:{stable_ref}")
+            refspecs += [f"+refs/tags/{latest_stable}:{stable_ref}", f"+refs/heads/main:{main_ref}"]
         try:
             subprocess.run(
                 [
@@ -158,7 +161,8 @@ def verify_remote_tag(tag: str, channel: str = STABLE, source_url: str = SOURCE_
             )
         except subprocess.CalledProcessError:
             raise ValueError(
-                f"cannot fetch {tag} and {branch} from {SOURCE_REPOSITORY}"
+                f"cannot fetch {tag} and {branch}{', main' if latest_stable else ''} "
+                f"from {SOURCE_REPOSITORY}"
             ) from None
         tagged_commit = subprocess.check_output(
             ["git", "-C", str(repository), "rev-parse", f"{tag_ref}^{{commit}}"],
@@ -193,6 +197,17 @@ def verify_remote_tag(tag: str, channel: str = STABLE, source_url: str = SOURCE_
                 raise ValueError(f"beta tag {tag} must contain the latest stable tag {latest_stable}")
             if tag_version(tag, BETA) <= tag_key(latest_stable):
                 raise ValueError(f"beta tag {tag} must be newer than the latest stable tag {latest_stable}")
+            shared = subprocess.run(
+                [str(ROOT / "scripts/check-beta-shared-formats.sh"), main_ref, tag_ref],
+                env={**os.environ, "GIT_DIR": str(repository)},
+                capture_output=True,
+                text=True,
+            )
+            if shared.returncode != 0:
+                raise ValueError(
+                    f"beta tag {tag} must keep the formats it shares with {SOURCE_REPOSITORY} main:\n"
+                    f"{shared.stderr.strip()}"
+                )
         return tagged_commit
 
 
@@ -486,11 +501,12 @@ def lagging_beta_release(feed_state: FeedState, tag: str, build: str) -> dict | 
     """The beta.json entry that clients would refuse once this stable is installed.
 
     A client offers a candidate only when its tag sorts above the installed
-    release, then refuses it as build_not_newer unless its build is higher. A
-    beta entry with a newer tag but a lower build than this stable therefore
-    fails every check for users who install this stable with beta enabled,
-    until a beta.N+1 replaces it or it is withdrawn. A beta entry that this
-    stable sorts above is merely superseded and needs no follow-up.
+    release, then refuses it as build_not_newer unless its build is strictly
+    higher. A beta entry with a newer tag but a build that is not above this
+    stable's (an equal build included) therefore fails every check for users
+    who install this stable with beta enabled, until a beta.N+1 replaces it or
+    it is withdrawn. A beta entry that this stable sorts above is merely
+    superseded and needs no follow-up.
     """
     feed = feed_state.feeds.get(BETA)
     release = feed.get("release") if isinstance(feed, dict) else None
@@ -501,7 +517,7 @@ def lagging_beta_release(feed_state: FeedState, tag: str, build: str) -> dict | 
     if (tag_channel(beta_tag) != BETA or not isinstance(beta_build, str)
             or not BUILD_PATTERN.fullmatch(beta_build)):
         raise ValueError(f"{PAGES_REPOSITORY} beta.json has an invalid release entry")
-    if release_order(beta_tag) > release_order(tag) and int(beta_build) < int(build):
+    if release_order(beta_tag) > release_order(tag) and int(beta_build) <= int(build):
         return release
     return None
 
@@ -511,7 +527,7 @@ def beta_followup_notice(beta: dict, tag: str, build: str) -> str:
     return "\n".join([
         rule,
         f"beta.json offers {beta['tag']} (build {beta['build']}): a newer tag than {tag},",
-        f"but a lower build than {build}. Users who install {tag} with beta enabled",
+        f"but a build not above {build}. Users who install {tag} with beta enabled",
         "will see build_not_newer on every update check until beta.json changes.",
         "In the same batch, once this stable release is verified, either:",
         f"  republish  publish {next_beta_tag(beta['tag'])} from xdial-beta with {tag} merged in",
@@ -544,9 +560,11 @@ def latest_stable_release_tag() -> str:
     return latest_tag
 
 
-def wait_for_idle_publisher(deadline: float) -> None:
+def wait_for_idle_publisher(timeout: int) -> None:
     """Every Pages operation shares one concurrency group, and a new dispatch
-    cancels a run still queued in it, so dispatch only when none is pending."""
+    cancels a run still queued in it, so dispatch only when none is pending.
+    This wait has its own budget, apart from the dispatched run's."""
+    deadline = time.monotonic() + timeout
     while True:
         result = gh_json(
             "api", f"repos/{PAGES_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=30",
@@ -562,8 +580,10 @@ def wait_for_idle_publisher(deadline: float) -> None:
 
 
 def dispatch_and_wait(tag: str, timeout: int, channel: str = STABLE) -> str:
-    deadline = time.monotonic() + timeout
-    wait_for_idle_publisher(deadline)
+    # main() waits before a draft becomes public; this covers a run started
+    # since then. The dispatched run still gets the whole timeout, counted
+    # from its dispatch as before beta existed.
+    wait_for_idle_publisher(timeout)
     request_id = uuid.uuid4().hex
     command = ["gh", "workflow", "run", "publish.yml", "--repo", PAGES_REPOSITORY,
                "--ref", "main", "-f", f"release_tag={tag}", "-f", "operation=publish"]
@@ -573,6 +593,7 @@ def dispatch_and_wait(tag: str, timeout: int, channel: str = STABLE) -> str:
         command += ["-f", f"channel={channel}"]
     command += ["-f", f"request_id={request_id}"]
     subprocess.run(command, check=True)
+    deadline = time.monotonic() + timeout
     run = None
     while time.monotonic() < deadline:
         result = gh_json(
@@ -733,6 +754,9 @@ def main() -> None:
             elif args.beta_followup:
                 print("beta.json needs no follow-up; --beta-followup is ignored", flush=True)
         if release["draft"]:
+            # A pending Pages run is waited out while nothing is public yet,
+            # instead of eating into the time this release's run gets later.
+            wait_for_idle_publisher(args.pages_timeout)
             # A beta must never become Latest: this script refuses a stable
             # release while Latest is not a stable tag.
             listing = ["--latest"] if args.channel == STABLE else ["--prerelease", "--latest=false"]

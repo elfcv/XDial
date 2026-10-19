@@ -7,9 +7,9 @@ on:
 
 jobs:
   # Beta shares the formal identity, configuration library, App Group and
-  # helper with stable. Persistent formats, cross-process protocols and
-  # dependency versions therefore evolve only through main; xdial-beta may not
-  # change the files below relative to where it last merged main.
+  # helper with stable, so xdial-beta may not change the files whose formats
+  # evolve only through main. This job only reports; release.yml and
+  # publish-release.py run the same script before a beta is built or public.
   beta-shared-formats:
     name: xdial-beta keeps main's shared formats
     if: github.ref == 'refs/heads/xdial-beta' || github.base_ref == 'xdial-beta'
@@ -19,29 +19,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: dependencies and configuration library format match main
+      - name: dependencies, patches and configuration library format match main
         run: |
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          shared=(
-            # Dependency versions and their local patches.
-            go.mod go.sum third_party scripts/prepare-patched-go-mod.sh
-            # Configuration library (profiles.enc) model, schema, storage and migration.
-            macos/Sources/XDial/Models.swift
-            macos/Sources/XDial/ProfileLibrary.swift
-            macos/Sources/XDial/ProfileLibraryStore.swift
-            macos/Sources/XDial/ProfileLibraryMigration.swift
-            macos/Sources/XDial/GlobalConfiguration.swift
-            macos/Sources/XDial/ConfigurationStorage.swift
-            macos/Shared/JSONValue.swift
-            # The core's Profile model and the portable Profile document.
-            core/config/model.go
-            core/config/profile_document.go
-          )
-          if ! git diff --quiet origin/main...HEAD -- "${shared[@]}"; then
-            echo "::error::xdial-beta changes files whose formats evolve only through main"
-            git diff --stat origin/main...HEAD -- "${shared[@]}"
-            exit 1
-          fi
+          scripts/check-beta-shared-formats.sh origin/main HEAD
 
   go:
     name: Go (lint + vet + test)

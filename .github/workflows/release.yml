@@ -55,6 +55,11 @@ jobs:
           git fetch --no-tags origin \
             "+refs/heads/$release_branch:refs/remotes/origin/$release_branch"
           scripts/release-contract.sh assert-git-tag "$RELEASE_TAG"
+          if [ "$RELEASE_CHANNEL" = beta ]; then
+            # Formats shared with stable evolve only through main.
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            scripts/check-beta-shared-formats.sh origin/main HEAD
+          fi
           make public-content-gate
 
       - uses: actions/setup-go@v7
