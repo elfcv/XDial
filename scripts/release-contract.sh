@@ -2,18 +2,18 @@
 
 set -euo pipefail
 
-# The explicit channel selects a complete identity, never individual bundle IDs.
+# Every channel ships the formal identity. The channel only selects the tag
+# syntax and the branch a release tag must sit on; it never changes a bundle.
+readonly PRODUCT_NAME="XDial"
+readonly ARCHIVE_PREFIX="XDial"
+readonly RELEASE_APPLICATION_IDENTIFIER="com.kafeifei.xdial.app"
 readonly RELEASE_CHANNEL="${XDIAL_RELEASE_CHANNEL:-stable}"
 case "$RELEASE_CHANNEL" in
-    stable)
-        PRODUCT_NAME="XDial"
-        ARCHIVE_PREFIX="XDial"
-        RELEASE_APPLICATION_IDENTIFIER="com.kafeifei.xdial.app"
-        RELEASE_BRANCH="main"
-        ;;
+    stable) RELEASE_BRANCH="main" ;;
+    beta) RELEASE_BRANCH="xdial-beta" ;;
     *) echo "error: unknown release channel: $RELEASE_CHANNEL" >&2; exit 1 ;;
 esac
-readonly PRODUCT_NAME ARCHIVE_PREFIX RELEASE_APPLICATION_IDENTIFIER RELEASE_BRANCH
+readonly RELEASE_BRANCH
 readonly RELEASE_SETTINGS_IDENTIFIER="$RELEASE_APPLICATION_IDENTIFIER.settings-ui"
 readonly RELEASE_EXTENSION_IDENTIFIER="$RELEASE_APPLICATION_IDENTIFIER.transparent-proxy"
 readonly RELEASE_HELPER_IDENTIFIER="$RELEASE_APPLICATION_IDENTIFIER.helper"
@@ -37,8 +37,10 @@ fail() {
 
 usage() {
     cat >&2 <<'EOF'
-Usage:
-  release-contract.sh validate-inputs <vMAJOR.MINOR.PATCH> <build-number>
+Usage (XDIAL_RELEASE_CHANNEL=stable|beta, default stable):
+  release-contract.sh validate-inputs <tag> <build-number>
+  release-contract.sh version-from-tag <tag>
+  release-contract.sh release-branch
   release-contract.sh validate-notes <tag> <release-notes.md>
   release-contract.sh assert-git-tag <tag>
   release-contract.sh verify-app <XDial.app> <tag> <build-number> [--notarized]
@@ -51,12 +53,57 @@ EOF
     exit 2
 }
 
+# A beta tag names the next stable X.Y.Z; every bundle's short version is that
+# X.Y.Z, so only the tag tells a beta apart.
 version_from_tag() {
     local tag="$1"
+    if [[ "$RELEASE_CHANNEL" == beta ]]; then
+        if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.[1-9][0-9]*$ ]]; then
+            fail "beta release tag must be exact vMAJOR.MINOR.PATCH-beta.N (N from 1, no leading zero): $tag"
+        fi
+        printf '%s\n' "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+        return
+    fi
     if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
         fail "release tag must be exact stable SemVer vMAJOR.MINOR.PATCH: $tag"
     fi
     printf '%s\n' "${tag#v}"
+}
+
+# Succeeds when MAJOR.MINOR.PATCH $1 is greater than $2.
+version_greater() {
+    local IFS=.
+    local -a left=($1) right=($2)
+    local index
+    for index in 0 1 2; do
+        ((10#${left[index]} > 10#${right[index]})) && return 0
+        ((10#${left[index]} < 10#${right[index]})) && return 1
+    done
+    return 1
+}
+
+# The highest vMAJOR.MINOR.PATCH tag in this repository, or nothing.
+latest_stable_tag() {
+    local tags
+    tags="$(git tag --list 'v*' --sort=-v:refname)" || return 1
+    grep -E -m 1 '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' <<<"$tags" || true
+}
+
+# A beta must carry every fix of the newest stable release and sort above it,
+# so the stable release that ends its line replaces it.
+assert_beta_contains_latest_stable() {
+    local tag="$1"
+    local tagged_commit="$2"
+    local latest stable_commit
+    latest="$(latest_stable_tag)" || fail "cannot list the release tags"
+    [[ -n "$latest" ]] \
+        || fail "no stable vMAJOR.MINOR.PATCH tag exists; fetch tags before validating $tag"
+    stable_commit="$(git rev-parse -q --verify "refs/tags/$latest^{commit}")" \
+        || fail "cannot resolve the stable tag $latest"
+    git merge-base --is-ancestor "$stable_commit" "$tagged_commit" \
+        || fail "beta tag $tag must contain the latest stable tag $latest"
+    version_greater "$(version_from_tag "$tag")" "${latest#v}" \
+        || fail "beta tag $tag must be newer than the latest stable tag $latest"
 }
 
 validate_inputs() {
@@ -101,6 +148,9 @@ assert_git_tag() {
     main_history="$(git rev-list --first-parent "$remote_main")"
     grep -Fxq "$tagged_commit" <<<"$main_history" \
         || fail "release tag $tag must point to a commit on origin/$RELEASE_BRANCH's first-parent history"
+    if [[ "$RELEASE_CHANNEL" == beta ]]; then
+        assert_beta_contains_latest_stable "$tag" "$tagged_commit"
+    fi
     [[ -z "$(git status --porcelain)" ]] \
         || fail "release worktree must be clean"
 }
@@ -277,6 +327,52 @@ assert_system_extension_authorization() {
         "$identifier" "$signed" "$profile" "$(/bin/date -u +%s)"
 }
 
+# Prints the key's value; a missing key prints nothing.
+release_tag_value() {
+    local plist="$1"
+    [[ -f "$plist" ]] || fail "missing Info.plist: $plist"
+    if /usr/bin/plutil -extract XDialReleaseTag raw -expect string -o - "$plist" 2>/dev/null; then
+        return 0
+    fi
+    if /usr/bin/plutil -extract XDialReleaseTag raw -o - "$plist" >/dev/null 2>&1; then
+        fail "$plist XDialReleaseTag must be a string"
+    fi
+}
+
+# XDialReleaseTag is the only way a client recognizes an installed beta. A beta
+# whose key is empty reads as stable v<short version>, so the same-numbered
+# stable release would never replace it: beta requires the exact tag. Stable
+# also accepts an empty key, which preset configuration packages may carry.
+# Any component that carries the key must name this release.
+assert_release_tag_key() {
+    local tag="$1"
+    local app_path="$2"
+    shift 2
+    local bundle actual
+    for bundle in "$app_path" "$@"; do
+        actual="$(release_tag_value "$bundle/Contents/Info.plist")" || exit 1
+        [[ -z "$actual" || "$actual" == "$tag" ]] \
+            || fail "$bundle XDialReleaseTag is '$actual', expected '$tag'"
+    done
+    [[ "$RELEASE_CHANNEL" == beta ]] || return 0
+    actual="$(release_tag_value "$app_path/Contents/Info.plist")" || exit 1
+    [[ "$actual" == "$tag" ]] \
+        || fail "beta $app_path XDialReleaseTag is '$actual', expected '$tag'"
+}
+
+# A first-launch Profile and private rule set presets belong only to preset
+# configuration packages, which are stable and share this contract, so only
+# beta refuses them here. Official CI checks both channels.
+assert_private_configuration_absent() {
+    local app_path="$1"
+    local found
+    [[ "$RELEASE_CHANNEL" == beta ]] || return 0
+    found="$(find "$app_path" \( -name SeedProfile -o -name RuleSetPresets.json \) -print)" \
+        || fail "cannot scan $app_path for private configuration"
+    [[ -z "$found" ]] \
+        || fail "beta releases must not embed private configuration: $found"
+}
+
 verify_app() {
     local app_path="$1"
     local tag="$2"
@@ -312,6 +408,8 @@ verify_app() {
         "$RELEASE_SETTINGS_IDENTIFIER"
     assert_plist_value "$extension_path/Contents/Info.plist" CFBundleIdentifier \
         "$RELEASE_EXTENSION_IDENTIFIER"
+    assert_release_tag_key "$tag" "$app_path" "$settings_path" "$extension_path"
+    assert_private_configuration_absent "$app_path"
 
     local bundle
     for bundle in "$app_path" "$settings_path" "$extension_path"; do
@@ -496,6 +594,14 @@ case "$command" in
     validate-inputs)
         [[ $# -eq 2 ]] || usage
         validate_inputs "$1" "$2"
+        ;;
+    version-from-tag)
+        [[ $# -eq 1 ]] || usage
+        version_from_tag "$1"
+        ;;
+    release-branch)
+        [[ $# -eq 0 ]] || usage
+        printf '%s\n' "$RELEASE_BRANCH"
         ;;
     validate-notes)
         [[ $# -eq 2 ]] || usage

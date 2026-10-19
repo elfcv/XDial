@@ -18,11 +18,21 @@ RELEASE_BUNDLE := $(BUILD_DIR)/release/XDial.app
 RELEASE_TAG ?=
 RELEASE_BUILD_NUMBER ?=
 RELEASE_UPDATE_ACCEPTANCE_ID ?=
-RELEASE_NOTES_FILE ?= RELEASE_NOTES.md
-RELEASE_VERSION = $(patsubst v%,%,$(RELEASE_TAG))
+# 通道只决定标签语法、源分支、说明文件和写入哪份清单；stable 与 beta 都构建正式身份。
+RELEASE_CHANNEL ?= stable
+RELEASE_NOTES_FILE ?= $(if $(filter beta,$(RELEASE_CHANNEL)),BETA_RELEASE_NOTES.md,RELEASE_NOTES.md)
+# 发 stable 时，若 beta.json 的条目会让开着 beta 的用户报 build_not_newer，
+# publish 要求写明同批的后续动作：republish 或 withdraw。
+RELEASE_BETA_FOLLOWUP ?=
+RELEASE_CONTRACT_SCRIPT ?= scripts/release-contract.sh
+RELEASE_CONTRACT := XDIAL_RELEASE_CHANNEL=$(RELEASE_CHANNEL) $(RELEASE_CONTRACT_SCRIPT)
+# 版本号与源分支都由合约按通道给出；stable 的版本号仍是去掉 v 的标签。
+RELEASE_VERSION = $(shell $(RELEASE_CONTRACT) version-from-tag "$(RELEASE_TAG)")
+RELEASE_BRANCH = $(shell $(RELEASE_CONTRACT) release-branch)
+# beta 必须包含最新的正式标签，所以同时刷新 v* 标签；不带 +，本地标签与远端不同就失败。
+RELEASE_TAG_REFSPEC = $(if $(filter beta,$(RELEASE_CHANNEL)), 'refs/tags/v*:refs/tags/v*')
 RELEASE_ARCHIVE = $(BUILD_DIR)/release/XDial-$(RELEASE_TAG).zip
 RELEASE_NOTARIZATION_LOG = $(BUILD_DIR)/release/XDial-$(RELEASE_TAG)-notarization.json
-RELEASE_CONTRACT := scripts/release-contract.sh
 GOBIN := $(shell go env GOPATH)/bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 PLIST_VERSION := $(patsubst v%,%,$(VERSION))
@@ -336,10 +346,10 @@ release-inputs:
 	@python3 -c 'import re,sys; sys.exit(0 if not sys.argv[1] or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}", sys.argv[1]) else "invalid update acceptance ID")' "$(RELEASE_UPDATE_ACCEPTANCE_ID)"
 	@if [ -z "$(RELEASE_UPDATE_ACCEPTANCE_ID)" ]; then \
 		git fetch --no-tags origin \
-			+refs/heads/main:refs/remotes/origin/main || exit 1; \
+			+refs/heads/$(RELEASE_BRANCH):refs/remotes/origin/$(RELEASE_BRANCH)$(RELEASE_TAG_REFSPEC) || exit 1; \
 		$(RELEASE_CONTRACT) assert-git-tag "$(RELEASE_TAG)"; \
 	else \
-		echo "acceptance build: stable tag/main gate is intentionally skipped"; \
+		echo "acceptance build: $(RELEASE_CHANNEL) tag/$(RELEASE_BRANCH) gate is intentionally skipped"; \
 	fi
 
 release-app: release-inputs libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
@@ -353,6 +363,7 @@ release-app: release-inputs libbox-macos-xcframework macos/AppIcon.icns macos/Se
 		MARKETING_VERSION="$(RELEASE_VERSION)" \
 		CURRENT_PROJECT_VERSION="$(RELEASE_BUILD_NUMBER)" \
 		XDIAL_UPDATE_ACCEPTANCE_ID="$(RELEASE_UPDATE_ACCEPTANCE_ID)" \
+		XDIAL_RELEASE_TAG="$(RELEASE_TAG)" \
 		build
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDial -configuration Release \
 		-destination 'platform=macOS,arch=arm64' \
@@ -360,6 +371,7 @@ release-app: release-inputs libbox-macos-xcframework macos/AppIcon.icns macos/Se
 		MARKETING_VERSION="$(RELEASE_VERSION)" \
 		CURRENT_PROJECT_VERSION="$(RELEASE_BUILD_NUMBER)" \
 		XDIAL_UPDATE_ACCEPTANCE_ID="$(RELEASE_UPDATE_ACCEPTANCE_ID)" \
+		XDIAL_RELEASE_TAG="$(RELEASE_TAG)" \
 		build
 	@test "$$(plutil -extract LSUIElement raw '$(BUILD_DIR)/macos-xcode-release/Build/Products/Release/XDial.app/Contents/Info.plist')" = true
 	rm -rf "$(RELEASE_BUNDLE)"
@@ -384,10 +396,11 @@ release: release-app
 # 使用操作者现有 gh 登录；不把跨仓库凭据嵌入 App 或 Actions。
 publish:
 	@test -z "$(RELEASE_UPDATE_ACCEPTANCE_ID)" || { \
-		echo "error: an acceptance build cannot be published to stable" >&2; \
+		echo "error: an acceptance build cannot be published to $(RELEASE_CHANNEL)" >&2; \
 		exit 1; \
 	}
-	python3 scripts/publish-release.py "$(RELEASE_TAG)"
+	python3 scripts/publish-release.py --channel "$(RELEASE_CHANNEL)" \
+		$(if $(RELEASE_BETA_FOLLOWUP),--beta-followup "$(RELEASE_BETA_FOLLOWUP)" )"$(RELEASE_TAG)"
 
 # 一键重启：先完整构建并签名新版本，成功后才让旧实例完成网络回滚并退出。
 # 构建目录中的进程紧接着执行无 UI 的原子安装，然后只启动
