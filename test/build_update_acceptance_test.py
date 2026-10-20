@@ -590,7 +590,9 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.assert_gone(reports["step"])
 
     def short_stop_sequence(self):
-        """The stop sequence with short waits for what make ignores."""
+        """The stop sequence with short waits for what make ignores. Only for a
+        make that ignores SIGINT: one that obeys it takes about as long as its
+        task step's 0.3-second wind-down, so a 0.3-second grace races it."""
         return tuple((signum, 0.3 if signum != signal.SIGKILL else grace)
                      for signum, grace in ACCEPTANCE.STOP_SEQUENCE)
 
@@ -625,8 +627,8 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         # A non-interactive shell starts a background job with SIGINT ignored.
         self.addCleanup(signal.signal, signal.SIGINT, signal.signal(signal.SIGINT, signal.SIG_IGN))
         self.signal_on = ("v1.1.0-beta.1", signal.SIGTERM)
-        with patch.object(ACCEPTANCE, "STOP_SEQUENCE", self.short_stop_sequence()), \
-                self.assertRaises(SystemExit) as raised:
+        # make obeys SIGINT here, so it keeps the full grace that SIGINT gets.
+        with self.assertRaises(SystemExit) as raised:
             self.run_main("--beta", "--lower-ref", "v1.1.0")
         self.assert_make_stopped()
         self.assert_stopped_and_cleaned(raised, signal.SIGTERM, interrupt=signal.SIG_IGN)
