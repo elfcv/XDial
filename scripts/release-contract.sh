@@ -11,12 +11,6 @@ case "$RELEASE_CHANNEL" in
         RELEASE_APPLICATION_IDENTIFIER="com.kafeifei.xdial.app"
         RELEASE_BRANCH="main"
         ;;
-    next)
-        PRODUCT_NAME="XDial Next"
-        ARCHIVE_PREFIX="XDial-Next"
-        RELEASE_APPLICATION_IDENTIFIER="com.kafeifei.xdial.next"
-        RELEASE_BRANCH="xdial-next"
-        ;;
     *) echo "error: unknown release channel: $RELEASE_CHANNEL" >&2; exit 1 ;;
 esac
 readonly PRODUCT_NAME ARCHIVE_PREFIX RELEASE_APPLICATION_IDENTIFIER RELEASE_BRANCH
@@ -59,15 +53,10 @@ EOF
 
 version_from_tag() {
     local tag="$1"
-    local canonical="$tag"
-    if [[ "$RELEASE_CHANNEL" == next ]]; then
-        [[ "$tag" == next-v* ]] || fail "Next tag must be next-vMAJOR.MINOR.PATCH"
-        canonical="${tag#next-}"
-    fi
-    if [[ ! "$canonical" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
         fail "release tag must be exact stable SemVer vMAJOR.MINOR.PATCH: $tag"
     fi
-    printf '%s\n' "${canonical#v}"
+    printf '%s\n' "${tag#v}"
 }
 
 validate_inputs() {
@@ -114,9 +103,6 @@ assert_git_tag() {
         || fail "release tag $tag must point to a commit on origin/$RELEASE_BRANCH's first-parent history"
     [[ -z "$(git status --porcelain)" ]] \
         || fail "release worktree must be clean"
-    if [[ "$RELEASE_CHANNEL" == next ]]; then
-        [[ "$head" == "$remote_main" ]] || fail "Next release must match origin/xdial-next HEAD"
-    fi
 }
 
 plist_value() {
@@ -317,11 +303,6 @@ verify_app() {
 
     assert_app_deployment_target "$app_path"
     assert_component_names "$app_path"
-
-    if [[ "$RELEASE_CHANNEL" == next ]]; then
-        python3 "$RELEASE_CONTRACT_DIRECTORY/verify-next-release-identity.py" \
-            "$app_path" "$tag"
-    fi
 
     assert_plist_value "$app_path/Contents/Info.plist" CFBundleIdentifier \
         "$RELEASE_APPLICATION_IDENTIFIER"

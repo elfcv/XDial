@@ -197,8 +197,7 @@ test: public-content-gate $(PATCHED_WORKFILE) test-patched-tailscale test-patche
 
 test-release-contract:
 	bash test/release_contract_test.sh
-	bash test/next_release_contract_test.sh
-	python3 -m unittest discover -s test -p 'publish*release_test.py'
+	python3 -m unittest discover -s test -p 'publish_release_test.py'
 	python3 -m unittest discover -s test -p 'restart_macos_test.py'
 	python3 -m unittest discover -s test -p 'component_names_test.py'
 
@@ -393,49 +392,6 @@ publish:
 		exit 1; \
 	}
 	python3 scripts/publish-release.py "$(RELEASE_TAG)"
-
-# Next has a dedicated branch, identity and GitHub prerelease; it never publishes to stable.
-NEXT_RELEASE_CONTRACT = XDIAL_RELEASE_CHANNEL=next $(RELEASE_CONTRACT)
-NEXT_RELEASE_BUNDLE := $(BUILD_DIR)/next-release/XDial Next.app
-NEXT_RELEASE_VERSION = $(patsubst next-v%,%,$(RELEASE_TAG))
-NEXT_RELEASE_ARCHIVE = $(BUILD_DIR)/next-release/XDial-Next-$(RELEASE_TAG).zip
-NEXT_RELEASE_SOURCE = $(shell git rev-parse HEAD)
-MACOS_NEXT_RELEASE_XCODEBUILD_FLAGS ?=
-
-.PHONY: release-next-inputs release-next-app release-next publish-next
-release-next-inputs:
-	@$(NEXT_RELEASE_CONTRACT) validate-inputs "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)"
-	@$(NEXT_RELEASE_CONTRACT) validate-notes "$(RELEASE_TAG)" NEXT_RELEASE_NOTES.md
-	@git fetch --no-tags origin refs/heads/xdial-next:refs/remotes/origin/xdial-next
-	@$(NEXT_RELEASE_CONTRACT) assert-git-tag "$(RELEASE_TAG)"
-	@bash scripts/check-public-content.sh
-
-release-next-app: release-next-inputs libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
-	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -trimpath \
-		-ldflags "-X main.version=$(RELEASE_TAG) -X main.buildFlavor=next -s -w" \
-		-o $(BUILD_DIR)/xdial-next-release ./cmd/xdial/
-	@set -e; for scheme in XDialTransparentProxy XDial; do \
-		xcodebuild -project macos/XDial.xcodeproj -scheme "$$scheme" -configuration NextRelease \
-			-destination 'platform=macOS,arch=arm64' \
-			-derivedDataPath $(BUILD_DIR)/macos-next-release \
-			XDIAL_HELPER_SOURCE="$(BUILD_DIR_ABS)/xdial-next-release" \
-			MARKETING_VERSION="$(NEXT_RELEASE_VERSION)" \
-			CURRENT_PROJECT_VERSION="$(RELEASE_BUILD_NUMBER)" \
-			XDIAL_SOURCE_REVISION="$(NEXT_RELEASE_SOURCE)" \
-			$(MACOS_NEXT_RELEASE_XCODEBUILD_FLAGS) build; \
-	done
-	rm -rf "$(NEXT_RELEASE_BUNDLE)"
-	ditto "$(BUILD_DIR)/macos-next-release/Build/Products/NextRelease/XDial Next.app" "$(NEXT_RELEASE_BUNDLE)"
-	@$(NEXT_RELEASE_CONTRACT) verify-app "$(NEXT_RELEASE_BUNDLE)" "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)"
-
-release-next: release-next-app
-	@$(NEXT_RELEASE_CONTRACT) notarize "$(NEXT_RELEASE_BUNDLE)" "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)" "$(BUILD_DIR)/next-release/notarization.json"
-	@$(NEXT_RELEASE_CONTRACT) archive "$(NEXT_RELEASE_BUNDLE)" "$(RELEASE_TAG)" "$(BUILD_DIR)/next-release"
-	@$(NEXT_RELEASE_CONTRACT) verify-archive "$(NEXT_RELEASE_ARCHIVE)" "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)"
-	@echo "Next release archive: $(NEXT_RELEASE_ARCHIVE)"
-
-publish-next:
-	python3 scripts/publish-next-release.py "$(RELEASE_TAG)"
 
 # 一键重启：先完整构建并签名新版本，成功后才让旧实例完成网络回滚并退出。
 # 构建目录中的进程紧接着执行无 UI 的原子安装，然后只启动
