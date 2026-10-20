@@ -227,17 +227,84 @@ struct InstallationReport: Codable, Equatable {
     }
 }
 
+/// CFBundleVersion is the order macOS uses to replace an active System
+/// Extension. Both release channels share one increasing sequence.
+enum BundleBuildNumber {
+    /// Orders two canonical positive decimals without overflowing; nil when
+    /// either value is not one.
+    static func compare(_ lhs: String, _ rhs: String) -> ComparisonResult? {
+        guard isCanonical(lhs), isCanonical(rhs) else { return nil }
+        if lhs.utf8.count != rhs.utf8.count {
+            return lhs.utf8.count < rhs.utf8.count
+                ? .orderedAscending : .orderedDescending
+        }
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    static func isCanonical(_ value: String) -> Bool {
+        guard let first = value.utf8.first, (49 ... 57).contains(first)
+        else { return false }
+        return value.utf8.allSatisfy { (48 ... 57).contains($0) }
+    }
+
+    static func read(at bundleURL: URL) -> String? {
+        ApplicationBundleInfo.string(forKey: "CFBundleVersion", at: bundleURL)
+    }
+
+    /// An unreadable or non-canonical build is not evidence of a downgrade.
+    static func lowers(_ source: String?, below destination: String?) -> Bool {
+        guard let source, let destination else { return false }
+        return compare(source, destination) == .orderedAscending
+    }
+
+    /// Whether installing the bundle at `sourceURL` over the one at
+    /// `destinationURL` would put an older host beside a newer extension.
+    static func installationLowersBuild(
+        from sourceURL: URL,
+        over destinationURL: URL
+    ) -> Bool {
+        lowers(read(at: sourceURL), below: read(at: destinationURL))
+    }
+}
+
 enum ApplicationRelocationDecision: Equatable {
     case continueLaunch
     case install
     case replace
     case rejectExisting
+    /// The installed bundle has a higher build, possibly a beta. Replacing it
+    /// would leave its newer System Extension active beside an older host.
+    case rejectDowngrade
+
+    /// Reads both builds from the bundles themselves: the same values macOS
+    /// compares before it replaces the active System Extension.
+    static func decide(
+        currentIsCanonical: Bool,
+        sourceURL: URL,
+        destinationURL: URL,
+        destinationExists: Bool,
+        destinationMatchesIdentity: Bool,
+        destinationIsRecognizedProduct: Bool
+    ) -> ApplicationRelocationDecision {
+        decide(
+            currentIsCanonical: currentIsCanonical,
+            destinationExists: destinationExists,
+            destinationMatchesIdentity: destinationMatchesIdentity,
+            destinationIsRecognizedProduct: destinationIsRecognizedProduct,
+            sourceBuild: BundleBuildNumber.read(at: sourceURL),
+            destinationBuild: destinationExists
+                ? BundleBuildNumber.read(at: destinationURL) : nil
+        )
+    }
 
     static func decide(
         currentIsCanonical: Bool,
         destinationExists: Bool,
         destinationMatchesIdentity: Bool,
-        destinationIsRecognizedProduct: Bool = false
+        destinationIsRecognizedProduct: Bool = false,
+        sourceBuild: String? = nil,
+        destinationBuild: String? = nil
     ) -> ApplicationRelocationDecision {
         if currentIsCanonical {
             return .continueLaunch
@@ -245,10 +312,14 @@ enum ApplicationRelocationDecision: Equatable {
         guard destinationExists else {
             return .install
         }
-        return destinationMatchesIdentity
-            || destinationIsRecognizedProduct
-            ? .replace
-            : .rejectExisting
+        guard destinationMatchesIdentity
+            || destinationIsRecognizedProduct else {
+            return .rejectExisting
+        }
+        if BundleBuildNumber.lowers(sourceBuild, below: destinationBuild) {
+            return .rejectDowngrade
+        }
+        return .replace
     }
 }
 
@@ -310,6 +381,10 @@ enum SystemExtensionActivationVerifier {
         case ready
         case activate
         case unavailable
+        /// A higher build of this extension stays active, typically a beta
+        /// whose app was replaced by an older one. macOS does not replace it
+        /// with a lower build, so only an uninstall can clear it.
+        case newerActive(bundleVersion: String)
     }
 
     static func action(
@@ -325,9 +400,40 @@ enum SystemExtensionActivationVerifier {
         ) {
             return .ready
         }
+        // Whatever installed the older host, activation cannot replace a
+        // newer extension; say so instead of reporting a missing one.
+        if let newer = newerVersion(
+            properties,
+            expectedIdentifier: expectedIdentifier,
+            expectedVersion: expectedVersion
+        ) {
+            return .newerActive(bundleVersion: newer)
+        }
         // Only installation may repair a missing/disabled/outdated extension.
         // A failed post-activation verification must not resubmit indefinitely.
         return phase == .installationPreflight ? .activate : .unavailable
+    }
+
+    /// The highest build of this extension above the bundled one that is not
+    /// already being uninstalled.
+    static func newerVersion(
+        _ properties: [SystemExtensionPropertySnapshot],
+        expectedIdentifier: String,
+        expectedVersion: String
+    ) -> String? {
+        properties
+            .filter {
+                $0.bundleIdentifier == expectedIdentifier
+                    && !$0.isUninstalling
+                    && BundleBuildNumber.compare(
+                        $0.bundleVersion,
+                        expectedVersion
+                    ) == .orderedDescending
+            }
+            .map(\.bundleVersion)
+            .max {
+                BundleBuildNumber.compare($0, $1) == .orderedAscending
+            }
     }
 
     static func containsReadyCurrentVersion(
@@ -373,7 +479,6 @@ enum XDialApplicationIdentifierPolicy {
         case legacyRelease: legacyReleaseSettingsUI
         case release: releaseSettingsUI
         case development: developmentSettingsUI
-        case "com.kafeifei.xdial.next": "com.kafeifei.xdial.next.settings-ui"
         default: nil
         }
     }

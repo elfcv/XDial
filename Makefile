@@ -2,17 +2,15 @@ BUILD_DIR := build
 # $(abspath) 按空格拆分参数，带空格的 bundle 路径必须由无空格的绝对
 # BUILD_DIR 拼出，不能整体交给 abspath/realpath。
 BUILD_DIR_ABS := $(abspath $(BUILD_DIR))
+# Debug is the only development identity. A caller still passing another
+# channel fails here instead of silently getting a Debug build.
 DEVELOPMENT_CHANNEL ?= debug
-ifeq ($(DEVELOPMENT_CHANNEL),next)
-DEVELOPMENT_CONFIGURATION := Next
-APP_BUNDLE_NAME := XDial Next.app
-else ifeq ($(DEVELOPMENT_CHANNEL),debug)
+ifneq ($(DEVELOPMENT_CHANNEL),debug)
+$(error DEVELOPMENT_CHANNEL must be debug, the only development identity)
+endif
 DEVELOPMENT_CONFIGURATION := Debug
 APP_BUNDLE_NAME := XDial Debug.app
-else
-$(error DEVELOPMENT_CHANNEL must be next or debug)
-endif
-DEVELOPMENT_DERIVED_DATA := $(BUILD_DIR)/macos-$(DEVELOPMENT_CHANNEL)-xcode
+DEVELOPMENT_DERIVED_DATA := $(BUILD_DIR)/macos-debug-xcode
 DEVELOPMENT_PRODUCT := $(DEVELOPMENT_DERIVED_DATA)/Build/Products/$(DEVELOPMENT_CONFIGURATION)/$(APP_BUNDLE_NAME)
 APP_BUNDLE := $(BUILD_DIR)/$(APP_BUNDLE_NAME)
 APP_BUNDLE_ABS := $(BUILD_DIR_ABS)/$(APP_BUNDLE_NAME)
@@ -20,11 +18,21 @@ RELEASE_BUNDLE := $(BUILD_DIR)/release/XDial.app
 RELEASE_TAG ?=
 RELEASE_BUILD_NUMBER ?=
 RELEASE_UPDATE_ACCEPTANCE_ID ?=
-RELEASE_NOTES_FILE ?= RELEASE_NOTES.md
-RELEASE_VERSION = $(patsubst v%,%,$(RELEASE_TAG))
+# 通道只决定标签语法、源分支、说明文件和写入哪份清单；stable 与 beta 都构建正式身份。
+RELEASE_CHANNEL ?= stable
+RELEASE_NOTES_FILE ?= $(if $(filter beta,$(RELEASE_CHANNEL)),BETA_RELEASE_NOTES.md,RELEASE_NOTES.md)
+# 发 stable 时，若 beta.json 的条目会让开着 beta 的用户报 build_not_newer，
+# publish 要求写明同批的后续动作：republish 或 withdraw。
+RELEASE_BETA_FOLLOWUP ?=
+RELEASE_CONTRACT_SCRIPT ?= scripts/release-contract.sh
+RELEASE_CONTRACT := XDIAL_RELEASE_CHANNEL=$(RELEASE_CHANNEL) $(RELEASE_CONTRACT_SCRIPT)
+# 版本号与源分支都由合约按通道给出；stable 的版本号仍是去掉 v 的标签。
+RELEASE_VERSION = $(shell $(RELEASE_CONTRACT) version-from-tag "$(RELEASE_TAG)")
+RELEASE_BRANCH = $(shell $(RELEASE_CONTRACT) release-branch)
+# beta 必须包含最新的正式标签，所以同时刷新 v* 标签；不带 +，本地标签与远端不同就失败。
+RELEASE_TAG_REFSPEC = $(if $(filter beta,$(RELEASE_CHANNEL)), 'refs/tags/v*:refs/tags/v*')
 RELEASE_ARCHIVE = $(BUILD_DIR)/release/XDial-$(RELEASE_TAG).zip
 RELEASE_NOTARIZATION_LOG = $(BUILD_DIR)/release/XDial-$(RELEASE_TAG)-notarization.json
-RELEASE_CONTRACT := scripts/release-contract.sh
 GOBIN := $(shell go env GOPATH)/bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 PLIST_VERSION := $(patsubst v%,%,$(VERSION))
@@ -79,8 +87,9 @@ else
 MACOS_GO_BUILD_ENV =
 endif
 MACOS_DEPLOYMENT_VERIFIER := scripts/verify-macos-deployment-target.py
+MACOS_COMPONENT_NAMES_VERIFIER := scripts/verify-macos-component-names.py
 
-.PHONY: all cli cli-debug app ci-macos-build macos-identity-contract release-inputs release-app release publish test-release-contract restart inspector clean prepare-patched-go public-content-gate go-vet go-build test test-patched-tailscale test-patched-sing-box test-patched-sslcon test-macos-transaction test-smoke sing-box-test-validator check-mobile-libbox-deps libbox-xcframework libbox-ios-xcframework libbox-macos-xcframework appletv ios mobile-app-icons FORCE_PATCHED_GO
+.PHONY: all cli cli-debug app ci-macos-build macos-identity-contract release-inputs release-helper release-app release publish test-release-contract restart inspector clean prepare-patched-go public-content-gate go-vet go-build test test-patched-tailscale test-patched-sing-box test-patched-sslcon test-macos-transaction test-smoke sing-box-test-validator check-mobile-libbox-deps libbox-xcframework libbox-ios-xcframework libbox-macos-xcframework appletv ios mobile-app-icons FORCE_PATCHED_GO
 
 $(MACOS_ICON_GENERATOR_BINARY): $(MACOS_BRAND_PALETTE_SOURCE) $(MACOS_ICON_SOURCE) $(MACOS_ICON_GENERATOR)
 	@mkdir -p "$(BUILD_DIR)"
@@ -201,13 +210,19 @@ test-patched-sslcon: $(PATCHED_WORKFILE)
 			./session ./vpn -count=1
 
 test: public-content-gate $(PATCHED_WORKFILE) test-patched-tailscale test-patched-sing-box test-patched-sslcon sing-box-test-validator
-	PATH="$(dir $(SING_BOX_TEST_BINARY)):$(PATH)" $(PATCHED_GO_ENV) go test -tags '$(MOBILE_LIBBOX_TAGS)' ./core/... -v -count=1
+	PATH="$(dir $(SING_BOX_TEST_BINARY)):$(PATH)" $(PATCHED_GO_ENV) go test -tags '$(MOBILE_LIBBOX_TAGS)' ./core/... ./cmd/xdial/ -v -count=1
 
 test-release-contract:
 	bash test/release_contract_test.sh
-	bash test/next_release_contract_test.sh
-	python3 -m unittest discover -s test -p 'publish*release_test.py'
+	python3 -m unittest discover -s test -p 'publish_release_test.py'
+	python3 -m unittest discover -s test -p 'build_update_acceptance_test.py'
 	python3 -m unittest discover -s test -p 'restart_macos_test.py'
+	python3 -m unittest discover -s test -p 'component_names_test.py'
+
+# Fixture repositories and plists only; plutil keeps it in the macOS CI job.
+.PHONY: test-debug-rollback
+test-debug-rollback:
+	bash test/check_debug_rollback_test.sh
 
 # Opt-in macOS login-session check: launches only isolated fixture apps.
 .PHONY: test-installation-launch
@@ -218,7 +233,7 @@ macos-identity-contract:
 	cd macos && xcodegen generate
 	bash scripts/verify-macos-identity-contract.sh
 
-test-macos-transaction: test-release-contract macos-identity-contract
+test-macos-transaction: test-release-contract test-debug-rollback macos-identity-contract
 	@! rg -n 'probeNetwork|127\.0\.0\.1:9090|test-out' macos/Sources/XDial
 	@test "$$(rg -l 'willSleepNotification' macos/Sources/XDial macos/Shared | sort)" = macos/Sources/XDial/AppState.swift
 	@! rg -n 'screensDidSleepNotification|systemIsSleeping|sawUnavailablePath' macos/Sources/XDial macos/Shared
@@ -245,6 +260,7 @@ test-macos-transaction: test-release-contract macos-identity-contract
 	@! rg -n 'NSApp\.hide\(' macos/Sources/XDial/XDialApp.swift
 	@rg -q 'NSApp\.deactivate\(\)' macos/Sources/XDial/XDialApp.swift
 	@! rg -n '/usr/bin/open|open -n' scripts/restart-macos-app.sh macos/Sources/XDial/ApplicationRelocator.swift
+	@test "$$(awk '/^restart:/ { recipe = 1; next } recipe && !/^\t/ { exit } recipe && /check-debug-rollback\.sh/ { print "check" } recipe && /\$$\(MAKE\) app / { print "build" } recipe && /restart-macos-app\.sh/ { print "install" }' Makefile | paste -sd ' ' -)" = 'check build check install'
 	@rg -q 'ApplicationLaunchPolicy\.configure' tools/launch-macos-app.swift macos/Sources/XDial/ApplicationRelocator.swift macos/Sources/XDial/SettingsDockProxyCoordinator.swift
 	@rg -q 'addsToRecentItems = false' macos/Sources/XDial/ApplicationLaunchPolicy.swift
 	@! rg -n '@State[^\n]*dismissedScenarioSwitchFailure' macos/Sources/XDial/MainPopover.swift
@@ -253,6 +269,12 @@ test-macos-transaction: test-release-contract macos-identity-contract
 	@test "$$(plutil -extract LSUIElement raw macos/Info.plist)" = true
 	@rg -q '^[[:space:]]+LSUIElement: true$$' macos/project.yml
 	@! rg -n 'URLSession|ip-api\.com' macos/Sources/XDial/NetworkInfo.swift
+	@# XDialReleaseTag only tells an installed beta apart; it never replaces or locks stable.json or authorizes a bundle.
+	@test "$$(rg -l 'XDialReleaseTag|releaseTagInfoKey' macos/Sources macos/Shared | sort)" = macos/Sources/XDial/AppUpdateChecker.swift
+	@! awk '/^(enum AutomaticUpdateBundlePolicy|struct AppUpdateFeedConfiguration)/,/^}/' macos/Sources/XDial/AppUpdateTransaction.swift macos/Sources/XDial/AppUpdateReleaseLookup.swift | rg -n 'InstalledRelease|ReleaseTag'
+	@! rg -n 'InstalledRelease|ReleaseTag' macos/Sources/XDial/ApplicationRelocator.swift
+	@# Every installer, --install-only included, rechecks the downgrade gate under the installation lock.
+	@rg -U -q 'private static func install\((?s:.)*?withExclusiveAccess \{(?s:.)*?BundleBuildNumber\.installationLowersBuild\((?s:.)*?try artifacts\.perform' macos/Sources/XDial/ApplicationRelocator.swift
 	@! rg -U -n '\.on(Appear|Disappear)[[:space:]]*\{[^}]{0,500}(probeNetwork|prepareTailscale|closeTailscaleSetup|URLSession|127\.0\.0\.1:9090)' macos/Sources/XDial/SettingsView.swift
 	@test "$$(rg -U -o 'AXUIElementCopyAttributeValue\([^)]*kAXValueAttribute' macos/Sources/XDial/DebugServer.swift | wc -l | tr -d ' ')" -eq 1
 	@rg -U -q 'private static func safeAXValue\([^}]+guard subrole != secureTextFieldSubrole else \{ return nil \}[^}]+guard role as\? String != kAXTextAreaRole else \{ return nil \}[^}]+AXUIElementCopyAttributeValue\([^)]*kAXValueAttribute' macos/Sources/XDial/DebugServer.swift
@@ -281,22 +303,14 @@ cli-debug: $(PATCHED_WORKFILE)
 	@mkdir -p $(BUILD_DIR)
 	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -ldflags "$(GO_LDFLAGS) -X main.buildFlavor=debug" -o $(BUILD_DIR)/xdial-debug ./cmd/xdial/
 
-cli-next: $(PATCHED_WORKFILE)
-	@mkdir -p $(BUILD_DIR)
-	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -ldflags "$(GO_LDFLAGS) -X main.buildFlavor=next" -o $(BUILD_DIR)/xdial-next ./cmd/xdial/
-
 # Development builds include DebugServer and must never be distributed.
-.PHONY: app-debug app-next cli-next test-scenario-layout
-app-debug:
-	$(MAKE) app DEVELOPMENT_CHANNEL=debug
-
-app-next:
-	$(MAKE) app DEVELOPMENT_CHANNEL=next
+.PHONY: app-debug test-scenario-layout
+app-debug: app
 
 test-scenario-layout:
 	python3 test/scenario_layout_test.py "$(APP_BUNDLE)"
 
-app: cli-$(DEVELOPMENT_CHANNEL) libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns $(MACOS_APP_LAUNCHER) macos-identity-contract
+app: cli-debug libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns $(MACOS_APP_LAUNCHER) macos-identity-contract
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDialTransparentProxy -configuration $(DEVELOPMENT_CONFIGURATION) \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath $(DEVELOPMENT_DERIVED_DATA) \
@@ -315,21 +329,22 @@ app: cli-$(DEVELOPMENT_CHANNEL) libbox-macos-xcframework macos/AppIcon.icns maco
 	@test -f '$(DEVELOPMENT_PRODUCT)/Contents/Helpers/XDial Settings UI.app/Contents/Resources/SettingsDockIcon.icns'
 	rm -rf "$(APP_BUNDLE)"
 	ditto "$(DEVELOPMENT_PRODUCT)" "$(APP_BUNDLE)"
-	python3 scripts/verify-macos-debug-app.py "$(APP_BUNDLE)" $(DEVELOPMENT_CHANNEL)
+	python3 scripts/verify-macos-debug-app.py "$(APP_BUNDLE)"
 
 # GitHub 托管 runner 不持有 System Extension 的签名证书和 provisioning profile。
 # 这里分别编译 Debug / Release 的扩展与宿主，只验证源码和链接；产物没有签名、不可分发。
-ci-macos-build: cli cli-debug cli-next libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
-	@set -e; for configuration in Debug Next Release NextRelease; do \
+ci-macos-build: cli cli-debug libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
+	@set -e; for configuration in Debug Release; do \
 		xcodebuild -project macos/XDial.xcodeproj -scheme XDialTransparentProxy \
 			-configuration "$$configuration" -destination 'platform=macOS,arch=arm64' \
 			-derivedDataPath $(BUILD_DIR)/macos-xcode-ci CODE_SIGNING_ALLOWED=NO build; \
 		xcodebuild -project macos/XDial.xcodeproj -scheme XDial \
 			-configuration "$$configuration" -destination 'platform=macOS,arch=arm64' \
 			-derivedDataPath $(BUILD_DIR)/macos-xcode-ci CODE_SIGNING_ALLOWED=NO build; \
-		case "$$configuration" in Debug) product_name='XDial Debug';; Next*) product_name='XDial Next';; *) product_name=XDial;; esac; \
+		case "$$configuration" in Debug) product_name='XDial Debug';; *) product_name=XDial;; esac; \
 		test "$$(plutil -extract LSUIElement raw "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app/Contents/Info.plist")" = true; \
 		python3 $(MACOS_DEPLOYMENT_VERIFIER) "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app" >/dev/null; \
+		python3 $(MACOS_COMPONENT_NAMES_VERIFIER) "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app" "$$product_name" >/dev/null; \
 	done
 
 # Release 的 marketing version 只来自 RELEASE_TAG；build number 是独立、
@@ -341,23 +356,28 @@ release-inputs:
 	@python3 -c 'import re,sys; sys.exit(0 if not sys.argv[1] or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,79}", sys.argv[1]) else "invalid update acceptance ID")' "$(RELEASE_UPDATE_ACCEPTANCE_ID)"
 	@if [ -z "$(RELEASE_UPDATE_ACCEPTANCE_ID)" ]; then \
 		git fetch --no-tags origin \
-			+refs/heads/main:refs/remotes/origin/main || exit 1; \
+			+refs/heads/$(RELEASE_BRANCH):refs/remotes/origin/$(RELEASE_BRANCH)$(RELEASE_TAG_REFSPEC) || exit 1; \
 		$(RELEASE_CONTRACT) assert-git-tag "$(RELEASE_TAG)"; \
 	else \
-		echo "acceptance build: stable tag/main gate is intentionally skipped"; \
+		echo "acceptance build: $(RELEASE_CHANNEL) tag/$(RELEASE_BRANCH) gate is intentionally skipped"; \
 	fi
 
-release-app: release-inputs libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
+# Go 按编译时的 git status 记录 helper 的 vcs.modified，而图标目标会重写已跟踪的
+# .icns，所以 helper 紧跟在确认工作树干净的 release-inputs 之后、其他前置目标之前编译。
+release-helper: release-inputs $(PATCHED_WORKFILE)
 	@mkdir -p $(BUILD_DIR)
 	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -trimpath \
 		-ldflags "-X main.version=$(RELEASE_TAG) -s -w" \
 		-o $(BUILD_DIR)/xdial ./cmd/xdial/
+
+release-app: release-helper libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDialTransparentProxy -configuration Release \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath $(BUILD_DIR)/macos-xcode-release \
 		MARKETING_VERSION="$(RELEASE_VERSION)" \
 		CURRENT_PROJECT_VERSION="$(RELEASE_BUILD_NUMBER)" \
 		XDIAL_UPDATE_ACCEPTANCE_ID="$(RELEASE_UPDATE_ACCEPTANCE_ID)" \
+		XDIAL_RELEASE_TAG="$(RELEASE_TAG)" \
 		build
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDial -configuration Release \
 		-destination 'platform=macOS,arch=arm64' \
@@ -365,6 +385,7 @@ release-app: release-inputs libbox-macos-xcframework macos/AppIcon.icns macos/Se
 		MARKETING_VERSION="$(RELEASE_VERSION)" \
 		CURRENT_PROJECT_VERSION="$(RELEASE_BUILD_NUMBER)" \
 		XDIAL_UPDATE_ACCEPTANCE_ID="$(RELEASE_UPDATE_ACCEPTANCE_ID)" \
+		XDIAL_RELEASE_TAG="$(RELEASE_TAG)" \
 		build
 	@test "$$(plutil -extract LSUIElement raw '$(BUILD_DIR)/macos-xcode-release/Build/Products/Release/XDial.app/Contents/Info.plist')" = true
 	rm -rf "$(RELEASE_BUNDLE)"
@@ -389,61 +410,23 @@ release: release-app
 # 使用操作者现有 gh 登录；不把跨仓库凭据嵌入 App 或 Actions。
 publish:
 	@test -z "$(RELEASE_UPDATE_ACCEPTANCE_ID)" || { \
-		echo "error: an acceptance build cannot be published to stable" >&2; \
+		echo "error: an acceptance build cannot be published to $(RELEASE_CHANNEL)" >&2; \
 		exit 1; \
 	}
-	python3 scripts/publish-release.py "$(RELEASE_TAG)"
-
-# Next has a dedicated branch, identity and GitHub prerelease; it never publishes to stable.
-NEXT_RELEASE_CONTRACT = XDIAL_RELEASE_CHANNEL=next $(RELEASE_CONTRACT)
-NEXT_RELEASE_BUNDLE := $(BUILD_DIR)/next-release/XDial Next.app
-NEXT_RELEASE_VERSION = $(patsubst next-v%,%,$(RELEASE_TAG))
-NEXT_RELEASE_ARCHIVE = $(BUILD_DIR)/next-release/XDial-Next-$(RELEASE_TAG).zip
-NEXT_RELEASE_SOURCE = $(shell git rev-parse HEAD)
-MACOS_NEXT_RELEASE_XCODEBUILD_FLAGS ?=
-
-.PHONY: release-next-inputs release-next-app release-next publish-next
-release-next-inputs:
-	@$(NEXT_RELEASE_CONTRACT) validate-inputs "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)"
-	@$(NEXT_RELEASE_CONTRACT) validate-notes "$(RELEASE_TAG)" NEXT_RELEASE_NOTES.md
-	@git fetch --no-tags origin refs/heads/xdial-next:refs/remotes/origin/xdial-next
-	@$(NEXT_RELEASE_CONTRACT) assert-git-tag "$(RELEASE_TAG)"
-	@bash scripts/check-public-content.sh
-
-release-next-app: release-next-inputs libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
-	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -trimpath \
-		-ldflags "-X main.version=$(RELEASE_TAG) -X main.buildFlavor=next -s -w" \
-		-o $(BUILD_DIR)/xdial-next-release ./cmd/xdial/
-	@set -e; for scheme in XDialTransparentProxy XDial; do \
-		xcodebuild -project macos/XDial.xcodeproj -scheme "$$scheme" -configuration NextRelease \
-			-destination 'platform=macOS,arch=arm64' \
-			-derivedDataPath $(BUILD_DIR)/macos-next-release \
-			XDIAL_HELPER_SOURCE="$(BUILD_DIR_ABS)/xdial-next-release" \
-			MARKETING_VERSION="$(NEXT_RELEASE_VERSION)" \
-			CURRENT_PROJECT_VERSION="$(RELEASE_BUILD_NUMBER)" \
-			XDIAL_SOURCE_REVISION="$(NEXT_RELEASE_SOURCE)" \
-			$(MACOS_NEXT_RELEASE_XCODEBUILD_FLAGS) build; \
-	done
-	rm -rf "$(NEXT_RELEASE_BUNDLE)"
-	ditto "$(BUILD_DIR)/macos-next-release/Build/Products/NextRelease/XDial Next.app" "$(NEXT_RELEASE_BUNDLE)"
-	@$(NEXT_RELEASE_CONTRACT) verify-app "$(NEXT_RELEASE_BUNDLE)" "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)"
-
-release-next: release-next-app
-	@$(NEXT_RELEASE_CONTRACT) notarize "$(NEXT_RELEASE_BUNDLE)" "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)" "$(BUILD_DIR)/next-release/notarization.json"
-	@$(NEXT_RELEASE_CONTRACT) archive "$(NEXT_RELEASE_BUNDLE)" "$(RELEASE_TAG)" "$(BUILD_DIR)/next-release"
-	@$(NEXT_RELEASE_CONTRACT) verify-archive "$(NEXT_RELEASE_ARCHIVE)" "$(RELEASE_TAG)" "$(RELEASE_BUILD_NUMBER)"
-	@echo "Next release archive: $(NEXT_RELEASE_ARCHIVE)"
-
-publish-next:
-	python3 scripts/publish-next-release.py "$(RELEASE_TAG)"
+	python3 scripts/publish-release.py --channel "$(RELEASE_CHANNEL)" \
+		$(if $(RELEASE_BETA_FOLLOWUP),--beta-followup "$(RELEASE_BETA_FOLLOWUP)" )"$(RELEASE_TAG)"
 
 # 一键重启：先完整构建并签名新版本，成功后才让旧实例完成网络回滚并退出。
 # 构建目录中的进程紧接着执行无 UI 的原子安装，然后只启动
 # /Applications 中的最终版本。外网验收必须放在新事务提交之后，
 # 不得在旧实例退出与新实例启动之间扩大断网窗口。
 # 构建失败不得影响正在运行的旧实例。
+# 构建前拒绝回退已装 Debug 里当前 HEAD 没有的提交；构建耗时较长，
+# 安装前再查一次，挡住构建期间其他工作区装上的 Debug。
 restart:
-	@$(MAKE) app DEVELOPMENT_CHANNEL=debug DEBUG_BUILD_VERSION=$(DEBUG_BUILD_VERSION)
+	@bash scripts/check-debug-rollback.sh
+	@$(MAKE) app DEBUG_BUILD_VERSION=$(DEBUG_BUILD_VERSION)
+	@bash scripts/check-debug-rollback.sh
 	@bash scripts/restart-macos-app.sh "$(BUILD_DIR_ABS)/XDial Debug.app" \
 		"$(MACOS_APP_LAUNCHER_ABS)"
 

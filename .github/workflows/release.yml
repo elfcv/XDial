@@ -34,13 +34,32 @@ jobs:
       - name: Resolve release build identity
         run: echo "RELEASE_BUILD_NUMBER=$(date -u +%s)" >> "$GITHUB_ENV"
 
+      # tags: v* also matches beta tags. The tag's shape picks the channel, and
+      # the release contract then validates the tag strictly for it.
+      - name: Resolve release channel
+        run: |
+          case "$RELEASE_TAG" in
+            *-beta*) channel=beta notes=BETA_RELEASE_NOTES.md ;;
+            *) channel=stable notes=RELEASE_NOTES.md ;;
+          esac
+          echo "RELEASE_CHANNEL=$channel" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES_FILE=$notes" >> "$GITHUB_ENV"
+
       - name: Validate public repository, tag, notes, and content gate
         run: |
           test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)" = public
+          export XDIAL_RELEASE_CHANNEL="$RELEASE_CHANNEL"
           scripts/release-contract.sh validate-inputs "$RELEASE_TAG" "$RELEASE_BUILD_NUMBER"
-          scripts/release-contract.sh validate-notes "$RELEASE_TAG" RELEASE_NOTES.md
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          scripts/release-contract.sh validate-notes "$RELEASE_TAG" "$RELEASE_NOTES_FILE"
+          release_branch="$(scripts/release-contract.sh release-branch)"
+          git fetch --no-tags origin \
+            "+refs/heads/$release_branch:refs/remotes/origin/$release_branch"
           scripts/release-contract.sh assert-git-tag "$RELEASE_TAG"
+          if [ "$RELEASE_CHANNEL" = beta ]; then
+            # Formats shared with stable evolve only through main.
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            scripts/check-beta-shared-formats.sh origin/main HEAD
+          fi
           make public-content-gate
 
       - uses: actions/setup-go@v7
@@ -120,27 +139,53 @@ jobs:
         run: |
           make release \
             RELEASE_TAG="$RELEASE_TAG" \
+            RELEASE_CHANNEL="$RELEASE_CHANNEL" \
+            RELEASE_NOTES_FILE="$RELEASE_NOTES_FILE" \
             RELEASE_BUILD_NUMBER="$RELEASE_BUILD_NUMBER" \
             NOTARY_KEY="$NOTARY_KEY" \
             NOTARY_KEY_ID="$NOTARY_KEY_ID" \
             NOTARY_ISSUER="$NOTARY_ISSUER"
 
+      # Official CI only: preset configuration packages share the release
+      # contract but are not necessarily built from a clean tag checkout.
+      - name: Verify the shipped helper comes from the clean tagged commit
+        run: |
+          shipped="$RUNNER_TEMP/xdial-shipped"
+          rm -rf "$shipped"
+          mkdir -p "$shipped"
+          /usr/bin/ditto -x -k "build/release/XDial-${RELEASE_TAG}.zip" "$shipped"
+          scripts/verify-release-helper-source.sh "$shipped/XDial.app" "$RELEASE_TAG"
+
       - name: Stage immutable release assets for verification
         run: |
           python3 - <<'PY'
-          import plistlib
-          with open('build/release/XDial.app/Contents/Info.plist', 'rb') as stream:
-              info = plistlib.load(stream)
+          import os, plistlib, zipfile
+          tag = os.environ['RELEASE_TAG']
+          with zipfile.ZipFile(f'build/release/XDial-{tag}.zip') as archive:
+              names = archive.namelist()
+              info = plistlib.loads(archive.read('XDial.app/Contents/Info.plist'))
           acceptance_id = info.get('XDialUpdateAcceptanceID', '')
-          assert isinstance(acceptance_id, str) and not acceptance_id, 'acceptance builds cannot enter a public stable release'
+          assert isinstance(acceptance_id, str) and not acceptance_id, 'acceptance builds cannot enter a public release'
+          # Official releases of both channels: clients identify the installed
+          # release by XDialReleaseTag, and a first-launch Profile or private
+          # rule set presets belong only to preset configuration packages.
+          assert info.get('XDialReleaseTag') == tag, f'XDialReleaseTag must be {tag}'
+          private = sorted(name for name in names if {'SeedProfile', 'RuleSetPresets.json'} & set(name.split('/')))
+          assert not private, f'official releases must not embed private configuration: {private}'
           PY
+          listing=()
+          if [ "$RELEASE_CHANNEL" = beta ]; then
+            # Never Latest: publish-release.py refuses stable while Latest is not stable.
+            listing=(--prerelease --latest=false)
+          fi
           gh release create "$RELEASE_TAG" \
             "build/release/XDial-${RELEASE_TAG}.zip" \
             "build/release/XDial-${RELEASE_TAG}.zip.sha256" \
             --verify-tag \
             --draft \
+            ${listing[@]+"${listing[@]}"} \
             --title "XDial $RELEASE_TAG" \
-            --notes-file RELEASE_NOTES.md
+            --notes-file "$RELEASE_NOTES_FILE"
 
       - name: Remove temporary signing keychain
         if: always()

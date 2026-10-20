@@ -10,13 +10,17 @@ import (
 
 // TailscaleHostnameForChannel names a local runtime without changing its state
 // path, keys, or the shared Profile. Applying it repeatedly is idempotent.
+// channel is the installation identity, not the update channel: Debug is
+// "debug" and every other value, beta and the retired Next included, is the
+// formal identity's "stable", so a beta keeps the formal node's name.
 func TailscaleHostnameForChannel(hostname, profileID, channel string) string {
-	switch channel {
-	case "debug", "next":
-	default:
+	if channel != "debug" {
 		channel = "stable"
 	}
 	base := strings.ToLower(strings.TrimSpace(hostname))
+	// xdial-next- stays strippable: Next's Debug import (d2aff02, until
+	// 76e746c) saved xdial-next-<id8> as a Profile hostname, and the shared
+	// library may still hold it.
 	for _, prefix := range []string{"xdial-debug-", "xdial-next-", "xdial-stable-", "xdial-"} {
 		if strings.HasPrefix(base, prefix) {
 			base = strings.TrimPrefix(base, prefix)

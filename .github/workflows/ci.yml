@@ -2,10 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, xdial-beta]
   pull_request:
 
 jobs:
+  # Beta shares the formal identity, configuration library, App Group and
+  # helper with stable, so xdial-beta may not change the files whose formats
+  # evolve only through main. This job only reports; release.yml and
+  # publish-release.py run the same script before a beta is built or public.
+  beta-shared-formats:
+    name: xdial-beta keeps main's shared formats
+    if: github.ref == 'refs/heads/xdial-beta' || github.base_ref == 'xdial-beta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: dependencies, patches and configuration library format match main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          scripts/check-beta-shared-formats.sh origin/main HEAD
+
   go:
     name: Go (lint + vet + test)
     runs-on: ubuntu-latest
@@ -62,3 +80,11 @@ jobs:
         run: make ci-macos-build
       - name: connection transaction tests
         run: make test-macos-transaction MACOS_TEST_XCODEBUILD_FLAGS=CODE_SIGNING_ALLOWED=NO
+      # The Debug run above only reaches the Debug identity's branches; the
+      # formal identity (stable and beta releases) is asserted here.
+      - name: formal identity tests (Release configuration, unsigned)
+        run: |
+          xcodebuild -project macos/XDial.xcodeproj -scheme XDialTests \
+            -configuration Release -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/macos-tests-release \
+            CODE_SIGNING_ALLOWED=NO test

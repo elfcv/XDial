@@ -66,11 +66,6 @@ enum ProfileDocumentService {
         return try JSONDecoder().decode(Profile.self, from: Data(result.utf8))
     }
 
-    static func importExistingDebug(id: String) throws -> Profile {
-        let original = try ExistingXDialProfileReader.readDebug()
-        return try convertLegacyProfile(original, id: id)
-    }
-
     static func convertLegacyProfile(_ original: Profile, id: String) throws -> Profile {
         var imported = try copy(original, id: id)
         if imported.lines.contains(where: { $0.type == "tailscale" }) {

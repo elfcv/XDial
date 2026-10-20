@@ -28,7 +28,9 @@ final class ConfigurationDataDeletionTests: XCTestCase {
     }
 
     func testOtherRunningVersionsBlockSharedDataDeletion() throws {
-        for current in ["com.kafeifei.xdial.next", "com.kafeifei.xdial.debug", "com.kafeifei.xdial.app"] {
+        // A running retired Next can still write its data back, so it blocks too.
+        XCTAssertTrue(ConfigurationDataDeletion.applicationIdentifiers.contains("com.kafeifei.xdial.next"))
+        for current in ["com.kafeifei.xdial.debug", "com.kafeifei.xdial.app"] {
             XCTAssertNoThrow(try ConfigurationDataDeletion.validateExclusiveAccess(runningIdentifiers: [current, "com.apple.finder"], currentIdentifier: current))
             for other in ConfigurationDataDeletion.applicationIdentifiers where other != current {
                 XCTAssertThrowsError(try ConfigurationDataDeletion.validateExclusiveAccess(runningIdentifiers: [current, other], currentIdentifier: current))

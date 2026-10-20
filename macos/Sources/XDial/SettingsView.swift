@@ -2383,8 +2383,8 @@ struct ScenarioRow: View {
                                 .foregroundStyle(XDialPalette.danger)
                         } else if state.wifiSSIDAccessState == .denied {
                             Text(state.tr(
-                                "需要在系统设置中允许 XDial 访问位置，macOS 才会提供 SSID。",
-                                "Allow XDial location access in System Settings so macOS can provide the SSID."
+                                "需要在系统设置中允许 \(XDialBuildIdentity.applicationDisplayName) 访问位置，macOS 才会提供 SSID。",
+                                "Allow \(XDialBuildIdentity.applicationDisplayName) location access in System Settings so macOS can provide the SSID."
                             ))
                             .font(.caption2)
                             .foregroundStyle(.secondary)

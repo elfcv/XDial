@@ -265,13 +265,30 @@ final class DebugServer {
             ApplicationWindowLifecycleController.shared.diagnostics
         dict["menuBarRecovery"] = MenuBarRecoveryController.shared.diagnostics
         if let updater = AppUpdateChecker.current {
+            let buildNotNewer: Any = updater.lastBuildNotNewer.map {
+                [
+                    "channel": $0.detail.channel.rawValue,
+                    "tag": $0.detail.tag,
+                    "build": $0.detail.build,
+                    "installedBuild": $0.detail.installedBuild,
+                    "at": ISO8601DateFormatter().string(from: $0.at),
+                ] as [String: Any]
+            } ?? ""
             dict["appUpdate"] = [
                 "phase": updater.phase.rawValue,
                 "available": updater.isUpdateAvailable,
                 "version": updater.releaseCandidate?.version ?? "",
+                "tag": updater.releaseCandidate?.tag ?? "",
+                "channel": updater.releaseCandidate?.channel.rawValue ?? "",
+                "preference": updater.receivesBetaUpdates
+                    ? AppUpdateChannel.beta.rawValue
+                    : AppUpdateChannel.stable.rawValue,
+                "installedTag": updater.installedRelease.displayTag,
                 "downloadProgress": updater.downloadProgress,
                 "failureCode": updater.failure?.code.rawValue ?? "",
                 "failureDetail": updater.failure?.detail ?? "",
+                "secondaryNotice": updater.secondaryNotice ?? "",
+                "lastBuildNotNewer": buildNotNewer,
             ] as [String: Any]
         }
 
@@ -688,10 +705,6 @@ final class DebugServer {
                 "configDirty": state.configDirty,
             ]
             return ok(result)
-        #if XDIAL_NEXT_IDENTITY
-        case "reimport-profile-scenario", "separate-imported-rule-resources", "group-rules-by-destination", "compact-profile-rule-sets":
-            return ("409 Conflict", json(["error": "Legacy per-Profile routing migrations are unavailable for the global configuration library"]))
-        #endif
         case "open-settings":
             // Editor navigation only: never select a runtime Scenario or save
             // configuration while reproducing a settings layout problem.
@@ -728,19 +741,60 @@ final class DebugServer {
                     "error": "AppUpdateChecker unavailable",
                 ]))
             }
-            let version = obj["version"] as? String ?? "99.0.0"
-            guard VersionUpdatePolicy.stableVersion(
-                fromTag: "v\(version)"
-            ) == version else {
+            let version: String
+            let tag: String
+            if let rawTag = obj["tag"] as? String {
+                guard let parsed = ReleaseTag(rawTag),
+                      (obj["version"] as? String).map({
+                          $0 == parsed.version
+                      }) ?? true else {
+                    return ("400 Bad Request", json([
+                        "error": "invalid release tag",
+                    ]))
+                }
+                version = parsed.version
+                tag = parsed.description
+            } else {
+                version = obj["version"] as? String ?? "99.0.0"
+                guard VersionUpdatePolicy.stableVersion(
+                    fromTag: "v\(version)"
+                ) == version else {
+                    return ("400 Bad Request", json([
+                        "error": "invalid numeric version",
+                    ]))
+                }
+                tag = "v\(version)"
+            }
+            let channel: AppUpdateChannel
+            if let rawChannel = obj["channel"] as? String {
+                guard let parsed = AppUpdateChannel(rawValue: rawChannel)
+                else {
+                    return ("400 Bad Request", json([
+                        "error": "channel must be stable or beta",
+                    ]))
+                }
+                channel = parsed
+            } else {
+                channel = ReleaseTag(tag)?.isBeta == true ? .beta : .stable
+            }
+            // Real feeds never pair a beta tag with stable or the reverse.
+            guard (ReleaseTag(tag)?.isBeta == true) == (channel == .beta)
+            else {
                 return ("400 Bad Request", json([
-                    "error": "invalid numeric version",
+                    "error": "channel does not match the tag",
                 ]))
             }
-            updater.injectFakeRelease(version: version)
+            updater.injectFakeRelease(
+                version: version,
+                tag: tag,
+                channel: channel
+            )
             return ok([
                 "ok": true,
                 "phase": updater.phase.rawValue,
                 "version": version,
+                "tag": tag,
+                "channel": channel.rawValue,
             ])
         case "clear-update":
             guard let updater = AppUpdateChecker.current else {

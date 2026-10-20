@@ -1,14 +1,15 @@
 import Foundation
 
 /// Compile-time product identity shared by the host, helper-facing code,
-/// Settings carrier, and Network Extension. FormalDevelopment and Release use
-/// the established production identity; only Debug defines
-/// XDIAL_DEVELOPMENT_IDENTITY.
+/// Settings carrier, and Network Extension. There are exactly two: Debug
+/// defines XDIAL_DEVELOPMENT_IDENTITY; FormalDevelopment and Release use the
+/// established production identity, which beta releases share unchanged.
 enum XDialBuildIdentity {
+    /// Names the installation identity, not the update channel: a beta is a
+    /// formal build and must report "stable" so its Tailscale node keeps the
+    /// formal device name.
     static var tailscaleDeviceChannel: String {
-        #if XDIAL_NEXT_IDENTITY
-        return "next"
-        #elseif XDIAL_DEVELOPMENT_IDENTITY
+        #if XDIAL_DEVELOPMENT_IDENTITY
         return "debug"
         #else
         return "stable"
@@ -39,34 +40,7 @@ enum XDialBuildIdentity {
     static let legacyTransparentProxyIdentifier =
         "com.kafeifei.xdial.transparent-proxy"
 
-    #if XDIAL_NEXT_IDENTITY
-    static let isDevelopment = true
-    static let applicationIdentifier = "com.kafeifei.xdial.next"
-    static let helperIdentifier = "com.kafeifei.xdial.next.helper"
-    static let daemonIdentifier = "com.kafeifei.xdial.next.daemon"
-    static let transparentProxyIdentifier =
-        "com.kafeifei.xdial.next.transparent-proxy"
-    static let settingsUIIdentifier = "com.kafeifei.xdial.next.settings-ui"
-    static let appGroupIdentifier =
-        "UVZM439VGU.com.kafeifei.xdial.next.network"
-    static let applicationBundleName = "XDial Next.app"
-    static let previousApplicationBundleNames: [String] = []
-    static let applicationDisplayName = "XDial Next"
-    static let productTitle = "XDial Next"
-    static let dataIdentifier = "com.kafeifei.xdial.next"
-    static let userDataDirectoryName = ".xdial-next"
-    static let applicationSupportDirectoryName = "XDial Next"
-    static let logDirectoryName = "XDial Next"
-    static let daemonSocketPath = "/tmp/xdial-next.sock"
-    static let engineRuntimePath = "/tmp/xdial-next-engine"
-    static let daemonLogPath = "/tmp/xdial-next.log"
-    static let registrationMaintenancePath =
-        "/tmp/xdial-next-registration-maintenance"
-    static let debugServerPort: UInt16 = 19878
-    static let allowsAutomaticUpdates = false
-    static let allowsFormalDataMigration = false
-    static let allowsLegacyCleanup = false
-    #elseif XDIAL_DEVELOPMENT_IDENTITY
+    #if XDIAL_DEVELOPMENT_IDENTITY
     static let isDevelopment = true
     static let applicationIdentifier = developmentApplicationIdentifier
     static let helperIdentifier = "com.kafeifei.xdial.debug.helper"
@@ -130,9 +104,10 @@ enum XDialBuildIdentity {
     static let previousApplicationDestinationURLs = previousApplicationBundleNames.map {
         URL(fileURLWithPath: "/Applications/\($0)", isDirectory: true)
     }
-    // Every independently installed channel is a known sibling. In particular,
-    // Next must exclude Debug as well as the formal app when checking whether
-    // its own helper has exited during a registration refresh.
+    // Every independently installed identity is a known sibling: Debug and
+    // the formal app each exclude the other when checking whether their own
+    // helper has exited during a registration refresh. A retired channel is
+    // not listed, so its leftover process stays unknown and pauses maintenance.
     struct InstalledChannel {
         let applicationIdentifier: String
         let bundleName: String
@@ -144,7 +119,6 @@ enum XDialBuildIdentity {
         .init(applicationIdentifier: "com.kafeifei.xdial.debug", bundleName: "XDial Debug.app", daemonSocketPath: "/tmp/xdial-debug.sock"),
         // Debug stays recognizable at its previous path until it migrates.
         .init(applicationIdentifier: "com.kafeifei.xdial.debug", bundleName: "XDail Debug.app", daemonSocketPath: "/tmp/xdial-debug.sock"),
-        .init(applicationIdentifier: "com.kafeifei.xdial.next", bundleName: "XDial Next.app", daemonSocketPath: "/tmp/xdial-next.sock"),
     ]
     static let siblingChannels = installedChannels.filter { $0.applicationIdentifier != applicationIdentifier }
     static let siblingApplicationDestinationURLs = siblingChannels.map(\.bundleURL)
@@ -156,11 +130,13 @@ enum XDialBuildIdentity {
         dataIdentifier + ".settings-dock.dismiss"
     static let providerConfigurationName =
         applicationDisplayName + " Transparent Proxy"
+    /// The extension's CFBundleDisplayName from project.yml, as System
+    /// Settings and `systemextensionsctl` show it. No localization overrides it.
+    static let transparentProxyDisplayName =
+        applicationDisplayName + " Network Extension"
     static let queueLabelPrefix = applicationIdentifier
-    static let updateStagingDirectoryName = applicationIdentifier == "com.kafeifei.xdial.next"
-        ? "XDialNextUpdates" : isDevelopment
+    static let updateStagingDirectoryName = isDevelopment
         ? "XDialDebugUpdates" : "XDialUpdates"
-    static let installationArtifactPrefix = applicationIdentifier == "com.kafeifei.xdial.next"
-        ? ".XDial-next" : isDevelopment
+    static let installationArtifactPrefix = isDevelopment
         ? ".Xdial-debug" : ".XDial"
 }

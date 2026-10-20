@@ -54,6 +54,10 @@ struct MainPopover: View {
                 Divider()
                 connectionBlockerBand(blocker)
             }
+            if state.showsParkedRecoveryNotice {
+                Divider()
+                parkedRecoveryBand
+            }
             if let failure = scenarioSwitchFailureProjection {
                 Divider()
                 scenarioSwitchFailureBand(failure)
@@ -82,10 +86,15 @@ struct MainPopover: View {
         .contextMenu {
             if let candidate = updater.releaseCandidate {
                 Button(
-                    state.tr(
-                        "新版本 v\(candidate.version)…",
-                        "New Version v\(candidate.version)…"
-                    )
+                    candidate.channel == .beta
+                        ? state.tr(
+                            "beta 版本 \(candidate.tag)…",
+                            "Beta Version \(candidate.tag)…"
+                        )
+                        : state.tr(
+                            "新版本 \(candidate.tag)…",
+                            "New Version \(candidate.tag)…"
+                        )
                 ) {
                     presentUpdateWindow()
                 }
@@ -187,8 +196,18 @@ struct MainPopover: View {
                         Circle()
                             .fill(XDialPalette.danger)
                             .frame(width: 5, height: 5)
-                        Text("v\(candidate.version)")
-                            .font(.system(size: 10.5, weight: .semibold))
+                        // A beta shows its X.Y.Z with the window's Beta mark
+                        // carrying beta.N, about as wide as the bare tag.
+                        if candidate.channel == .beta,
+                           let tag = candidate.releaseTag,
+                           let beta = tag.beta {
+                            Text(verbatim: "v\(tag.version)")
+                                .font(.system(size: 10.5, weight: .semibold))
+                            AppUpdateBetaBadge(text: "beta.\(beta)")
+                        } else {
+                            Text(candidate.tag)
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
                     }
                     .foregroundStyle(XDialPalette.warning)
                     .padding(.horizontal, 7)
@@ -207,10 +226,15 @@ struct MainPopover: View {
                 .buttonStyle(.plain)
                 .help(state.tr("打开 XDial 更新", "Open XDial Update"))
                 .accessibilityLabel(
-                    state.tr(
-                        "新版本 v\(candidate.version) 可用",
-                        "New version v\(candidate.version) available"
-                    )
+                    candidate.channel == .beta
+                        ? state.tr(
+                            "beta 版本 \(candidate.tag) 可用",
+                            "Beta version \(candidate.tag) available"
+                        )
+                        : state.tr(
+                            "新版本 \(candidate.tag) 可用",
+                            "New version \(candidate.tag) available"
+                        )
                 )
             }
             Spacer()
@@ -665,6 +689,48 @@ struct MainPopover: View {
                 endPoint: .trailing
             )
         }
+    }
+
+    /// Automatic reconnect used up its budget on a network-related failure.
+    /// The failure itself stays in the details below; this band only states
+    /// that recovery is waiting for a network change and offers a retry with
+    /// a fresh budget.
+    private var parkedRecoveryBand: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(warningColor)
+                .padding(.top, 1)
+            Text(state.tr(
+                "自动重连已暂停，网络变化时会再试",
+                "Automatic reconnect paused; it will retry when the network changes"
+            ))
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(.primary.opacity(0.82))
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 6)
+            Button(state.tr("立即重试", "Retry Now")) {
+                state.retryAutomaticReconnectNow()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .fixedSize()
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            LinearGradient(
+                colors: [
+                    warningColor.opacity(0.075),
+                    warningColor.opacity(0.025),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        }
+        .accessibilityElement(children: .contain)
     }
 
     private var ssidAccessWarningBand: some View {

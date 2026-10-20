@@ -23,9 +23,10 @@ def plist(path):
 
 def main():
     bundle = pathlib.Path(sys.argv[1]).resolve()
+    # Debug is the only development identity; an explicit "debug" is still accepted.
     flavor = sys.argv[2] if len(sys.argv) > 2 else "debug"
-    require(flavor in ("debug", "next"), "unknown development channel")
-    product = "XDial Next" if flavor == "next" else "XDial Debug"
+    require(flavor == "debug", "unknown development channel")
+    product = "XDial Debug"
     prefix = "com.kafeifei.xdial." + flavor
     require(bundle.name == product + ".app", "unexpected development app filename")
     deployment_verifier = pathlib.Path(__file__).with_name(
@@ -52,6 +53,14 @@ def main():
     host = plist(bundle / "Contents/Info.plist")
     require(host.get("CFBundleExecutable") == "XDial", "unexpected host executable")
     require(host.get("CFBundleDisplayName") == product, "unexpected development display name")
+    names_result = subprocess.run(
+        [sys.executable, str(pathlib.Path(__file__).with_name("verify-macos-component-names.py")),
+         str(bundle), product],
+        capture_output=True,
+        text=True,
+    )
+    require(names_result.returncode == 0,
+            names_result.stderr.strip() or "component names do not follow the development identity")
     require(host.get("XDialBuildFlavor") == flavor, "bundle is not a development build")
     require(host.get("XDialTransparentProxyBundleIdentifier") == components[2][1],
             "host points to another channel's extension")

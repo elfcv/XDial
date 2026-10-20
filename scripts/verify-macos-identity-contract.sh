@@ -82,6 +82,18 @@ assert_plist_nonempty() {
 [[ -f "$project_path/project.pbxproj" ]] \
     || fail "generated Xcode project is missing: $project_path"
 
+# Exactly two identities: Debug and the formal one. A beta release is a
+# Release build, so no other configuration may exist.
+project_listing="$(/usr/bin/xcodebuild -list -project "$project_path" \
+    2>"$settings_cache/list.stderr")" \
+    || { cat "$settings_cache/list.stderr" >&2; fail "cannot list $project_path"; }
+configurations="$(/usr/bin/awk '/^[[:space:]]*Build Configurations:/ { listing = 1; next }
+        listing && /^[[:space:]]*$/ { listing = 0 }
+        listing { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print }' <<<"$project_listing" \
+    | /usr/bin/sort | /usr/bin/paste -sd ' ' -)"
+[[ "$configurations" == 'Debug FormalDevelopment Release' ]] \
+    || fail "build configurations are '$configurations', expected 'Debug FormalDevelopment Release'"
+
 for configuration in FormalDevelopment Release; do
     assert_setting "$configuration" XDial "$application_identifier"
     assert_setting "$configuration" XDialSettingsUI "$settings_identifier"
@@ -103,43 +115,27 @@ for target in XDial XDialSettingsUI XDialTransparentProxy XDialTests; do
     [[ " $(build_setting Debug "$target" SWIFT_ACTIVE_COMPILATION_CONDITIONS) " == *' XDIAL_DEVELOPMENT_IDENTITY '* ]] \
         || fail "Debug/$target missing development identity condition"
 done
-for configuration in Next NextRelease; do
-    assert_setting "$configuration" XDial com.kafeifei.xdial.next
-    assert_setting "$configuration" XDialSettingsUI com.kafeifei.xdial.next.settings-ui
-    assert_setting "$configuration" XDialTransparentProxy com.kafeifei.xdial.next.transparent-proxy
-    assert_build_setting "$configuration" XDial PRODUCT_NAME 'XDial Next'
-    assert_build_setting "$configuration" XDial EXECUTABLE_NAME XDial
-    assert_build_setting "$configuration" XDial XDIAL_HELPER_IDENTIFIER com.kafeifei.xdial.next.helper
-    assert_build_setting "$configuration" XDial XDIAL_DAEMON_PLIST com.kafeifei.xdial.next.daemon.plist
-    assert_build_setting "$configuration" XDial XDIAL_DAEMON_ENTITLEMENTS XDialDaemonNext.entitlements
+# XDialTests compiles Shared sources without a test host, so its own conditions
+# decide which identity CI's Release test run asserts.
+for configuration in FormalDevelopment Release; do
     for target in XDial XDialSettingsUI XDialTransparentProxy XDialTests; do
         conditions=" $(build_setting "$configuration" "$target" SWIFT_ACTIVE_COMPILATION_CONDITIONS) "
-        [[ "$conditions" == *' XDIAL_NEXT_IDENTITY '* ]] || fail "$configuration/$target missing Next identity"
-        if [[ "$configuration" == NextRelease ]]; then
-            [[ "$conditions" != *' DEBUG '* && "$conditions" != *' XDIAL_DEVELOPMENT_IDENTITY '* ]] \
-                || fail "$configuration/$target contains development flags"
-        fi
-    done
-done
-assert_build_setting Next XDial CODE_SIGN_ENTITLEMENTS XDialNext.entitlements
-assert_build_setting Next XDialTransparentProxy CODE_SIGN_ENTITLEMENTS TransparentProxyExtension/XDialTransparentProxyNext.entitlements
-assert_build_setting NextRelease XDial CODE_SIGN_ENTITLEMENTS XDialNextRelease.entitlements
-assert_build_setting NextRelease XDialTransparentProxy CODE_SIGN_ENTITLEMENTS TransparentProxyExtension/XDialTransparentProxyNextRelease.entitlements
-for target in XDial XDialSettingsUI XDialTransparentProxy; do
-    assert_build_setting NextRelease "$target" CODE_SIGN_IDENTITY 'Developer ID Application'
-    assert_build_setting NextRelease "$target" ENABLE_HARDENED_RUNTIME YES
-    assert_build_setting NextRelease "$target" CODE_SIGN_INJECT_BASE_ENTITLEMENTS NO
-done
-assert_build_setting NextRelease XDial PROVISIONING_PROFILE_SPECIFIER 'XDial Next Developer ID Host'
-assert_build_setting NextRelease XDialTransparentProxy PROVISIONING_PROFILE_SPECIFIER 'XDial Next Developer ID Transparent Proxy'
-for configuration in FormalDevelopment Release; do
-    for target in XDial XDialSettingsUI XDialTransparentProxy; do
-        [[ " $(build_setting "$configuration" "$target" SWIFT_ACTIVE_COMPILATION_CONDITIONS) " != *' XDIAL_DEVELOPMENT_IDENTITY '* ]] \
+        [[ "$conditions" != *' XDIAL_DEVELOPMENT_IDENTITY '* ]] \
             || fail "$configuration/$target incorrectly uses development identity"
+        [[ "$conditions" != *' DEBUG '* ]] \
+            || fail "$configuration/$target compiles DebugServer and other DEBUG code"
     done
     assert_build_setting "$configuration" XDial PRODUCT_NAME XDial
     assert_build_setting "$configuration" XDial XDIAL_HELPER_IDENTIFIER com.kafeifei.xdial.app.helper
     assert_build_setting "$configuration" XDial XDIAL_DAEMON_PLIST com.kafeifei.xdial.app.daemon.plist
+done
+for target in XDial XDialSettingsUI XDialTransparentProxy; do
+    assert_build_setting Debug "$target" XDIAL_PRODUCT_DISPLAY_NAME 'XDial Debug'
+    assert_build_setting Debug "$target" XDIAL_BUILD_FLAVOR debug
+    for configuration in FormalDevelopment Release; do
+        assert_build_setting "$configuration" "$target" XDIAL_PRODUCT_DISPLAY_NAME XDial
+        assert_build_setting "$configuration" "$target" XDIAL_BUILD_FLAVOR release
+    done
 done
 for target in XDial XDialSettingsUI XDialTransparentProxy; do
     assert_build_setting Debug "$target" CODE_SIGN_IDENTITY 'Apple Development'
@@ -176,23 +172,57 @@ PYTHON
 
 python3 - <<'PYTHON'
 import pathlib, plistlib
-for path in ["XDialNext.entitlements", "XDialNextRelease.entitlements", "XDialDaemonNext.entitlements", "TransparentProxyExtension/XDialTransparentProxyNext.entitlements", "TransparentProxyExtension/XDialTransparentProxyNextRelease.entitlements"]:
-    value = plistlib.loads((pathlib.Path("macos") / path).read_bytes())
-    assert value["com.apple.security.application-groups"] == ["UVZM439VGU.com.kafeifei.xdial.next.network"], path
-value = plistlib.loads(pathlib.Path("macos/com.kafeifei.xdial.next.daemon.plist").read_bytes())
-assert value["Label"] == "com.kafeifei.xdial.next.daemon"
-assert "/tmp/xdial-next.sock" in value["ProgramArguments"]
-assert value["AssociatedBundleIdentifiers"] == ["com.kafeifei.xdial.next"]
-assert value["StandardOutPath"] == value["StandardErrorPath"] == "/tmp/xdial-next.log"
-PYTHON
-
-python3 - <<'PYTHON'
-import pathlib, plistlib
-for channel, name in [("debug", "XDial Debug"), ("next", "XDial Next"), ("app", "XDial")]:
+for channel, name in [("debug", "XDial Debug"), ("app", "XDial")]:
     path = pathlib.Path(f"macos/com.kafeifei.xdial.{channel}.daemon.plist")
     value = plistlib.loads(path.read_bytes())
     assert value["Program"] == f"/Applications/{name}.app/Contents/MacOS/xdial-daemon", path
     assert "BundleProgram" not in value, path
 PYTHON
 
-echo "macOS Next and development isolation, formal identity, and location-access contracts verified"
+# System Settings shows each component by CFBundleDisplayName. The name comes
+# only from XDIAL_PRODUCT_DISPLAY_NAME; a localization would pin it to one identity.
+python3 - <<'PYTHON'
+import json, pathlib, plistlib, subprocess
+for path in sorted(pathlib.Path("macos").rglob("*.lproj/InfoPlist.strings")):
+    values = json.loads(subprocess.check_output(["/usr/bin/plutil", "-convert", "json", "-o", "-", str(path)]))
+    for key in ("CFBundleDisplayName", "CFBundleName"):
+        assert key not in values, f"{path} overrides the identity name with {key}"
+for path, expected in [
+    ("Info.plist", "$(XDIAL_PRODUCT_DISPLAY_NAME)"),
+    ("SettingsDockUI/Info.plist", "$(XDIAL_PRODUCT_DISPLAY_NAME)"),
+    ("TransparentProxyExtension/Info.plist", "$(XDIAL_PRODUCT_DISPLAY_NAME) Network Extension"),
+]:
+    value = plistlib.loads((pathlib.Path("macos") / path).read_bytes()).get("CFBundleDisplayName")
+    assert value == expected, f"macos/{path} CFBundleDisplayName is {value!r}, expected {expected!r}"
+PYTHON
+
+# No configuration defines the retired third identity's condition any more, so
+# code behind it would compile out silently. Release environments may lack rg;
+# git grep exits 1 when nothing matches.
+set +e
+retired_identity_matches="$(git grep -n XDIAL_NEXT_IDENTITY -- macos)"
+retired_identity_status=$?
+set -e
+(( retired_identity_status <= 1 )) || fail "cannot scan macos for XDIAL_NEXT_IDENTITY"
+[[ -z "$retired_identity_matches" ]] \
+    || fail "macos still references XDIAL_NEXT_IDENTITY:"$'\n'"$retired_identity_matches"
+
+# System Settings, the Applications folder, Force Quit and the menu bar show
+# Debug as "XDial Debug". Copy that sends the user there names the app through
+# XDialBuildIdentity.applicationDisplayName, never a literal "XDial".
+python3 - <<'PYTHON'
+import pathlib, re
+surface = re.compile(r"系统设置|System Settings|登录项|Login Items|位置服务|Location Services"
+                     r"|“应用程序”|Applications folder|强制退出|Force Quit|菜单栏|menu bar")
+literal = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+bare_name = re.compile(r"(?<![\w.])XDial(?!\w)")
+failures = [
+    f"{path}:{number}: {line.strip()}"
+    for path in sorted(pathlib.Path("macos").rglob("*.swift")) if "Tests" not in path.parts
+    for number, line in enumerate(path.read_text().splitlines(), 1)
+    if any(surface.search(text) and bare_name.search(text) for text in literal.findall(line))
+]
+assert not failures, "system-surface copy hard-codes XDial:\n" + "\n".join(failures)
+PYTHON
+
+echo "macOS development isolation, formal identity, component-name, system-surface copy, and location-access contracts verified"

@@ -168,7 +168,10 @@ final class AppUpdateCheckerTests: XCTestCase {
 
         var badChannel = try manifestObject()
         badChannel["channel"] = "beta"
-        assertManifestError(.invalidChannel, data: jsonData(badChannel))
+        assertManifestError(
+            .invalidChannel(expected: .stable),
+            data: jsonData(badChannel)
+        )
 
         var badRelease = try manifestObject()
         var release = try XCTUnwrap(
@@ -196,7 +199,7 @@ final class AppUpdateCheckerTests: XCTestCase {
             from: try XCTUnwrap(manifest.release),
             generatedAt: manifest.generatedAt,
             configuration: production,
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0"
         )
         XCTAssertEqual(candidate.tag, "v0.8.0")
@@ -227,7 +230,7 @@ final class AppUpdateCheckerTests: XCTestCase {
                     from: release,
                     generatedAt: manifest.generatedAt,
                     configuration: production,
-                    currentVersion: "0.7.0",
+                    installed: installed("0.7.0"),
                     currentSystemVersion: "15.0"
                 )
             }
@@ -237,7 +240,7 @@ final class AppUpdateCheckerTests: XCTestCase {
                 from: try XCTUnwrap(manifest.release),
                 generatedAt: manifest.generatedAt,
                 configuration: production,
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "14.7"
             )
         }
@@ -246,7 +249,7 @@ final class AppUpdateCheckerTests: XCTestCase {
                 from: try XCTUnwrap(manifest.release),
                 generatedAt: manifest.generatedAt,
                 configuration: production,
-                currentVersion: "0.8.0",
+                installed: installed("0.8.0"),
                 currentSystemVersion: "15.0"
             )
         }
@@ -276,7 +279,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         )
         let checkedAt = Date(timeIntervalSince1970: 1_000)
         let first = try await firstLookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: checkedAt
         )
@@ -312,7 +315,7 @@ final class AppUpdateCheckerTests: XCTestCase {
             defaults: defaults
         )
         let second = try await secondLookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: checkedAt.addingTimeInterval(20)
         )
@@ -331,10 +334,12 @@ final class AppUpdateCheckerTests: XCTestCase {
             now: secondCheckedAt.addingTimeInterval(1)
         )
         XCTAssertEqual(persistedCheckedAt, secondCheckedAt)
-        let checker = AppUpdateChecker(
-            releaseLookup: secondLookup,
-            automaticUpdatesPermitted: { true },
-            pruneStaleStaging: {}
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: secondRecorder.transport,
+                defaults: defaults
+            )
         )
         await checker.waitForTasksForTesting()
         XCTAssertEqual(checker.lastCheckedAt, secondCheckedAt)
@@ -364,14 +369,14 @@ final class AppUpdateCheckerTests: XCTestCase {
         )
 
         let withdrawn = try await lookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: Date(timeIntervalSince1970: 1_000)
         )
         XCTAssertEqual(withdrawn.availability, .noRelease)
 
         let upToDate = try await lookup.check(
-            currentVersion: "0.8.0",
+            installed: installed("0.8.0"),
             currentSystemVersion: "15.0",
             now: Date(timeIntervalSince1970: 1_010)
         )
@@ -396,7 +401,7 @@ final class AppUpdateCheckerTests: XCTestCase {
                 transport: redirected.transport,
                 defaults: try temporaryDefaults()
             ).check(
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "15.0"
             )
             XCTFail("redirected manifest accepted")
@@ -420,7 +425,7 @@ final class AppUpdateCheckerTests: XCTestCase {
                 transport: oversized.transport,
                 defaults: try temporaryDefaults()
             ).check(
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "15.0"
             )
             XCTFail("oversized manifest accepted")
@@ -449,13 +454,13 @@ final class AppUpdateCheckerTests: XCTestCase {
             defaults: defaults
         )
         _ = try await lookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: Date(timeIntervalSince1970: 1_000)
         )
         do {
             _ = try await lookup.check(
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "15.0",
                 now: Date(timeIntervalSince1970: 1_010)
             )
@@ -499,14 +504,14 @@ final class AppUpdateCheckerTests: XCTestCase {
             defaults: try temporaryDefaults()
         )
         _ = try await lookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: Date(timeIntervalSince1970: 1_000)
         )
 
         do {
             _ = try await lookup.check(
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "15.0",
                 now: Date(timeIntervalSince1970: 1_010)
             )
@@ -542,7 +547,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         )
         do {
             _ = try await lookup.check(
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "15.0",
                 now: now
             )
@@ -555,7 +560,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         }
         do {
             _ = try await lookup.check(
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "15.0",
                 now: now.addingTimeInterval(119)
             )
@@ -567,7 +572,7 @@ final class AppUpdateCheckerTests: XCTestCase {
             )
         }
         _ = try await lookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: now.addingTimeInterval(121)
         )
@@ -616,14 +621,14 @@ final class AppUpdateCheckerTests: XCTestCase {
 
         let first = Task {
             try await lookup.check(
-                currentVersion: "0.7.0",
+                installed: installed("0.7.0"),
                 currentSystemVersion: "15.0",
                 now: Date(timeIntervalSince1970: 1_000)
             )
         }
         await transport.waitUntilFirstRequestStarts()
         let second = try await lookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: Date(timeIntervalSince1970: 1_001)
         )
@@ -643,7 +648,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         }
 
         let cached = try await lookup.check(
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0",
             now: Date(timeIntervalSince1970: 1_002)
         )
@@ -670,17 +675,13 @@ final class AppUpdateCheckerTests: XCTestCase {
                 headers: jsonHeaders(etag: "\"withdrawn-two\"")
             )),
         ])
-        let lookup = AppUpdateReleaseLookup(
+        let lookup = AppUpdateChannelLookup(
             configuration: production,
             transport: recorder.transport,
             defaults: try temporaryDefaults()
         )
         let candidate = try releaseCandidate()
-        let checker = AppUpdateChecker(
-            releaseLookup: lookup,
-            automaticUpdatesPermitted: { true },
-            pruneStaleStaging: {}
-        )
+        let checker = makeChecker(lookup)
         await checker.waitForTasksForTesting()
         checker.configureForTesting(
             candidate: candidate,
@@ -706,7 +707,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         let recorder = AppUpdateHTTPRecorder(replies: [
             .failure(.notConnectedToInternet),
         ])
-        let lookup = AppUpdateReleaseLookup(
+        let lookup = AppUpdateChannelLookup(
             configuration: production,
             transport: recorder.transport,
             defaults: try temporaryDefaults()
@@ -718,11 +719,7 @@ final class AppUpdateCheckerTests: XCTestCase {
             rootURL: rootURL,
             applicationURL: rootURL.appendingPathComponent("XDial.app")
         )
-        let checker = AppUpdateChecker(
-            releaseLookup: lookup,
-            automaticUpdatesPermitted: { true },
-            pruneStaleStaging: {}
-        )
+        let checker = makeChecker(lookup)
         await checker.waitForTasksForTesting()
         checker.configureForTesting(
             candidate: candidate,
@@ -753,14 +750,12 @@ final class AppUpdateCheckerTests: XCTestCase {
                 headers: jsonHeaders(etag: "\"manual-one\"")
             )),
         ])
-        let checker = AppUpdateChecker(
-            releaseLookup: AppUpdateReleaseLookup(
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
                 configuration: production,
                 transport: recorder.transport,
                 defaults: try temporaryDefaults()
-            ),
-            automaticUpdatesPermitted: { true },
-            pruneStaleStaging: {}
+            )
         )
         await checker.waitForTasksForTesting()
 
@@ -816,12 +811,46 @@ final class AppUpdateCheckerTests: XCTestCase {
 
     private func manifestData(
         revision: Int = 1,
+        channel: AppUpdateChannel = .stable,
         release: [String: Any]? = [:]
     ) -> Data {
         jsonData(try! manifestObject(
             revision: revision,
+            channel: channel,
             release: release
         ))
+    }
+
+    private func installed(
+        _ version: String,
+        build: String = "1",
+        tag: String? = nil
+    ) -> InstalledRelease {
+        InstalledRelease(
+            shortVersion: version,
+            build: build,
+            releaseTag: tag
+        )
+    }
+
+    @MainActor
+    private func makeChecker(
+        _ lookup: AppUpdateChannelLookup,
+        installed release: InstalledRelease? = nil,
+        preferenceDefaults: UserDefaults? = nil,
+        downloadArchive: AppUpdateChecker.ArchiveDownload? = nil
+    ) -> AppUpdateChecker {
+        let release = release ?? installed("0.7.0")
+        return AppUpdateChecker(
+            releaseLookup: lookup,
+            automaticUpdatesPermitted: { true },
+            installedRelease: { release },
+            preferenceDefaults: preferenceDefaults
+                ?? (try? temporaryDefaults()) ?? .standard,
+            downloadArchive: downloadArchive
+                ?? AppUpdateDownloadRecorder().archiveDownload,
+            pruneStaleStaging: {}
+        )
     }
 
     private func releaseCandidate() throws -> AppUpdateReleaseCandidate {
@@ -830,19 +859,20 @@ final class AppUpdateCheckerTests: XCTestCase {
             from: try XCTUnwrap(manifest.release),
             generatedAt: manifest.generatedAt,
             configuration: production,
-            currentVersion: "0.7.0",
+            installed: installed("0.7.0"),
             currentSystemVersion: "15.0"
         )
     }
 
     private func manifestObject(
         revision: Int = 1,
+        channel: AppUpdateChannel = .stable,
         release: [String: Any]? = [:]
     ) throws -> [String: Any] {
         [
             "schemaVersion": 1,
             "revision": revision,
-            "channel": "stable",
+            "channel": channel.rawValue,
             "generatedAt": "1970-01-01T00:15:00Z",
             "release": release == nil
                 ? NSNull()
@@ -934,11 +964,15 @@ final class AppUpdateCheckerTests: XCTestCase {
     private func assertManifestError(
         _ expected: AppUpdateManifestError,
         data: Data,
+        expectedChannel: AppUpdateChannel = .stable,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
         XCTAssertThrowsError(
-            try AppUpdateManifestParser.parse(data),
+            try AppUpdateManifestParser.parse(
+                data,
+                expectedChannel: expectedChannel
+            ),
             file: file,
             line: line
         ) { error in
@@ -1271,6 +1305,7 @@ final class AppUpdateCheckerTests: XCTestCase {
 
         try AppUpdateRelaunchIntentStore.write(
             targetVersion: "0.8.0",
+            targetBuild: "100",
             reconnectScenarioID: "scenario-office",
             now: now,
             defaults: defaults
@@ -1278,6 +1313,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         XCTAssertEqual(
             AppUpdateRelaunchIntentStore.loadDecision(
                 currentVersion: "0.8.0",
+                currentBuild: "100",
                 activeScenarioID: "scenario-office",
                 now: now.addingTimeInterval(10),
                 defaults: defaults
@@ -1288,6 +1324,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         XCTAssertNil(
             AppUpdateRelaunchIntentStore.loadDecision(
                 currentVersion: "0.8.0",
+                currentBuild: "100",
                 activeScenarioID: "scenario-office",
                 now: now,
                 defaults: defaults
@@ -1296,6 +1333,7 @@ final class AppUpdateCheckerTests: XCTestCase {
 
         try AppUpdateRelaunchIntentStore.write(
             targetVersion: "0.8.0",
+            targetBuild: "100",
             reconnectScenarioID: nil,
             now: now,
             defaults: defaults
@@ -1303,6 +1341,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         XCTAssertEqual(
             AppUpdateRelaunchIntentStore.loadDecision(
                 currentVersion: "0.8.0",
+                currentBuild: "100",
                 activeScenarioID: "scenario-office",
                 now: now,
                 defaults: defaults
@@ -1321,17 +1360,20 @@ final class AppUpdateCheckerTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let now = Date(timeIntervalSince1970: 1000)
 
-        for (version, scenario, age) in [
-            ("0.8.1", "scenario-office", 10.0),
-            ("0.8.0", "scenario-home", 10.0),
+        for (version, build, scenario, age) in [
+            ("0.8.1", "100", "scenario-office", 10.0),
+            ("0.8.0", "101", "scenario-office", 10.0),
+            ("0.8.0", "100", "scenario-home", 10.0),
             (
                 "0.8.0",
+                "100",
                 "scenario-office",
                 AppUpdateRelaunchIntentPolicy.maximumAge + 1
             ),
         ] {
             try AppUpdateRelaunchIntentStore.write(
                 targetVersion: "0.8.0",
+                targetBuild: "100",
                 reconnectScenarioID: "scenario-office",
                 now: now,
                 defaults: defaults
@@ -1339,6 +1381,7 @@ final class AppUpdateCheckerTests: XCTestCase {
             XCTAssertNil(
                 AppUpdateRelaunchIntentStore.loadDecision(
                     currentVersion: version,
+                    currentBuild: build,
                     activeScenarioID: scenario,
                     now: now.addingTimeInterval(age),
                     defaults: defaults
@@ -1436,6 +1479,7 @@ final class AppUpdateCheckerTests: XCTestCase {
 
         try AppUpdateRelaunchIntentStore.write(
             targetVersion: "0.8.0",
+            targetBuild: "100",
             reconnectScenarioID: nil,
             now: now,
             defaults: defaults
@@ -1443,6 +1487,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         XCTAssertTrue(
             AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
                 targetVersion: "0.8.0",
+                targetBuild: "100",
                 now: now.addingTimeInterval(10),
                 defaults: defaults
             )
@@ -1450,6 +1495,7 @@ final class AppUpdateCheckerTests: XCTestCase {
         XCTAssertFalse(
             AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
                 targetVersion: "0.8.1",
+                targetBuild: "100",
                 now: now.addingTimeInterval(10),
                 defaults: defaults
             )
@@ -1457,12 +1503,1878 @@ final class AppUpdateCheckerTests: XCTestCase {
         XCTAssertFalse(
             AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
                 targetVersion: "0.8.0",
+                targetBuild: "100",
+                now: now.addingTimeInterval(10),
+                defaults: defaults
+            )
+        )
+
+        // Schema 2 binds the build: a beta and its stable release share X.Y.Z.
+        try AppUpdateRelaunchIntentStore.write(
+            targetVersion: "0.8.0",
+            targetBuild: "100",
+            reconnectScenarioID: nil,
+            now: now,
+            defaults: defaults
+        )
+        XCTAssertFalse(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                targetVersion: "0.8.0",
+                targetBuild: "99",
                 now: now.addingTimeInterval(10),
                 defaults: defaults
             )
         )
     }
 
+    // MARK: - Release channels
+
+    func testReleaseTagAcceptsOnlyStrictTagsAndOrdersBySemVer() {
+        for accepted in [
+            "v0.0.0", "v1.2.3", "v10.20.30",
+            "v1.4.0-beta.1", "v1.4.0-beta.12",
+        ] {
+            XCTAssertEqual(
+                ReleaseTag(accepted)?.description,
+                accepted,
+                accepted
+            )
+        }
+        for rejected in [
+            "", "1.2.3", "V1.2.3", "v1.2", "v1.2.3.4", "v01.2.3",
+            "v1.02.3", "v1.2.03", "v1.2.3-rc.1", "v1.2.3-beta.0",
+            "v1.2.3-beta.01", "v1.2.3-beta", "v1.2.3-beta.",
+            "v1.2.3-Beta.1", "v1.2.3-beta.1.2", "v1.2.3-",
+            "v1.2.3+1", "v1.2.3 ", " v1.2.3", "v1.2.3-beta.-1",
+            "v99999999999999999999.0.0", "v\u{FF11}.2.3",
+        ] {
+            XCTAssertNil(ReleaseTag(rejected), rejected)
+        }
+        let ordered = [
+            "v0.9.6", "v0.10.0-beta.1", "v0.10.0-beta.2",
+            "v0.10.0-beta.10", "v0.10.0", "v0.10.1-beta.1",
+            "v0.10.1", "v1.0.0",
+        ].compactMap(ReleaseTag.init)
+        XCTAssertEqual(ordered.count, 8)
+        XCTAssertEqual(ordered.sorted(), ordered)
+        for (index, tag) in ordered.enumerated() {
+            for later in ordered[(index + 1)...] {
+                XCTAssertLessThan(tag, later)
+                XCTAssertFalse(later < tag)
+            }
+        }
+        XCTAssertEqual(ReleaseTag("v0.10.0-beta.3")?.version, "0.10.0")
+        XCTAssertEqual(ReleaseTag("v0.10.0-beta.3")?.isBeta, true)
+        XCTAssertEqual(ReleaseTag("v0.10.0")?.isBeta, false)
+    }
+
+    func testStableFeedURLCacheKeyAndNamespaceAreFrozen() async throws {
+        XCTAssertEqual(
+            production.feedURL.absoluteString,
+            "https://saymiao.github.io/xdial-updates/stable.json"
+        )
+        XCTAssertEqual(production.cacheNamespace, "production")
+        XCTAssertEqual(production.channel, .stable)
+        XCTAssertNil(production.acceptanceID)
+        XCTAssertEqual(production.archiveOwner, "kafeifei")
+        XCTAssertEqual(production.archiveRepository, "XDial")
+        XCTAssertEqual(production.configuration(for: .stable), production)
+
+        let beta = production.configuration(for: .beta)
+        XCTAssertEqual(beta, .productionBeta)
+        XCTAssertEqual(
+            beta.feedURL.absoluteString,
+            "https://saymiao.github.io/xdial-updates/beta.json"
+        )
+        XCTAssertEqual(beta.cacheNamespace, "production-beta")
+        XCTAssertEqual(beta.archiveOwner, "kafeifei")
+        XCTAssertEqual(beta.archiveRepository, "XDial")
+        XCTAssertEqual(beta.configuration(for: .stable), production)
+
+        let acceptance = try AppUpdateFeedConfiguration.acceptance(
+            id: "pages-a"
+        )
+        XCTAssertEqual(
+            acceptance.feedURL.absoluteString,
+            "https://saymiao.github.io/xdial-updates/acceptance/"
+                + "pages-a/stable.json"
+        )
+        XCTAssertEqual(acceptance.cacheNamespace, "acceptance-pages-a")
+        let acceptanceBeta = acceptance.configuration(for: .beta)
+        XCTAssertEqual(
+            acceptanceBeta.feedURL.absoluteString,
+            "https://saymiao.github.io/xdial-updates/acceptance/"
+                + "pages-a/beta.json"
+        )
+        XCTAssertEqual(acceptanceBeta.acceptanceID, "pages-a")
+        XCTAssertEqual(acceptanceBeta.archiveOwner, "saymiao")
+        XCTAssertEqual(
+            acceptanceBeta.cacheNamespace,
+            "acceptance-pages-a.beta"
+        )
+        XCTAssertNotEqual(
+            acceptanceBeta.cacheNamespace,
+            try AppUpdateFeedConfiguration.acceptance(id: "pages-a-beta")
+                .cacheNamespace
+        )
+
+        let defaults = try temporaryDefaults()
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(production, revision: 3, release: nil),
+            ],
+            AppUpdateFeedConfiguration.productionBeta.feedURL: [
+                feedReply(.productionBeta, revision: 1, release: nil),
+            ],
+        ])
+        _ = try await AppUpdateChannelLookup(
+            configuration: production,
+            transport: router.transport,
+            defaults: defaults
+        ).check(
+            installed: installed("0.9.6"),
+            receivesBeta: true,
+            currentSystemVersion: "15.0",
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        let stableRecord = try XCTUnwrap(
+            defaults.data(forKey: "xdial.update.pages-cache.production")
+        )
+        let stableObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: stableRecord)
+                as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(stableObject.keys),
+            ["endpoint", "etag", "manifestData", "validatedAt"]
+        )
+        XCTAssertEqual(
+            stableObject["endpoint"] as? String,
+            "https://saymiao.github.io/xdial-updates/stable.json"
+        )
+        XCTAssertNotNil(
+            defaults.data(forKey: "xdial.update.pages-cache.production-beta")
+        )
+    }
+
+    func testTagOrderingMatchesReleasedComparisonForStableVersions() {
+        let numbers = [0, 1, 2, 10]
+        let versions = numbers.flatMap { major in
+            numbers.flatMap { minor in
+                numbers.map { "\(major).\(minor).\($0)" }
+            }
+        }
+        for current in versions {
+            let release = installed(current, build: "1789130088")
+            for candidate in versions {
+                let tag = "v\(candidate)"
+                let expected = VersionUpdatePolicy.isNewer(
+                    latestTag: tag,
+                    than: current
+                )
+                do {
+                    _ = try AppUpdateReleasePolicy.selectCandidate(
+                        from: feedRelease(
+                            tag: tag,
+                            build: "1789130089"
+                        ),
+                        generatedAt: Date(timeIntervalSince1970: 900),
+                        configuration: production,
+                        installed: release,
+                        currentSystemVersion: "15.0"
+                    )
+                    XCTAssertTrue(expected, "\(current) -> \(tag)")
+                } catch {
+                    XCTAssertFalse(expected, "\(current) -> \(tag)")
+                    XCTAssertEqual(
+                        error as? AppUpdateReleaseSelectionError,
+                        .notNewer,
+                        "\(current) -> \(tag)"
+                    )
+                }
+            }
+        }
+    }
+
+    func testEachFeedAcceptsOnlyItsOwnTagForm() throws {
+        let beta = AppUpdateFeedConfiguration.productionBeta
+        let selected = try AppUpdateReleasePolicy.selectCandidate(
+            from: feedRelease(tag: "v0.10.0-beta.1", build: "300"),
+            generatedAt: Date(timeIntervalSince1970: 900),
+            configuration: beta,
+            installed: installed("0.9.6", build: "200"),
+            currentSystemVersion: "15.0"
+        )
+        XCTAssertEqual(selected.channel, .beta)
+        XCTAssertEqual(selected.tag, "v0.10.0-beta.1")
+        XCTAssertEqual(selected.version, "0.10.0")
+        XCTAssertEqual(
+            selected.archiveName,
+            "XDial-v0.10.0-beta.1.zip"
+        )
+
+        for (configuration, tag) in [
+            (production, "v0.10.0-beta.1"),
+            (beta, "v0.10.0"),
+            (beta, "v0.10.0-beta.0"),
+            (beta, "v0.10.0-rc.1"),
+        ] {
+            assertSelectionError(.invalidVersionTag) {
+                _ = try AppUpdateReleasePolicy.selectCandidate(
+                    from: self.feedRelease(tag: tag, build: "300"),
+                    generatedAt: Date(timeIntervalSince1970: 900),
+                    configuration: configuration,
+                    installed: self.installed("0.9.6", build: "200"),
+                    currentSystemVersion: "15.0"
+                )
+            }
+        }
+        assertSelectionError(.invalidVersionTag) {
+            _ = try AppUpdateReleasePolicy.selectCandidate(
+                from: self.feedRelease(
+                    tag: "v0.10.0-beta.1",
+                    version: "0.10.1",
+                    build: "300"
+                ),
+                generatedAt: Date(timeIntervalSince1970: 900),
+                configuration: beta,
+                installed: self.installed("0.9.6", build: "200"),
+                currentSystemVersion: "15.0"
+            )
+        }
+
+        XCTAssertEqual(
+            try AppUpdateManifestParser.parse(
+                manifestData(channel: .beta),
+                expectedChannel: .beta
+            ).channel,
+            "beta"
+        )
+        assertManifestError(
+            .invalidChannel(expected: .beta),
+            data: manifestData(channel: .stable),
+            expectedChannel: .beta
+        )
+    }
+
+    @MainActor
+    func testReversedBuildIsReportedAsBuildNotNewer() async throws {
+        for build in ["400", "500"] {
+            assertSelectionError(.buildNotNewer) {
+                _ = try AppUpdateReleasePolicy.selectCandidate(
+                    from: self.feedRelease(tag: "v0.9.7", build: build),
+                    generatedAt: Date(timeIntervalSince1970: 900),
+                    configuration: self.production,
+                    installed: self.installed("0.9.6", build: "500"),
+                    currentSystemVersion: "15.0"
+                )
+            }
+        }
+        // An older tag stays "up to date" whatever its build.
+        assertSelectionError(.notNewer) {
+            _ = try AppUpdateReleasePolicy.selectCandidate(
+                from: self.feedRelease(tag: "v0.9.5", build: "900"),
+                generatedAt: Date(timeIntervalSince1970: 900),
+                configuration: self.production,
+                installed: self.installed("0.9.6", build: "500"),
+                currentSystemVersion: "15.0"
+            )
+        }
+
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 2,
+                    release: release(tag: "v0.9.7", build: "400")
+                ),
+            ],
+        ])
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: router.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "500")
+        )
+        await checker.waitForTasksForTesting()
+        await checker.checkNow()
+
+        XCTAssertEqual(checker.phase, .failed)
+        XCTAssertNil(checker.releaseCandidate)
+        XCTAssertEqual(checker.failure?.code, .buildNotNewer)
+        XCTAssertEqual(
+            checker.lastBuildNotNewer?.detail,
+            AppUpdateBuildNotNewer(
+                channel: .stable,
+                tag: "v0.9.7",
+                build: "400",
+                installedBuild: "500"
+            )
+        )
+        XCTAssertNotNil(checker.lastCheckedAt)
+    }
+
+    @MainActor
+    func testPreferenceOffRequestsOnlyStableFeed() async throws {
+        let defaults = try temporaryDefaults()
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(production, revision: 1),
+                feedReply(production, revision: 1),
+            ],
+            AppUpdateFeedConfiguration.productionBeta.feedURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.9.0-beta.1", build: "1789130089")
+                ),
+            ],
+        ])
+        let preferences = try temporaryDefaults()
+        XCTAssertFalse(
+            AppUpdateChannelPreference.receivesBeta(defaults: preferences)
+        )
+        preferences.set("stable", forKey: AppUpdateChannelPreference.key)
+        XCTAssertFalse(
+            AppUpdateChannelPreference.receivesBeta(defaults: preferences)
+        )
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: router.transport,
+                defaults: defaults
+            ),
+            preferenceDefaults: preferences
+        )
+        await checker.waitForTasksForTesting()
+        XCTAssertFalse(checker.receivesBetaUpdates)
+
+        await checker.checkNow()
+
+        XCTAssertEqual(checker.phase, .available)
+        XCTAssertEqual(checker.releaseCandidate?.channel, .stable)
+        let urls = await router.recordedURLs()
+        XCTAssertEqual(urls, [production.feedURL])
+        XCTAssertEqual(
+            urls.map(\.absoluteString),
+            ["https://saymiao.github.io/xdial-updates/stable.json"]
+        )
+        XCTAssertNil(
+            defaults.data(forKey: "xdial.update.pages-cache.production-beta")
+        )
+    }
+
+    @MainActor
+    func testEnablingBetaChecksAtOnceAndOffersTheHigherFeed() async throws {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.7", build: "200")
+                ),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "300")
+                ),
+            ],
+        ])
+        let preferences = try temporaryDefaults()
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: router.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await checker.waitForTasksForTesting()
+
+        XCTAssertTrue(checker.setReceivesBetaUpdates(true))
+        await checker.waitForTasksForTesting()
+
+        XCTAssertTrue(checker.receivesBetaUpdates)
+        XCTAssertEqual(
+            preferences.string(forKey: "xdial.update.channel"),
+            "beta"
+        )
+        XCTAssertEqual(checker.phase, .available)
+        XCTAssertEqual(checker.releaseCandidate?.tag, "v0.10.0-beta.1")
+        XCTAssertEqual(checker.releaseCandidate?.channel, .beta)
+        let urls = await router.recordedURLs()
+        XCTAssertEqual(urls, [production.feedURL, betaURL])
+
+        // The higher tag wins whichever feed answered first.
+        let stableRelease = AppUpdateReleaseAvailability.available(
+            try candidate(production, tag: "v0.10.0", build: "400")
+        )
+        let betaRelease = AppUpdateReleaseAvailability.available(
+            try candidate(.productionBeta, tag: "v0.10.0-beta.2", build: "300")
+        )
+        for order in [
+            [stableRelease, betaRelease, .upToDate],
+            [betaRelease, stableRelease, .upToDate],
+        ] {
+            guard case let .available(best) =
+                AppUpdateReleaseAvailability.merged(order) else {
+                return XCTFail("expected a merged candidate")
+            }
+            XCTAssertEqual(best.tag, "v0.10.0")
+            XCTAssertEqual(best.channel, .stable)
+        }
+        let newerBeta = AppUpdateReleaseAvailability.available(
+            try candidate(.productionBeta, tag: "v0.10.1-beta.1", build: "500")
+        )
+        for order in [
+            [stableRelease, newerBeta],
+            [newerBeta, stableRelease],
+        ] {
+            guard case let .available(best) =
+                AppUpdateReleaseAvailability.merged(order) else {
+                return XCTFail("expected a merged candidate")
+            }
+            XCTAssertEqual(best.tag, "v0.10.1-beta.1")
+        }
+    }
+
+    @MainActor
+    func testWithdrawnBetaFallsBackToStable() async throws {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let stableRelease = release(tag: "v0.9.7", build: "200")
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(production, revision: 1, release: stableRelease),
+                feedReply(production, revision: 1, release: stableRelease),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "300")
+                ),
+                feedReply(.productionBeta, revision: 2, release: nil),
+            ],
+        ])
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: router.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await checker.waitForTasksForTesting()
+        await checker.checkNow()
+        XCTAssertEqual(checker.releaseCandidate?.tag, "v0.10.0-beta.1")
+
+        // Download revalidates first; the withdrawn beta yields to stable.
+        checker.downloadAndPrepare()
+        await checker.waitForTasksForTesting()
+
+        XCTAssertEqual(checker.phase, .available)
+        XCTAssertEqual(checker.failure?.code, .candidateChanged)
+        XCTAssertEqual(checker.releaseCandidate?.tag, "v0.9.7")
+        XCTAssertEqual(checker.releaseCandidate?.channel, .stable)
+        XCTAssertNil(checker.stagedUpdate)
+    }
+
+    @MainActor
+    func testBetaFeedFailureIsSecondaryWhileStableConcludes() async throws {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+
+        let betaDown = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.6", build: "100")
+                ),
+            ],
+            betaURL: [
+                .response(AppUpdateHTTPResult(statusCode: 500, url: betaURL)),
+            ],
+        ])
+        let concluded = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: betaDown.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await concluded.waitForTasksForTesting()
+        await concluded.checkNow()
+        XCTAssertEqual(concluded.phase, .upToDate)
+        XCTAssertNil(concluded.failure)
+        XCTAssertNotNil(concluded.secondaryNotice)
+        XCTAssertNotNil(concluded.lastCheckedAt)
+
+        let stableDown = AppUpdateFeedRouter([
+            production.feedURL: [
+                .response(AppUpdateHTTPResult(
+                    statusCode: 500,
+                    url: production.feedURL
+                )),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "300")
+                ),
+            ],
+        ])
+        let blocked = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: stableDown.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await blocked.waitForTasksForTesting()
+        await blocked.checkNow()
+        XCTAssertEqual(blocked.phase, .failed)
+        XCTAssertEqual(blocked.failure?.code, .checkUnavailable)
+        XCTAssertNil(blocked.releaseCandidate)
+        XCTAssertNil(blocked.lastCheckedAt)
+
+        // Download requires the candidate's own feed to confirm it again.
+        let ownFeedDown = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.6", build: "100")
+                ),
+            ],
+            betaURL: [
+                .response(AppUpdateHTTPResult(statusCode: 503, url: betaURL)),
+            ],
+        ])
+        let unconfirmed = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: ownFeedDown.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await unconfirmed.waitForTasksForTesting()
+        let betaCandidate = try candidate(
+            .productionBeta,
+            tag: "v0.10.0-beta.1",
+            build: "300"
+        )
+        unconfirmed.configureForTesting(
+            candidate: betaCandidate,
+            phase: .available
+        )
+        unconfirmed.downloadAndPrepare()
+        await unconfirmed.waitForTasksForTesting()
+        XCTAssertEqual(unconfirmed.phase, .available)
+        XCTAssertEqual(unconfirmed.failure?.code, .checkUnavailable)
+        XCTAssertEqual(unconfirmed.releaseCandidate, betaCandidate)
+        XCTAssertNil(unconfirmed.stagedUpdate)
+    }
+
+    func testOtherFeedFailureDoesNotBlockCandidateRevalidation()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                .response(AppUpdateHTTPResult(
+                    statusCode: 500,
+                    url: production.feedURL
+                )),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "300")
+                ),
+            ],
+        ])
+        let result = try await AppUpdateChannelLookup(
+            configuration: production,
+            transport: router.transport,
+            defaults: try temporaryDefaults()
+        ).check(
+            installed: installed("0.9.6", build: "100"),
+            receivesBeta: true,
+            currentSystemVersion: "15.0",
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        XCTAssertNotNil(result.stable.error)
+        XCTAssertNil(result.outcome(for: .beta)?.error)
+        guard case let .available(confirmed) = result.availability else {
+            return XCTFail("beta candidate was not confirmed")
+        }
+        XCTAssertEqual(
+            confirmed.identity,
+            try candidate(
+                .productionBeta,
+                tag: "v0.10.0-beta.1",
+                build: "300"
+            ).identity
+        )
+    }
+
+    @MainActor
+    func testInstalledBetaWithPreferenceOffAwaitsStableWithoutDowngrade()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.7", build: "200")
+                ),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "300")
+                ),
+            ],
+        ])
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: router.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed(
+                "0.10.0",
+                build: "300",
+                tag: "v0.10.0-beta.1"
+            )
+        )
+        await checker.waitForTasksForTesting()
+        XCTAssertFalse(checker.receivesBetaUpdates)
+        await checker.checkNow()
+
+        XCTAssertEqual(checker.phase, .awaitingStable)
+        XCTAssertNil(checker.releaseCandidate)
+        XCTAssertNil(checker.failure)
+        let urls = await router.recordedURLs()
+        XCTAssertEqual(urls, [production.feedURL, betaURL])
+    }
+
+    @MainActor
+    func testInstalledBetaFollowsItsLineUntilStablePassesIt()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.7", build: "200")
+                ),
+                feedReply(
+                    production,
+                    revision: 2,
+                    release: release(tag: "v0.10.0", build: "400")
+                ),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 2,
+                    release: release(tag: "v0.10.0-beta.2", build: "310")
+                ),
+            ],
+        ])
+        let lookup = AppUpdateChannelLookup(
+            configuration: production,
+            transport: router.transport,
+            defaults: try temporaryDefaults()
+        )
+        let onBeta1 = makeChecker(
+            lookup,
+            installed: installed(
+                "0.10.0",
+                build: "300",
+                tag: "v0.10.0-beta.1"
+            )
+        )
+        await onBeta1.waitForTasksForTesting()
+        await onBeta1.checkNow()
+        XCTAssertEqual(onBeta1.phase, .available)
+        XCTAssertEqual(onBeta1.releaseCandidate?.tag, "v0.10.0-beta.2")
+        XCTAssertEqual(onBeta1.releaseCandidate?.channel, .beta)
+
+        // Once stable passes the installed beta, beta.json is no longer read
+        // and the same short version still moves forward to stable.
+        let onBeta2 = makeChecker(
+            lookup,
+            installed: installed(
+                "0.10.0",
+                build: "310",
+                tag: "v0.10.0-beta.2"
+            )
+        )
+        await onBeta2.waitForTasksForTesting()
+        await onBeta2.checkNow()
+        XCTAssertEqual(onBeta2.phase, .available)
+        XCTAssertEqual(onBeta2.releaseCandidate?.tag, "v0.10.0")
+        XCTAssertEqual(onBeta2.releaseCandidate?.version, "0.10.0")
+        XCTAssertEqual(onBeta2.releaseCandidate?.channel, .stable)
+        let urls = await router.recordedURLs()
+        XCTAssertEqual(
+            urls,
+            [production.feedURL, betaURL, production.feedURL]
+        )
+    }
+
+    func testBetaAndStableReleasesReplaceEachOther() throws {
+        // stable -> beta: the same signed identity, a higher tag and build.
+        let intoBeta = try AppUpdateReleasePolicy.selectCandidate(
+            from: feedRelease(tag: "v0.10.0-beta.1", build: "300"),
+            generatedAt: Date(timeIntervalSince1970: 900),
+            configuration: .productionBeta,
+            installed: installed("0.9.6", build: "200"),
+            currentSystemVersion: "15.0"
+        )
+        XCTAssertEqual(intoBeta.channel, .beta)
+
+        // beta -> stable with the same X.Y.Z: the tag, not the short version,
+        // decides, and the relaunch intent tells the two builds apart.
+        let backToStable = try AppUpdateReleasePolicy.selectCandidate(
+            from: feedRelease(tag: "v0.10.0", build: "400"),
+            generatedAt: Date(timeIntervalSince1970: 900),
+            configuration: production,
+            installed: installed(
+                "0.10.0",
+                build: "300",
+                tag: "v0.10.0-beta.1"
+            ),
+            currentSystemVersion: "15.0"
+        )
+        XCTAssertEqual(backToStable.channel, .stable)
+        XCTAssertEqual(backToStable.version, "0.10.0")
+        XCTAssertFalse(VersionUpdatePolicy.isNewer(
+            latestTag: "v0.10.0",
+            than: "0.10.0"
+        ))
+
+        let suiteName = "xdial-update-intent-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let now = Date(timeIntervalSince1970: 1_000)
+        try AppUpdateRelaunchIntentStore.write(
+            targetVersion: backToStable.version,
+            targetBuild: backToStable.build,
+            reconnectScenarioID: nil,
+            now: now,
+            defaults: defaults
+        )
+        XCTAssertFalse(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                targetVersion: "0.10.0",
+                targetBuild: "300",
+                now: now,
+                defaults: defaults
+            )
+        )
+        try AppUpdateRelaunchIntentStore.write(
+            targetVersion: backToStable.version,
+            targetBuild: backToStable.build,
+            reconnectScenarioID: nil,
+            now: now,
+            defaults: defaults
+        )
+        XCTAssertTrue(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                targetVersion: "0.10.0",
+                targetBuild: "400",
+                now: now,
+                defaults: defaults
+            )
+        )
+
+        // Installation sees one product either way: a higher build replaces,
+        // whichever channel published it.
+        for (source, destination) in [("300", "200"), ("400", "300")] {
+            XCTAssertEqual(
+                ApplicationRelocationDecision.decide(
+                    currentIsCanonical: false,
+                    destinationExists: true,
+                    destinationMatchesIdentity: true,
+                    sourceBuild: source,
+                    destinationBuild: destination
+                ),
+                .replace
+            )
+        }
+    }
+
+    func testRelaunchIntentAcceptsBytesWrittenByV096() throws {
+        // Produced by encoding v0.9.6's AppUpdateRelaunchIntent (from
+        // `git show v0.9.6:macos/Sources/XDial/AppUpdateTransaction.swift`)
+        // with JSONEncoder() for target 0.9.7 at 1_792_000_000.25. Key order
+        // is not stable across runs; these are one run's exact bytes.
+        let reconnect = Data(
+            #"{"reconnectScenarioID":"scenario-office","targetVersion":"0.9.7","schemaVersion":1,"createdAt":813692800.25}"#
+                .utf8
+        )
+        let disconnected = Data(
+            #"{"targetVersion":"0.9.7","schemaVersion":1,"createdAt":813692800.25}"#
+                .utf8
+        )
+        let key = "xdial.update.relaunch-intent"
+        let written = Date(timeIntervalSince1970: 1_792_000_000.25)
+        let suiteName = "xdial-update-v096-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // The staged successor, launched by v0.9.6, sees the intent first.
+        defaults.set(reconnect, forKey: key)
+        XCTAssertTrue(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                targetVersion: "0.9.7",
+                targetBuild: "1792000001",
+                now: written.addingTimeInterval(5),
+                defaults: defaults
+            )
+        )
+        // The final /Applications launch then restores the Scenario.
+        XCTAssertEqual(
+            AppUpdateRelaunchIntentStore.loadDecision(
+                currentVersion: "0.9.7",
+                currentBuild: "1792000001",
+                activeScenarioID: "scenario-office",
+                now: written.addingTimeInterval(20),
+                defaults: defaults
+            ),
+            .reconnect(scenarioID: "scenario-office")
+        )
+
+        defaults.set(disconnected, forKey: key)
+        XCTAssertEqual(
+            AppUpdateRelaunchIntentStore.loadDecision(
+                currentVersion: "0.9.7",
+                currentBuild: "1792000001",
+                activeScenarioID: "scenario-office",
+                now: written.addingTimeInterval(20),
+                defaults: defaults
+            ),
+            .stayDisconnected
+        )
+
+        defaults.set(reconnect, forKey: key)
+        XCTAssertFalse(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                targetVersion: "0.9.8",
+                targetBuild: "1792000001",
+                now: written.addingTimeInterval(5),
+                defaults: defaults
+            )
+        )
+
+        // A schema newer than this build understands is never trusted.
+        defaults.set(
+            Data(
+                #"{"targetVersion":"0.9.7","targetBuild":"1792000001","schemaVersion":3,"createdAt":813692800.25}"#
+                    .utf8
+            ),
+            forKey: key
+        )
+        XCTAssertFalse(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                targetVersion: "0.9.7",
+                targetBuild: "1792000001",
+                now: written.addingTimeInterval(5),
+                defaults: defaults
+            )
+        )
+
+        // Schema 2 is what this build writes, and it binds the build.
+        try AppUpdateRelaunchIntentStore.write(
+            targetVersion: "0.9.7",
+            targetBuild: "1792000001",
+            reconnectScenarioID: "scenario-office",
+            now: written,
+            defaults: defaults
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: XCTUnwrap(defaults.data(forKey: key))
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(object["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(object["targetBuild"] as? String, "1792000001")
+        XCTAssertNil(
+            AppUpdateRelaunchIntentStore.loadDecision(
+                currentVersion: "0.9.7",
+                currentBuild: "1792000002",
+                activeScenarioID: "scenario-office",
+                now: written.addingTimeInterval(20),
+                defaults: defaults
+            )
+        )
+    }
+
+    func testReleaseTagNeverSelectsFeedOrAuthorizesUpdate() throws {
+        let betaTag = [InstalledRelease.releaseTagInfoKey: "v0.10.0-beta.1"]
+        XCTAssertEqual(
+            try AppUpdateFeedConfiguration.current(infoDictionary: betaTag),
+            .production
+        )
+        XCTAssertEqual(
+            try AppUpdateFeedConfiguration.current(
+                infoDictionary: betaTag.merging([
+                    AppUpdateFeedConfiguration.acceptanceInfoKey: "pages-a",
+                ]) { current, _ in current }
+            ),
+            try AppUpdateFeedConfiguration.acceptance(id: "pages-a")
+        )
+
+        let beta = InstalledRelease.current(infoDictionary: [
+            "CFBundleShortVersionString": "0.10.0",
+            "CFBundleVersion": "300",
+            InstalledRelease.releaseTagInfoKey: "v0.10.0-beta.1",
+        ])
+        XCTAssertTrue(beta.isBeta)
+        XCTAssertEqual(beta.displayTag, "v0.10.0-beta.1")
+        XCTAssertEqual(beta.build, "300")
+        for tag: Any in ["", "v0.10.0", "v0.10.1-beta.1", "beta", 42] {
+            let release = InstalledRelease.current(infoDictionary: [
+                "CFBundleShortVersionString": "0.10.0",
+                "CFBundleVersion": "300",
+                InstalledRelease.releaseTagInfoKey: tag,
+            ])
+            XCTAssertFalse(release.isBeta, "\(tag)")
+            XCTAssertEqual(release.displayTag, "v0.10.0", "\(tag)")
+        }
+        XCTAssertEqual(
+            InstalledRelease.current(infoDictionary: [
+                "CFBundleShortVersionString": "0.10.0",
+                "CFBundleVersion": "300",
+            ]).displayTag,
+            "v0.10.0"
+        )
+    }
+
+    @MainActor
+    func testChannelSwitchIsRefusedWhileAnUpdateIsBusy() throws {
+        let preferences = try temporaryDefaults()
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: AppUpdateHTTPRecorder(replies: []).transport,
+                defaults: try temporaryDefaults()
+            ),
+            preferenceDefaults: preferences
+        )
+        for phase: AppUpdatePhase in [
+            .checking, .downloading, .validating, .handingOff,
+        ] {
+            checker.configureForTesting(
+                candidate: try releaseCandidate(),
+                phase: phase
+            )
+            XCTAssertFalse(checker.canChangeChannel, phase.rawValue)
+            XCTAssertFalse(checker.setReceivesBetaUpdates(true))
+            XCTAssertFalse(checker.receivesBetaUpdates)
+            XCTAssertNil(
+                preferences.string(forKey: AppUpdateChannelPreference.key)
+            )
+        }
+    }
+
+    @MainActor
+    func testTurningBetaOffDropsOnlyAStableToBetaEntry() async throws {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let betaCandidate = try candidate(
+            .productionBeta,
+            tag: "v0.10.0-beta.1",
+            build: "300"
+        )
+
+        // A stable install would enter the beta line: drop the staged beta.
+        let stableRouter = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.6", build: "100")
+                ),
+            ],
+        ])
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+        let leaving = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: stableRouter.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await leaving.waitForTasksForTesting()
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        leaving.configureForTesting(
+            candidate: betaCandidate,
+            stagedUpdate: StagedAppUpdate(
+                rootURL: rootURL,
+                applicationURL: rootURL.appendingPathComponent("XDial.app")
+            ),
+            phase: .ready
+        )
+        XCTAssertTrue(leaving.setReceivesBetaUpdates(false))
+        XCTAssertNil(leaving.releaseCandidate)
+        XCTAssertNil(leaving.stagedUpdate)
+        await leaving.waitForTasksForTesting()
+        XCTAssertNil(
+            preferences.string(forKey: AppUpdateChannelPreference.key)
+        )
+        XCTAssertEqual(leaving.phase, .upToDate)
+        let stableURLs = await stableRouter.recordedURLs()
+        XCTAssertEqual(stableURLs, [production.feedURL])
+
+        // An installed beta keeps its pending fix on the same line.
+        let betaRouter = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.6", build: "100")
+                ),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.2", build: "310")
+                ),
+            ],
+        ])
+        let betaPreferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: betaPreferences
+        )
+        let staying = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: betaRouter.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed(
+                "0.10.0",
+                build: "300",
+                tag: "v0.10.0-beta.1"
+            ),
+            preferenceDefaults: betaPreferences
+        )
+        await staying.waitForTasksForTesting()
+        let fix = try candidate(
+            .productionBeta,
+            tag: "v0.10.0-beta.2",
+            build: "310"
+        )
+        staying.configureForTesting(candidate: fix, phase: .available)
+        XCTAssertTrue(staying.setReceivesBetaUpdates(false))
+        XCTAssertEqual(staying.releaseCandidate, fix)
+        await staying.waitForTasksForTesting()
+        XCTAssertEqual(staying.phase, .available)
+        XCTAssertEqual(staying.releaseCandidate?.identity, fix.identity)
+        let betaURLs = await betaRouter.recordedURLs()
+        XCTAssertEqual(betaURLs, [production.feedURL, betaURL])
+    }
+
+    func testStableChannelMismatchKeepsReleasedWording() async throws {
+        XCTAssertEqual(
+            AppUpdateManifestError.invalidChannel(expected: .stable)
+                .localizedDescription,
+            "更新清单通道不是 stable"
+        )
+        XCTAssertEqual(
+            AppUpdateManifestError.invalidChannel(expected: .beta)
+                .localizedDescription,
+            "更新清单通道不是 beta"
+        )
+        // What the update window and the background log show when
+        // stable.json names another channel.
+        let recorder = AppUpdateHTTPRecorder(replies: [
+            .response(AppUpdateHTTPResult(
+                data: manifestData(channel: .beta),
+                statusCode: 200,
+                url: production.feedURL,
+                headers: jsonHeaders(etag: "\"wrong-channel\"")
+            )),
+        ])
+        let lookup = AppUpdateReleaseLookup(
+            configuration: production,
+            transport: recorder.transport,
+            defaults: try temporaryDefaults()
+        )
+        do {
+            _ = try await lookup.check(
+                installed: installed("0.7.0"),
+                currentSystemVersion: "15.0",
+                now: Date(timeIntervalSince1970: 1_000)
+            )
+            XCTFail("stable.json naming beta was accepted")
+        } catch let error as AppUpdateReleaseLookupError {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "更新清单无效：更新清单通道不是 stable"
+            )
+        }
+    }
+
+    @MainActor
+    func testStableAboveTheBetaLineWinsInFeedOrder() async throws {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        // stable has just released what beta.json still offers a beta of.
+        let router = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.10.0", build: "400")
+                ),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.2", build: "310")
+                ),
+            ],
+        ])
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: router.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await checker.waitForTasksForTesting()
+        await checker.checkNow()
+
+        XCTAssertEqual(checker.phase, .available)
+        XCTAssertEqual(checker.releaseCandidate?.tag, "v0.10.0")
+        XCTAssertEqual(checker.releaseCandidate?.channel, .stable)
+        let urls = await router.recordedURLs()
+        XCTAssertEqual(urls, [production.feedURL, betaURL])
+    }
+
+    @MainActor
+    func testOtherFeedFailureDoesNotBlockTheCandidatesDownload()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+
+        // stable.json is down; beta.json confirms the beta candidate.
+        let betaCandidate = try candidate(
+            .productionBeta,
+            tag: "v0.10.0-beta.1",
+            build: "300"
+        )
+        let stableDown = AppUpdateFeedRouter([
+            production.feedURL: [
+                .response(AppUpdateHTTPResult(
+                    statusCode: 500,
+                    url: production.feedURL
+                )),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "300")
+                ),
+            ],
+        ])
+        let betaDownloads = AppUpdateDownloadRecorder()
+        let intoBeta = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: stableDown.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences,
+            downloadArchive: betaDownloads.archiveDownload
+        )
+        await intoBeta.waitForTasksForTesting()
+        intoBeta.configureForTesting(
+            candidate: betaCandidate,
+            phase: .available
+        )
+        intoBeta.downloadAndPrepare()
+        await intoBeta.waitForTasksForTesting()
+        XCTAssertEqual(intoBeta.phase, .failed)
+        XCTAssertEqual(intoBeta.failure?.code, .downloadFailed)
+        let betaArchives = await betaDownloads.recordedURLs()
+        XCTAssertEqual(betaArchives, [betaCandidate.archiveURL])
+
+        // beta.json is down; stable.json confirms the stable candidate.
+        let stableCandidate = try candidate(
+            production,
+            tag: "v0.9.7",
+            build: "200"
+        )
+        let betaDown = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.7", build: "200")
+                ),
+            ],
+            betaURL: [
+                .response(AppUpdateHTTPResult(statusCode: 503, url: betaURL)),
+            ],
+        ])
+        let stableDownloads = AppUpdateDownloadRecorder()
+        let onStable = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: betaDown.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences,
+            downloadArchive: stableDownloads.archiveDownload
+        )
+        await onStable.waitForTasksForTesting()
+        onStable.configureForTesting(
+            candidate: stableCandidate,
+            phase: .available
+        )
+        onStable.downloadAndPrepare()
+        await onStable.waitForTasksForTesting()
+        XCTAssertEqual(onStable.phase, .failed)
+        XCTAssertEqual(onStable.failure?.code, .downloadFailed)
+        let stableArchives = await stableDownloads.recordedURLs()
+        XCTAssertEqual(stableArchives, [stableCandidate.archiveURL])
+    }
+
+    @MainActor
+    func testSwitchingWhileAnUpdateIsReadyChecksOnceAndKeepsAnUnchangedStage()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let stableCandidate = try candidate(
+            production,
+            tag: "v0.9.7",
+            build: "200"
+        )
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let staged = StagedAppUpdate(
+            rootURL: rootURL,
+            applicationURL: rootURL.appendingPathComponent("XDial.app")
+        )
+        let stableReply = {
+            self.feedReply(
+                self.production,
+                revision: 1,
+                release: self.release(tag: "v0.9.7", build: "200")
+            )
+        }
+
+        // Turning beta on checks at once; a higher beta replaces the stage.
+        let higherBeta = AppUpdateFeedRouter([
+            production.feedURL: [stableReply()],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "300")
+                ),
+            ],
+        ])
+        let joining = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: higherBeta.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100")
+        )
+        await joining.waitForTasksForTesting()
+        joining.configureForTesting(
+            candidate: stableCandidate,
+            stagedUpdate: staged,
+            phase: .ready
+        )
+        XCTAssertTrue(joining.canChangeChannel)
+        XCTAssertTrue(joining.setReceivesBetaUpdates(true))
+        await joining.waitForTasksForTesting()
+        XCTAssertEqual(joining.phase, .available)
+        XCTAssertEqual(joining.releaseCandidate?.tag, "v0.10.0-beta.1")
+        XCTAssertNil(joining.stagedUpdate)
+        XCTAssertNil(joining.failure)
+        let joiningURLs = await higherBeta.recordedURLs()
+        XCTAssertEqual(joiningURLs, [production.feedURL, betaURL])
+
+        // Without a higher beta, the staged stable update stays ready.
+        let noBeta = AppUpdateFeedRouter([
+            production.feedURL: [stableReply()],
+            betaURL: [feedReply(.productionBeta, revision: 1, release: nil)],
+        ])
+        let keeping = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: noBeta.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100")
+        )
+        await keeping.waitForTasksForTesting()
+        keeping.configureForTesting(
+            candidate: stableCandidate,
+            stagedUpdate: staged,
+            phase: .ready
+        )
+        XCTAssertTrue(keeping.setReceivesBetaUpdates(true))
+        await keeping.waitForTasksForTesting()
+        XCTAssertEqual(keeping.phase, .ready)
+        XCTAssertEqual(
+            keeping.releaseCandidate?.identity,
+            stableCandidate.identity
+        )
+        XCTAssertEqual(keeping.stagedUpdate, staged)
+        let keepingURLs = await noBeta.recordedURLs()
+        XCTAssertEqual(keepingURLs, [production.feedURL, betaURL])
+
+        // Turning beta off keeps a stable install's staged stable update.
+        let stableOnly = AppUpdateFeedRouter([
+            production.feedURL: [stableReply()],
+        ])
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+        let leaving = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: stableOnly.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100"),
+            preferenceDefaults: preferences
+        )
+        await leaving.waitForTasksForTesting()
+        leaving.configureForTesting(
+            candidate: stableCandidate,
+            stagedUpdate: staged,
+            phase: .ready
+        )
+        XCTAssertTrue(leaving.setReceivesBetaUpdates(false))
+        XCTAssertEqual(leaving.releaseCandidate, stableCandidate)
+        XCTAssertEqual(leaving.stagedUpdate, staged)
+        await leaving.waitForTasksForTesting()
+        XCTAssertEqual(leaving.phase, .ready)
+        XCTAssertEqual(leaving.stagedUpdate, staged)
+        let leavingURLs = await stableOnly.recordedURLs()
+        XCTAssertEqual(leavingURLs, [production.feedURL])
+
+        // A check that cannot conclude never discards the stage.
+        let stableDown = AppUpdateFeedRouter([
+            production.feedURL: [
+                .response(AppUpdateHTTPResult(
+                    statusCode: 500,
+                    url: production.feedURL
+                )),
+            ],
+        ])
+        let unconfirmed = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: stableDown.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.6", build: "100")
+        )
+        await unconfirmed.waitForTasksForTesting()
+        unconfirmed.configureForTesting(
+            candidate: stableCandidate,
+            stagedUpdate: staged,
+            phase: .ready
+        )
+        XCTAssertTrue(unconfirmed.setReceivesBetaUpdates(true))
+        await unconfirmed.waitForTasksForTesting()
+        XCTAssertEqual(unconfirmed.phase, .ready)
+        XCTAssertEqual(unconfirmed.failure?.code, .checkUnavailable)
+        XCTAssertEqual(unconfirmed.releaseCandidate, stableCandidate)
+        XCTAssertEqual(unconfirmed.stagedUpdate, staged)
+    }
+
+    @MainActor
+    func testInstalledBetaWithoutBetaFeedIsNotCalledUpToDate()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let installedBeta = installed(
+            "0.10.0",
+            build: "300",
+            tag: "v0.10.0-beta.1"
+        )
+        // stable cannot update an installed beta it has not passed, so a
+        // failed beta.json leaves the check without a conclusion.
+        for receivesBeta in [true, false] {
+            let router = AppUpdateFeedRouter([
+                production.feedURL: [
+                    feedReply(
+                        production,
+                        revision: 1,
+                        release: release(tag: "v0.9.7", build: "200")
+                    ),
+                ],
+                betaURL: [
+                    .response(AppUpdateHTTPResult(
+                        statusCode: 500,
+                        url: betaURL
+                    )),
+                ],
+            ])
+            let preferences = try temporaryDefaults()
+            AppUpdateChannelPreference.setReceivesBeta(
+                receivesBeta,
+                defaults: preferences
+            )
+            let checker = makeChecker(
+                AppUpdateChannelLookup(
+                    configuration: production,
+                    transport: router.transport,
+                    defaults: try temporaryDefaults()
+                ),
+                installed: installedBeta,
+                preferenceDefaults: preferences
+            )
+            await checker.waitForTasksForTesting()
+            await checker.checkNow()
+            XCTAssertEqual(checker.phase, .failed, "\(receivesBeta)")
+            XCTAssertEqual(
+                checker.failure?.code,
+                .checkUnavailable,
+                "\(receivesBeta)"
+            )
+            XCTAssertEqual(
+                checker.failure?.detail,
+                "beta 清单暂时无法读取：更新清单服务器返回 HTTP 500"
+            )
+            XCTAssertNil(checker.secondaryNotice)
+            XCTAssertNil(checker.lastCheckedAt)
+            let urls = await router.recordedURLs()
+            XCTAssertEqual(urls, [production.feedURL, betaURL])
+        }
+
+        // Once stable passes the installed beta, stable concludes again.
+        let passed = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.10.0", build: "400")
+                ),
+            ],
+            betaURL: [
+                .response(AppUpdateHTTPResult(statusCode: 500, url: betaURL)),
+            ],
+        ])
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+        let checker = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: passed.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installedBeta,
+            preferenceDefaults: preferences
+        )
+        await checker.waitForTasksForTesting()
+        await checker.checkNow()
+        XCTAssertEqual(checker.phase, .available)
+        XCTAssertEqual(checker.releaseCandidate?.tag, "v0.10.0")
+        XCTAssertNil(checker.failure)
+        XCTAssertNotNil(checker.secondaryNotice)
+    }
+
+    @MainActor
+    func testInstalledBetaWithPreferenceOffStaysOnItsOwnLine()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let installedBeta = installed(
+            "0.10.0",
+            build: "300",
+            tag: "v0.10.0-beta.3"
+        )
+        func router(_ betaRelease: [String: Any]) -> AppUpdateFeedRouter {
+            AppUpdateFeedRouter([
+                production.feedURL: [
+                    feedReply(
+                        production,
+                        revision: 1,
+                        release: release(tag: "v0.9.7", build: "200")
+                    ),
+                ],
+                betaURL: [
+                    feedReply(.productionBeta, revision: 1, release: betaRelease),
+                ],
+            ])
+        }
+
+        // beta.json moved on to the next line: the switch is off, so the
+        // installed beta waits for its own stable release instead.
+        for nextLine in [
+            release(tag: "v0.11.0-beta.1", build: "400"),
+            release(tag: "v0.11.0-beta.1", build: "250"),
+        ] {
+            let offRouter = router(nextLine)
+            let off = makeChecker(
+                AppUpdateChannelLookup(
+                    configuration: production,
+                    transport: offRouter.transport,
+                    defaults: try temporaryDefaults()
+                ),
+                installed: installedBeta
+            )
+            await off.waitForTasksForTesting()
+            await off.checkNow()
+            XCTAssertEqual(off.phase, .awaitingStable)
+            XCTAssertNil(off.releaseCandidate)
+            XCTAssertNil(off.failure)
+            let urls = await offRouter.recordedURLs()
+            XCTAssertEqual(urls, [production.feedURL, betaURL])
+        }
+
+        // With the switch on, the next line is offered.
+        let onRouter = router(release(tag: "v0.11.0-beta.1", build: "400"))
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+        let on = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: onRouter.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installedBeta,
+            preferenceDefaults: preferences
+        )
+        await on.waitForTasksForTesting()
+        await on.checkNow()
+        XCTAssertEqual(on.phase, .available)
+        XCTAssertEqual(on.releaseCandidate?.tag, "v0.11.0-beta.1")
+    }
+
+    @MainActor
+    func testEveryReversedBuildIsRecordedWhicheverFeedDecides()
+        async throws
+    {
+        let betaURL = AppUpdateFeedConfiguration.productionBeta.feedURL
+        let preferences = try temporaryDefaults()
+        AppUpdateChannelPreference.setReceivesBeta(
+            true,
+            defaults: preferences
+        )
+        let reversedBeta = AppUpdateBuildNotNewer(
+            channel: .beta,
+            tag: "v0.10.0-beta.1",
+            build: "150",
+            installedBuild: "200"
+        )
+
+        // A stable hotfix published after the beta: stable is up to date and
+        // the beta's build is behind it. That is a failure to fix by
+        // publishing the next beta, never "up to date".
+        let behind = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.8", build: "200")
+                ),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "150")
+                ),
+            ],
+        ])
+        let failing = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: behind.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.8", build: "200"),
+            preferenceDefaults: preferences
+        )
+        await failing.waitForTasksForTesting()
+        await failing.checkNow()
+        XCTAssertEqual(failing.phase, .failed)
+        XCTAssertEqual(failing.failure?.code, .buildNotNewer)
+        XCTAssertNil(failing.releaseCandidate)
+        XCTAssertEqual(failing.lastBuildNotNewer?.detail, reversedBeta)
+
+        // When stable offers a candidate, the reversed beta still reaches
+        // the diagnostics.
+        let outranked = AppUpdateFeedRouter([
+            production.feedURL: [
+                feedReply(
+                    production,
+                    revision: 1,
+                    release: release(tag: "v0.9.9", build: "300")
+                ),
+            ],
+            betaURL: [
+                feedReply(
+                    .productionBeta,
+                    revision: 1,
+                    release: release(tag: "v0.10.0-beta.1", build: "150")
+                ),
+            ],
+        ])
+        let offering = makeChecker(
+            AppUpdateChannelLookup(
+                configuration: production,
+                transport: outranked.transport,
+                defaults: try temporaryDefaults()
+            ),
+            installed: installed("0.9.8", build: "200"),
+            preferenceDefaults: preferences
+        )
+        await offering.waitForTasksForTesting()
+        await offering.checkNow()
+        XCTAssertEqual(offering.phase, .available)
+        XCTAssertEqual(offering.releaseCandidate?.tag, "v0.9.9")
+        XCTAssertNil(offering.failure)
+        XCTAssertEqual(offering.lastBuildNotNewer?.detail, reversedBeta)
+    }
+
+    func testRelaunchIntentReadsVersionAndBuildFromTheBundle() throws {
+        let defaults = try temporaryDefaults()
+        let now = Date(timeIntervalSince1970: 1_000)
+        func writeIntent() throws {
+            try AppUpdateRelaunchIntentStore.write(
+                targetVersion: "0.10.0",
+                targetBuild: "400",
+                reconnectScenarioID: "scenario-office",
+                now: now,
+                defaults: defaults
+            )
+        }
+
+        // The relaunched app matches the intent with its own Info.
+        try writeIntent()
+        XCTAssertNil(
+            AppUpdateRelaunchIntentStore.loadDecision(
+                bundleInfo: [
+                    "CFBundleShortVersionString": "0.10.0",
+                    "CFBundleVersion": "300",
+                ],
+                activeScenarioID: "scenario-office",
+                now: now,
+                defaults: defaults
+            )
+        )
+        try writeIntent()
+        XCTAssertEqual(
+            AppUpdateRelaunchIntentStore.loadDecision(
+                bundleInfo: [
+                    "CFBundleShortVersionString": "0.10.0",
+                    "CFBundleVersion": "400",
+                ],
+                activeScenarioID: "scenario-office",
+                now: now,
+                defaults: defaults
+            ),
+            .reconnect(scenarioID: "scenario-office")
+        )
+
+        // The staged successor matches it with its own Info.plist.
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "xdial-update-successor-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sameVersionOtherBuild = rootURL.appendingPathComponent(
+            "other/XDial.app",
+            isDirectory: true
+        )
+        let target = rootURL.appendingPathComponent(
+            "target/XDial.app",
+            isDirectory: true
+        )
+        try writeInfoPlist(
+            [
+                "CFBundleShortVersionString": "0.10.0",
+                "CFBundleVersion": "300",
+            ],
+            to: sameVersionOtherBuild
+        )
+        try writeInfoPlist(
+            [
+                "CFBundleShortVersionString": "0.10.0",
+                "CFBundleVersion": "400",
+            ],
+            to: target
+        )
+        try writeIntent()
+        XCTAssertFalse(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                bundleAt: sameVersionOtherBuild,
+                now: now,
+                defaults: defaults
+            )
+        )
+        try writeIntent()
+        XCTAssertTrue(
+            AppUpdateRelaunchIntentStore.permitsStagedSuccessor(
+                bundleAt: target,
+                now: now,
+                defaults: defaults
+            )
+        )
+    }
+
+    private func feedRelease(
+        tag: String,
+        version: String? = nil,
+        build: String
+    ) -> AppUpdateFeedRelease {
+        AppUpdateFeedRelease(
+            tag: tag,
+            version: version ?? ReleaseTag(tag)?.version
+                ?? String(tag.dropFirst()),
+            build: build,
+            minimumSystemVersion: "15.0",
+            publishedAt: Date(timeIntervalSince1970: 800),
+            releaseNotes: "- Pages update",
+            archiveURL: productionArchiveURL(tag: tag),
+            archiveSize: 1234,
+            archiveSHA256: String(repeating: "a", count: 64)
+        )
+    }
+
+    private func release(tag: String, build: String) -> [String: Any] {
+        [
+            "tag": tag,
+            "version": ReleaseTag(tag)?.version ?? "",
+            "build": build,
+            "archiveURL": productionArchiveURL(tag: tag).absoluteString,
+        ]
+    }
+
+    private func candidate(
+        _ configuration: AppUpdateFeedConfiguration,
+        tag: String,
+        build: String
+    ) throws -> AppUpdateReleaseCandidate {
+        try AppUpdateReleasePolicy.selectCandidate(
+            from: feedRelease(tag: tag, build: build),
+            generatedAt: Date(timeIntervalSince1970: 900),
+            configuration: configuration,
+            installed: installed("0.0.1", build: "1"),
+            currentSystemVersion: "15.0"
+        )
+    }
+
+    private func feedReply(
+        _ configuration: AppUpdateFeedConfiguration,
+        revision: Int,
+        release: [String: Any]? = [:]
+    ) -> AppUpdateHTTPReply {
+        .response(AppUpdateHTTPResult(
+            data: manifestData(
+                revision: revision,
+                channel: configuration.channel,
+                release: release
+            ),
+            statusCode: 200,
+            url: configuration.feedURL,
+            headers: jsonHeaders(
+                etag: "\"\(configuration.channel.rawValue)-\(revision)\""
+            )
+        ))
+    }
+}
+
+private struct AppUpdateTestDownloadStopped: Error {}
+
+/// Stands in for the archive download: records what would be fetched and
+/// stops there, so no test reaches the network.
+private actor AppUpdateDownloadRecorder {
+    private var urls: [URL] = []
+
+    nonisolated var archiveDownload: AppUpdateChecker.ArchiveDownload {
+        { [self] url, _, _, _, _ in
+            await record(url)
+            throw AppUpdateTestDownloadStopped()
+        }
+    }
+
+    func recordedURLs() -> [URL] {
+        urls
+    }
+
+    private func record(_ url: URL) {
+        urls.append(url)
+    }
 }
 
 private enum AppUpdateHTTPReply: Sendable {
@@ -1497,6 +3409,48 @@ private actor AppUpdateHTTPRecorder {
             throw URLError(.resourceUnavailable)
         }
         switch replies.removeFirst() {
+        case let .response(response):
+            return response
+        case let .failure(code):
+            throw URLError(code)
+        case .cancelled:
+            throw CancellationError()
+        }
+    }
+}
+
+/// Answers each feed URL from its own queue, so tests that read stable.json
+/// and beta.json do not depend on request order.
+private actor AppUpdateFeedRouter {
+    private var replies: [URL: [AppUpdateHTTPReply]]
+    private var requests: [URLRequest] = []
+
+    init(_ replies: [URL: [AppUpdateHTTPReply]]) {
+        self.replies = replies
+    }
+
+    nonisolated var transport: AppUpdateHTTPTransport {
+        AppUpdateHTTPTransport { [self] request in
+            try await perform(request)
+        }
+    }
+
+    func recordedURLs() -> [URL] {
+        requests.compactMap(\.url)
+    }
+
+    private func perform(_ request: URLRequest) throws
+        -> AppUpdateHTTPResult
+    {
+        requests.append(request)
+        guard let url = request.url,
+              var queue = replies[url],
+              !queue.isEmpty else {
+            throw URLError(.resourceUnavailable)
+        }
+        let reply = queue.removeFirst()
+        replies[url] = queue
+        switch reply {
         case let .response(response):
             return response
         case let .failure(code):

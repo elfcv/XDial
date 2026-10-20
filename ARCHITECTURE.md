@@ -24,7 +24,7 @@ XDial 对系统增加一个网络叠加层。外部已有的 Wi-Fi、网线、VP
 | RuleSet | 匹配内容与远程资源；不携带用户流量出口 |
 | Scenario | 绑定 RuleSet → Line、指定默认 Line；用户流量裁决的唯一连接点 |
 
-Next 配置库 schema 3 中，Profile 只持有来源线路与规则，线路组与 Scenario 由配置库全局持有。
+配置库 schema 3 中，Profile 只持有来源线路与规则，线路组与 Scenario 由配置库全局持有。
 稳定引用保留来源身份；同名对象不合并，旧 ID 冲突在迁移时重映射并保存翻译表。
 宿主将资源目录、全局组与场景投影为一个临时 Profile 交给既有 Go 编译入口，只有一份持久资源。
 Go 继续决定有效依赖、协议身份路径与运行指纹。Tailscale 的来源 Profile ID / hostname
@@ -61,7 +61,9 @@ Transparent Proxy 不接管 ICMP。link-local、multicast、limited broadcast �
 RFC1918、IPv6 ULA、Tailnet 与企业单播地址仍由 Scenario 裁决，排除集合不按应用或产品扩展。
 
 Underlay 来自宿主请求连接前同一时刻的内核默认接口、完整 `NWPath.availableInterfaces`
-与系统 DNS。Provider 内的 `NWPath` 可能隐藏既有全流量 VPN，只用于诊断。
+与系统 DNS；同一样本另取默认接口的 IPv4 地址与主服务 IPv4 / IPv6 默认路由器，只用于比较。
+IPv6 接口地址（临时地址在稳定网络上轮换）不进入比较；Provider 只收到默认路径的不透明身份，
+不收到这些地址。Provider 内的 `NWPath` 可能隐藏既有全流量 VPN，只用于诊断。
 `route.default_interface` 原样采用内核结果；接口快照仅补齐系统 MTU、标志与地址，
 只排除当前 XDial 会话自己登记的接口，不按名称前缀筛选、不取首候选、不生成 outbound
 `bind_interface`。缺失或不一致的快照不能启动连接。
@@ -91,11 +93,12 @@ Scenario 先选 Line，仅最终属于 Direct 的 flow 恢复该绑定，其他 
 ### 3.2 Tailscale 与 MagicDNS（D33）
 
 内置 Tailscale 是盒内 endpoint，不创建系统接口、不接管系统 DNS、不接受或发布系统路由。
-每个安装通道内，每个 Profile 共用一份持久身份；不同 Line 可选择不同 exit node，但 active Scenario 至多
+每个安装身份内，每个 Profile 共用一份持久身份；不同 Line 可选择不同 exit node，但 active Scenario 至多
 使用一条 Tailscale Line。未登录、需要认证或指定节点不可用产生结构化失败，不自动换节点。
 
-Tailscale 设备名在运行快照中按 Debug、Next、正式版添加 `xdial-debug-`、`xdial-next-`、
-`xdial-stable-` 前缀；不回写共享 Profile，不改变通道内的状态目录或 node key。
+Tailscale 设备名在运行快照中按安装身份添加前缀：Debug 为 `xdial-debug-`，正式版（含 beta）为
+`xdial-stable-`；共享 Profile 里残留的旧前缀 `xdial-next-` 同样被替换。不回写共享 Profile，
+不改变身份内的状态目录或 node key。
 
 登录管理按持久身份确定所有者，而不是用整个 XDial 的连接状态禁用操作。已提交的 Provider
 通过带事务 ID 的独立控制 IPC 提供当前身份的状态与登录续期；不在当前连接中的身份可启动
@@ -142,7 +145,22 @@ sslcon 是进程级单例；active Scenario 的有效依赖中至多有一条 An
 不同配置的单例不能并发准备：Switch 候选拒绝后，宿主断开旧连接并完整连接目标场景，
 期间短暂断流，不伪装成无中断切换。
 
-入口：[AnyConnect 运行能力](core/libbox/anyconnect_runtime.go)。
+局部恢复的三次预算只计宿主报告“已完整唤醒且 Underlay 可用”时的尝试。系统休眠
+（含 Dark Wake）或宿主 NWPath 不可用期间，线路保持不可用（REJECT / SERVFAIL）并等待，
+不尝试、不计次、不提升为完整恢复；跨越关闭期的尝试不计次，其失败也不按终止错误归类。
+门由宿主经 Provider IPC 报告，Provider 不自行判断；关闭态是有界租约（休眠 15 分钟、
+无 Underlay 5 分钟，按不计休眠的单调时钟），宿主在条件持续期间续约，宿主消失则租约
+到期后恢复正常计数。宿主报告重新可用或新 epoch 是新的网络条件，重新获得预算；
+可用网络上耗尽预算或凭据、配置等终止错误仍提升为完整恢复。
+
+sslcon 的 socket 不绑定接口，停留在连接时内核默认路由所在的接口上。只有该接口已不在
+新 epoch 的接口集合中，会话才必然失效，就绪证明经同一恢复 owner 立即重建，不等探测
+超时或 DPD。该接口仍在时（默认路由移到新接口，或同名同序号接口换了地址），候选准备
+期间旧会话继续承载已提交事务，不主动重连；仍只由经现有会话的就绪探测在结构化瞬态失败
+时强制重连。门关闭时也不替换会话。
+
+入口：[AnyConnect 运行能力](core/libbox/anyconnect_runtime.go)、
+[恢复门](core/libbox/line_recovery_gate.go)、[宿主报告](macos/Shared/LineRecoveryConditionsIPC.swift)。
 
 ## 4. DNS
 
@@ -249,8 +267,12 @@ journal 无法可靠写入时不能 Commit。入口：[事务处置](macos/Share
   或旧 Box 退役只释放自己的租约，最后一个租约释放才停止能力，不并发创建第二个握手任务。
 - 当前 epoch、revision 与 generation 的就绪证明有效后才 Commit。迟到成功不能恢复旧
   ready；同一 Line 的新成功不能清除其他 Line 的失败或 Box 结构错误。
-- 提交原子切换新 flow 的 relay generation 与完整 DNS / route 配置；旧 flow 有界排空。
-  规则、DNS 和默认出口不能分成多个可见提交。
+- 提交原子切换新 flow 的 relay generation 与完整 DNS / route 配置；旧 flow 有界排空，
+  默认 1 秒后关闭。仅当 network epoch 重编译同一 Scenario 与配置指纹、默认路径身份
+  （默认接口、其 IPv4 地址与默认路由器）也未变时，旧 generation 已接入的 TCP flow 留在
+  旧 Box 直至结束，最长 10 分钟；下一候选开始准备（路径变化即下一 epoch）或停止先使其
+  退役，UDP association 仍 1 秒换代。保留期间租约仍只属于 committed 与另一个 generation
+  ——候选或保留的旧源，二者不并存。规则、DNS 和默认出口不能分成多个可见提交。
 - 候选失败只清理候选，保留旧场景、网络设置和连接时长；提交中失败恢复旧 relay。
   无法证明旧 generation 健康时才进入全局回滚。报告同时保留 from、to、候选与仍承载流量的事务。
 - 任意时刻最多一个候选，latest-wins；相同目标与配置指纹为 no-op。显式断开优先取消候选
@@ -264,20 +286,45 @@ journal 无法可靠写入时不能 Commit。入口：[事务处置](macos/Share
 
 NWPath、默认路由、DNS 与 SSID 的同次物理变化合并为一个不含 SSID 的 network epoch；
 稳定样本只形成最终 `(epoch, desired Scenario, Underlay fingerprint)` 的一笔 Switch。
+Underlay fingerprint 由默认接口、接口集合、系统 DNS、默认接口 IPv4 地址与默认路由器组成，
+NWPath 更新与 configd 对相应键的只读通知都触发重新采样；日志分别标注 `default-interface`、
+`interface-set`、`system-dns`、`gateway`、`address`；
+同一接口、同一 DNS 地址的两个网络也因网关或地址不同而换代。XDial 的 Provider 不创建接口、
+不发布 IPv4 / IPv6 服务状态或 DNS 设置，其启停不改变指纹。
 旧 epoch 的候选和退避回调失效，网络稳定不等于 Line 登录、握手或真实出口已恢复。
 
 休眠至完整 `didWake` 之间只积累变化，Dark Wake 不停止已提交事务或创建候选。
-唤醒后等价 Underlay 保留旧 generation；真实指纹变化才换代。Provider 仍 connected 时，
+唤醒后与 committed generation 实际所用 Underlay 等价才保留旧 generation；未能提交的
+新样本不证明旧 generation 仍是当前事实，真实指纹变化才换代。Provider 仍 connected 时，
 Line 自己处理协议恢复，不能仅凭路径不可用 / 恢复边沿重复连接。
 
 同代 Line 局部恢复保持其他 Line、Ingress、Box 与 transaction ID 不变；局部预算耗尽、
-Provider 掉线或共享组件失败才提升为完整恢复。完整恢复在 Rollback 与系统接管移除后进行，
-共享五次预算；短暂连上不重置，同一事务稳定五分钟后才清零。
-自动场景意图的瞬态失败保留 desired Scenario，按 2 / 5 / 10 秒最多重试三次，同 epoch
-重复事件不重置。显式连接 / 切换失败、凭据 / 证书 / 配置等终止错误不自动循环；显式断开
-立即取消所有恢复。重试进度、原始失败与断线历史均为结构化事实。
+Provider 掉线或共享组件失败才提升为完整恢复。休眠或无可用 Underlay 期间局部恢复只等待，
+不消耗预算、不提升（见 [AnyConnect](#33-anyconnectd30)）。完整恢复在 Rollback 与系统接管移除后进行，
+预算属于恢复 epoch `(desired Scenario, Underlay 指纹, 连通性代数)`：每个 epoch 按
+2 / 5 / 10 / 20 / 30 秒最多五次，等待可用 Underlay 不计次；短暂连上不重置，同一事务
+稳定五分钟后才清零。只看结构化失败码：凭据、登录、认证、配置引用与未分类错误立即结束。
 
-入口：[epoch 协调](macos/Shared/NetworkEpochSwitchCoordinator.swift)。
+网络相关失败耗尽预算后进入停泊：运行状态是已报告的断开，系统接管已移除，连接意图保留，
+宿主从耗尽后重新捕获的 Underlay 起只读观察，不建数据面、不发网络请求。经沉降的新
+epoch 交给恢复账本，不变成手动连接：指纹或 Scenario 变化立即授予新预算；同指纹仅有
+连通性恢复边沿时，距该指纹上次授予满五分钟才授予，否则延后而不丢弃；自动授予每小时
+最多六次，休眠期间不授予。XDial 自己的尝试与重复通知不产生授予；完整唤醒后 epoch 未变
+只保留一次尝试；同一 epoch 另有 +2 / +5 / +10 / +20 / +30 分钟的单次慢尾，至多五次，
+新 epoch 以完整预算取代它。每一步只由它等待的 transaction（开启恢复的失败或该尝试自己的
+事务）落定的报告裁决；尝试排队、采样 Underlay 或准备期间，状态回调重读到的旧失败报告
+不能结束或重新停泊它。用户连接或重试是新意图并获得新预算；显式断开、退出或删除
+目标 Scenario 立即结束停泊。
+
+自动场景意图的瞬态失败保留 desired Scenario，按 2 / 5 / 10 秒最多重试三次，同 epoch
+重复事件不重置。自动 epoch 的 Switch 最终失败后，若 committed generation 的默认接口
+（名称与 index）已不在当前 Underlay 中，它无法被证明健康，升级为完整回滚与自动恢复，
+结果可能是停泊；旧默认接口仍在时保留旧 generation。显式连接 / 切换失败与终止错误
+不自动循环；显式断开立即取消所有恢复。重试进度、停泊、授予、延后、原始失败与断线历史
+均为结构化事实，Underlay 指纹不对外暴露。
+
+入口：[epoch 协调](macos/Shared/NetworkEpochSwitchCoordinator.swift)、
+[恢复账本](macos/Shared/AutomaticRecoveryLedger.swift)。
 
 ## 6. 安装与更新（D37）
 
@@ -297,7 +344,9 @@ helper / 扩展失败停在对应安装步骤，幂等重试以 macOS 结构化�
 也会让替换它的新版一直等待。替换同样不依赖旧版配合：新版先请求退出，20 秒内未退出即强制结束，
 按崩溃恢复接管遗留的连接事务与维护记录。等待批准的步骤在安装窗口给出具体位置和打开系统设置的入口。
 
-Debug、Next 与正式版的 App、嵌套组件、签名、运行目录、App Group、IPC 和维护标记独立。
+Debug 与正式版的 App、嵌套组件、签名、运行目录、App Group、IPC 和维护标记独立。
+发布通道不改变身份：beta 用正式版的 Release 配置、签名和发布合约构建，只在标签、源分支和
+写入的清单上不同。
 支持新版格式的构建共用 `~/.xdial/configuration/profiles.enc` 和
 `com.kafeifei.xdial.configuration` 的配置库密钥。仅当共享库不存在时，只读复制历史库或
 转换旧配置为默认 Profile；原文件不修改，也不把新版修改回写旧版。现存库损坏或不可解密
@@ -308,10 +357,21 @@ FormalDevelopment 保留正式身份，仅用于正式身份验证。
 签名 profile 与 entitlement 属于对应身份，不以移除能力或借用正式身份填补 Debug 签名缺口。
 独立安装不代表两个数据面同时接管已被证明兼容。
 
-更新候选来自固定 Pages 地址的一份完整、版本化清单，归档由 GitHub Releases 托管；
+更新候选来自固定 Pages 地址的完整、版本化清单，归档由 GitHub Releases 托管；
 客户端不通过匿名 API 或 HTML 拼装候选。检查、下载和验证不改变当前连接，安装点击后才交接。
 缓存不是安装许可：下载与安装前重新确认候选，撤回、变化或无法确认即停止；归档大小、摘要、
 实际版本 / build 与嵌套签名共同绑定同一候选。验收包的固定 acceptance ID 与正式更新隔离。
+
+通道不改变身份：beta 与正式版是同一个正式身份的 App，区别只在多读的 beta.json。stable.json
+始终是结论的基准；用户开启 beta，或已装 beta 尚未被 stable 超过时才再读 beta.json，两份清单
+各自保持缓存与修订链，取标签更高者。关闭开关不降级，已装 beta 只接收本 X.Y.Z 线的修复；
+它尚未被 stable 超过时，beta.json 读取失败即无结论。新旧按发布标签的 SemVer 比较，候选
+构建号必须高于当前；构建号倒序不是“已是最新”，而是失败。包内发布标签只用来认出已装 beta，
+从而决定所在的线、新旧比较和是否多读 beta.json；它不替换或锁定 stable.json，不参与签名包
+授权。更低构建号的宿主不覆盖已装 App：自行安装和 `--install-only` 在安装锁内拒绝；Finder
+拖拽覆盖拦不住，之后扩展检查发现仍登记着更高构建号的扩展时不再激活，提示先卸载（不删数据）。
+两道门禁都由被装进来的更旧 App 执行，只有带门禁的构建才会拦截；装回不带门禁的构建（v0.9.6
+及更早）宿主仍被替换、与扩展失配，只能先卸载再安装。
 
 入口：[安装状态机](macos/Shared/InstallationTransaction.swift)、
 [构建与身份](docs/agent/development-builds.md)、[更新协议与发布](docs/agent/updates.md)。
@@ -332,7 +392,7 @@ URL RuleSet 的 `fetch_line_id` 默认 Direct，仅拥有资源的 DNS、HTTPS�
 保留有效缓存、延后刷新，不破坏已提交连接。
 旧 Subscription 的 GEOIP 资源仅来自显式 `geoip_rule_set_url_template`，含 `{code}` 且为 HTTPS
 或规范化绝对 `file://` 路径；缺失或非法时生成失败，运行时无内置公共源或回退源。
-Next 的整份配置导入适配可将 GEOIP 转成具名、显式 URL RuleSet：导入预览说明来源，
+整份配置导入适配可将 GEOIP 转成具名、显式 URL RuleSet：导入预览说明来源，
 用户保存后按普通 RuleSet 的获取事务执行，来源可在本地配置中修改。此转换不为运行时
 添加隐式 GEOIP 兜底，也不把凭据或用户实际配置烘入应用与仓库。
 
@@ -350,8 +410,9 @@ UI 显示权限状态，手动切换仍可用。
 
 - macOS 全流量 Packet Tunnel 会与既有 Enterprise Tunnel 互相取代，因此不作桌面入口；
   此限制不适用于 iOS / tvOS 当前入口。
-- 旧原生 TUN 保留在 helper / CLI 与恢复路径。默认接口只能来自启动前系统路由；
-  `RTF_GLOBAL` Underlay 在建立 Line、获取规则或接管流量前被拒绝，避免入口绕过。
+- 旧原生 TUN 只保留在 CLI；helper 拒绝数据面命令，只恢复历史版本留下的 DNS 接管残留。
+  默认接口只能来自启动前系统路由；`RTF_GLOBAL` Underlay 在建立 Line、获取规则或接管
+  流量前被拒绝，避免入口绕过。
 - 旧 DNS 接管地址为 TUN 地址 +1；原地址是本机 `RTF_LOCAL`，不能把查询送进 TUN。
   DNS 接管路径未就绪即连接失败。已记录地址与保留网段共同识别历史残留，清理能力仍保留。
 - 旧 TUN 崩溃语义为清理接管、恢复 Underlay 并强通知；不能据此推断 Transparent Proxy

@@ -69,7 +69,7 @@ struct ScenarioSwitchFeedback: Codable, Equatable {
         })).sorted()
         transitions = [self.status]
         self.sameScenario = sameScenario
-        self.channel = ["debug", "next", "stable"].contains(channel) ? channel : "unknown"
+        self.channel = ["debug", "stable"].contains(channel) ? channel : "unknown"
         let revision = Bundle.main.object(forInfoDictionaryKey: "XDialSourceRevision") as? String ?? ""
         sourceRevision = revision.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil
             ? revision : "unversioned"

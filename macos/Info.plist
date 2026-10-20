@@ -58,6 +58,8 @@
 	<string>$(CONFIGURATION)</string>
 	<key>XDialBuildFlavor</key>
 	<string>$(XDIAL_BUILD_FLAVOR)</string>
+	<key>XDialReleaseTag</key>
+	<string>$(XDIAL_RELEASE_TAG)</string>
 	<key>XDialSourceRevision</key>
 	<string>$(XDIAL_SOURCE_REVISION)</string>
 	<key>XDialTransparentProxyBundleIdentifier</key>

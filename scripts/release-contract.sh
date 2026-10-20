@@ -2,30 +2,25 @@
 
 set -euo pipefail
 
-# The explicit channel selects a complete identity, never individual bundle IDs.
+# Every channel ships the formal identity. The channel only selects the tag
+# syntax and the branch a release tag must sit on; it never changes a bundle.
+readonly PRODUCT_NAME="XDial"
+readonly ARCHIVE_PREFIX="XDial"
+readonly RELEASE_APPLICATION_IDENTIFIER="com.kafeifei.xdial.app"
 readonly RELEASE_CHANNEL="${XDIAL_RELEASE_CHANNEL:-stable}"
 case "$RELEASE_CHANNEL" in
-    stable)
-        PRODUCT_NAME="XDial"
-        ARCHIVE_PREFIX="XDial"
-        RELEASE_APPLICATION_IDENTIFIER="com.kafeifei.xdial.app"
-        RELEASE_BRANCH="main"
-        ;;
-    next)
-        PRODUCT_NAME="XDial Next"
-        ARCHIVE_PREFIX="XDial-Next"
-        RELEASE_APPLICATION_IDENTIFIER="com.kafeifei.xdial.next"
-        RELEASE_BRANCH="xdial-next"
-        ;;
+    stable) RELEASE_BRANCH="main" ;;
+    beta) RELEASE_BRANCH="xdial-beta" ;;
     *) echo "error: unknown release channel: $RELEASE_CHANNEL" >&2; exit 1 ;;
 esac
-readonly PRODUCT_NAME ARCHIVE_PREFIX RELEASE_APPLICATION_IDENTIFIER RELEASE_BRANCH
+readonly RELEASE_BRANCH
 readonly RELEASE_SETTINGS_IDENTIFIER="$RELEASE_APPLICATION_IDENTIFIER.settings-ui"
 readonly RELEASE_EXTENSION_IDENTIFIER="$RELEASE_APPLICATION_IDENTIFIER.transparent-proxy"
 readonly RELEASE_HELPER_IDENTIFIER="$RELEASE_APPLICATION_IDENTIFIER.helper"
 readonly RELEASE_TEAM_IDENTIFIER="UVZM439VGU"
 readonly RELEASE_CONTRACT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEPLOYMENT_TARGET_VERIFIER="$RELEASE_CONTRACT_DIRECTORY/verify-macos-deployment-target.py"
+readonly COMPONENT_NAMES_VERIFIER="$RELEASE_CONTRACT_DIRECTORY/verify-macos-component-names.py"
 
 cleanup_root=""
 cleanup() {
@@ -42,8 +37,10 @@ fail() {
 
 usage() {
     cat >&2 <<'EOF'
-Usage:
-  release-contract.sh validate-inputs <vMAJOR.MINOR.PATCH> <build-number>
+Usage (XDIAL_RELEASE_CHANNEL=stable|beta, default stable):
+  release-contract.sh validate-inputs <tag> <build-number>
+  release-contract.sh version-from-tag <tag>
+  release-contract.sh release-branch
   release-contract.sh validate-notes <tag> <release-notes.md>
   release-contract.sh assert-git-tag <tag>
   release-contract.sh verify-app <XDial.app> <tag> <build-number> [--notarized]
@@ -56,17 +53,57 @@ EOF
     exit 2
 }
 
+# A beta tag names the next stable X.Y.Z; every bundle's short version is that
+# X.Y.Z, so only the tag tells a beta apart.
 version_from_tag() {
     local tag="$1"
-    local canonical="$tag"
-    if [[ "$RELEASE_CHANNEL" == next ]]; then
-        [[ "$tag" == next-v* ]] || fail "Next tag must be next-vMAJOR.MINOR.PATCH"
-        canonical="${tag#next-}"
+    if [[ "$RELEASE_CHANNEL" == beta ]]; then
+        if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.[1-9][0-9]*$ ]]; then
+            fail "beta release tag must be exact vMAJOR.MINOR.PATCH-beta.N (N from 1, no leading zero): $tag"
+        fi
+        printf '%s\n' "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+        return
     fi
-    if [[ ! "$canonical" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
         fail "release tag must be exact stable SemVer vMAJOR.MINOR.PATCH: $tag"
     fi
-    printf '%s\n' "${canonical#v}"
+    printf '%s\n' "${tag#v}"
+}
+
+# Succeeds when MAJOR.MINOR.PATCH $1 is greater than $2.
+version_greater() {
+    local IFS=.
+    local -a left=($1) right=($2)
+    local index
+    for index in 0 1 2; do
+        ((10#${left[index]} > 10#${right[index]})) && return 0
+        ((10#${left[index]} < 10#${right[index]})) && return 1
+    done
+    return 1
+}
+
+# The highest vMAJOR.MINOR.PATCH tag in this repository, or nothing.
+latest_stable_tag() {
+    local tags
+    tags="$(git tag --list 'v*' --sort=-v:refname)" || return 1
+    grep -E -m 1 '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' <<<"$tags" || true
+}
+
+# A beta must carry every fix of the newest stable release and sort above it,
+# so the stable release that ends its line replaces it.
+assert_beta_contains_latest_stable() {
+    local tag="$1"
+    local tagged_commit="$2"
+    local latest stable_commit
+    latest="$(latest_stable_tag)" || fail "cannot list the release tags"
+    [[ -n "$latest" ]] \
+        || fail "no stable vMAJOR.MINOR.PATCH tag exists; fetch tags before validating $tag"
+    stable_commit="$(git rev-parse -q --verify "refs/tags/$latest^{commit}")" \
+        || fail "cannot resolve the stable tag $latest"
+    git merge-base --is-ancestor "$stable_commit" "$tagged_commit" \
+        || fail "beta tag $tag must contain the latest stable tag $latest"
+    version_greater "$(version_from_tag "$tag")" "${latest#v}" \
+        || fail "beta tag $tag must be newer than the latest stable tag $latest"
 }
 
 validate_inputs() {
@@ -111,11 +148,11 @@ assert_git_tag() {
     main_history="$(git rev-list --first-parent "$remote_main")"
     grep -Fxq "$tagged_commit" <<<"$main_history" \
         || fail "release tag $tag must point to a commit on origin/$RELEASE_BRANCH's first-parent history"
+    if [[ "$RELEASE_CHANNEL" == beta ]]; then
+        assert_beta_contains_latest_stable "$tag" "$tagged_commit"
+    fi
     [[ -z "$(git status --porcelain)" ]] \
         || fail "release worktree must be clean"
-    if [[ "$RELEASE_CHANNEL" == next ]]; then
-        [[ "$head" == "$remote_main" ]] || fail "Next release must match origin/xdial-next HEAD"
-    fi
 }
 
 plist_value() {
@@ -149,6 +186,12 @@ assert_app_deployment_target() {
     local app_path="$1"
     python3 "$DEPLOYMENT_TARGET_VERIFIER" "$app_path" >/dev/null \
         || fail "$app_path contains an executable newer than its declared macOS minimum"
+}
+
+assert_component_names() {
+    local app_path="$1"
+    python3 "$COMPONENT_NAMES_VERIFIER" "$app_path" "$PRODUCT_NAME" >/dev/null \
+        || fail "$app_path component names do not follow the $PRODUCT_NAME identity"
 }
 
 assert_developer_id_signature() {
@@ -188,6 +231,86 @@ assert_get_task_allow_absent_in_plist() {
     if [[ "$actual" == true ]]; then
         fail "$path contains the forbidden get-task-allow entitlement"
     fi
+}
+
+# codesign prints Timestamp= only for a timestamp authority's countersignature;
+# a local signing time appears as Signed Time= instead.
+assert_hardened_signature_details() {
+    local path="$1"
+    local details="$2"
+    local flags
+    flags="$(sed -nE \
+        's/^CodeDirectory .* flags=0x[0-9a-fA-F]+\(([^)]*)\).*$/\1/p' \
+        <<<"$details")"
+    [[ ",$flags," == *,runtime,* ]] \
+        || fail "$path is not signed with the hardened runtime"
+    grep -Eq '^Timestamp=.+' <<<"$details" \
+        || fail "$path has no secure signing timestamp"
+}
+
+assert_hardened_signature() {
+    local path="$1"
+    local details
+    details="$(/usr/bin/codesign -dvvv "$path" 2>&1)" \
+        || fail "cannot read the code signature of $path"
+    assert_hardened_signature_details "$path" "$details"
+}
+
+# DebugServer and its log prefix exist only in DEBUG builds of the host. The
+# Debug configuration keeps the host's code in Contents/MacOS/*.debug.dylib
+# behind a stub executable, so every file in that directory is scanned.
+assert_debug_server_absent() {
+    local executable_directory="$1"
+    local file status
+    for file in "$executable_directory"/*; do
+        [[ -f "$file" && ! -L "$file" && -r "$file" ]] \
+            || fail "unexpected or unreadable executable entry: $file"
+        status=0
+        LC_ALL=C grep -aFq 'DebugServer:' "$file" || status=$?
+        case "$status" in
+            0) fail "$file contains the development DebugServer" ;;
+            1) ;;
+            *) fail "cannot scan $file" ;;
+        esac
+    done
+}
+
+# An unknown build flavor falls back to the production identity at run time,
+# so the release gate is where a flavored helper is refused. -trimpath omits
+# -ldflags from the build information; the helper's version line, which names
+# any flavor, covers that case.
+assert_helper_without_build_flavor() {
+    local helper_path="$1"
+    local build_info
+    # A missing toolchain must not read as a defect in the helper.
+    command -v go >/dev/null \
+        || fail "go is required to read the helper's Go build information"
+    build_info="$(go version -m "$helper_path" 2>/dev/null)" \
+        || fail "cannot read Go build information from $helper_path"
+    if grep -Eq '^[[:space:]]+build[[:space:]].*main\.buildFlavor' <<<"$build_info"; then
+        fail "$helper_path was built with a main.buildFlavor override"
+    fi
+}
+
+# Independent of signing, so it also holds for an unsigned Release build.
+assert_distribution_binaries() {
+    local app_path="$1"
+    local helper_path="$2"
+    local host_executable
+    host_executable="$(plist_value "$app_path/Contents/Info.plist" \
+        CFBundleExecutable)" || exit 1
+    [[ -f "$app_path/Contents/MacOS/$host_executable" ]] \
+        || fail "missing host executable: $app_path/Contents/MacOS/$host_executable"
+    assert_debug_server_absent "$app_path/Contents/MacOS"
+    assert_helper_without_build_flavor "$helper_path"
+}
+
+assert_distribution_signatures() {
+    local component
+    for component in "$@"; do
+        assert_hardened_signature "$component"
+        assert_get_task_allow_absent "$component"
+    done
 }
 
 assert_location_entitlement() {
@@ -284,6 +407,54 @@ assert_system_extension_authorization() {
         "$identifier" "$signed" "$profile" "$(/bin/date -u +%s)"
 }
 
+# Prints the key's value; a missing key prints nothing. Older plutil (macOS 15)
+# prints extraction errors on stdout, so its output counts only when it succeeds.
+release_tag_value() {
+    local plist="$1" value
+    [[ -f "$plist" ]] || fail "missing Info.plist: $plist"
+    if value="$(/usr/bin/plutil -extract XDialReleaseTag raw -expect string -o - "$plist" 2>/dev/null)"; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+    if /usr/bin/plutil -extract XDialReleaseTag raw -o - "$plist" >/dev/null 2>&1; then
+        fail "$plist XDialReleaseTag must be a string"
+    fi
+}
+
+# XDialReleaseTag is the only way a client recognizes an installed beta. A beta
+# whose key is empty reads as stable v<short version>, so the same-numbered
+# stable release would never replace it: beta requires the exact tag. Stable
+# also accepts an empty key, which preset configuration packages may carry.
+# Any component that carries the key must name this release.
+assert_release_tag_key() {
+    local tag="$1"
+    local app_path="$2"
+    shift 2
+    local bundle actual
+    for bundle in "$app_path" "$@"; do
+        actual="$(release_tag_value "$bundle/Contents/Info.plist")" || exit 1
+        [[ -z "$actual" || "$actual" == "$tag" ]] \
+            || fail "$bundle XDialReleaseTag is '$actual', expected '$tag'"
+    done
+    [[ "$RELEASE_CHANNEL" == beta ]] || return 0
+    actual="$(release_tag_value "$app_path/Contents/Info.plist")" || exit 1
+    [[ "$actual" == "$tag" ]] \
+        || fail "beta $app_path XDialReleaseTag is '$actual', expected '$tag'"
+}
+
+# A first-launch Profile and private rule set presets belong only to preset
+# configuration packages, which are stable and share this contract, so only
+# beta refuses them here. Official CI checks both channels.
+assert_private_configuration_absent() {
+    local app_path="$1"
+    local found
+    [[ "$RELEASE_CHANNEL" == beta ]] || return 0
+    found="$(find "$app_path" \( -name SeedProfile -o -name RuleSetPresets.json \) -print)" \
+        || fail "cannot scan $app_path for private configuration"
+    [[ -z "$found" ]] \
+        || fail "beta releases must not embed private configuration: $found"
+}
+
 verify_app() {
     local app_path="$1"
     local tag="$2"
@@ -309,11 +480,8 @@ verify_app() {
         || fail "missing bundled helper: $helper_path"
 
     assert_app_deployment_target "$app_path"
-
-    if [[ "$RELEASE_CHANNEL" == next ]]; then
-        python3 "$RELEASE_CONTRACT_DIRECTORY/verify-next-release-identity.py" \
-            "$app_path" "$tag"
-    fi
+    assert_component_names "$app_path"
+    assert_distribution_binaries "$app_path" "$helper_path"
 
     assert_plist_value "$app_path/Contents/Info.plist" CFBundleIdentifier \
         "$RELEASE_APPLICATION_IDENTIFIER"
@@ -323,6 +491,8 @@ verify_app() {
         "$RELEASE_SETTINGS_IDENTIFIER"
     assert_plist_value "$extension_path/Contents/Info.plist" CFBundleIdentifier \
         "$RELEASE_EXTENSION_IDENTIFIER"
+    assert_release_tag_key "$tag" "$app_path" "$settings_path" "$extension_path"
+    assert_private_configuration_absent "$app_path"
 
     local bundle
     for bundle in "$app_path" "$settings_path" "$extension_path"; do
@@ -332,8 +502,11 @@ verify_app() {
             CFBundleVersion "$build_number"
     done
 
-    [[ "$("$helper_path" version)" == "xdial $tag" ]] \
-        || fail "bundled helper version does not match $tag"
+    local helper_version
+    helper_version="$("$helper_path" version)" \
+        || fail "bundled helper cannot report its version"
+    [[ "$helper_version" == "xdial $tag" ]] \
+        || fail "bundled helper reports '$helper_version', expected 'xdial $tag'"
 
     assert_developer_id_signature "$helper_path" "$RELEASE_HELPER_IDENTIFIER"
     assert_developer_id_signature "$settings_path" "$RELEASE_SETTINGS_IDENTIFIER"
@@ -342,8 +515,8 @@ verify_app() {
     assert_system_extension_authorization "$app_path" "$RELEASE_APPLICATION_IDENTIFIER"
     assert_system_extension_authorization "$extension_path" "$RELEASE_EXTENSION_IDENTIFIER"
     assert_location_entitlement "$app_path"
-    assert_get_task_allow_absent "$app_path"
-    assert_get_task_allow_absent "$extension_path"
+    assert_distribution_signatures "$app_path" "$settings_path" \
+        "$extension_path" "$helper_path"
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 
     if [[ "$notarized" == "--notarized" ]]; then
@@ -507,6 +680,14 @@ case "$command" in
     validate-inputs)
         [[ $# -eq 2 ]] || usage
         validate_inputs "$1" "$2"
+        ;;
+    version-from-tag)
+        [[ $# -eq 1 ]] || usage
+        version_from_tag "$1"
+        ;;
+    release-branch)
+        [[ $# -eq 0 ]] || usage
+        printf '%s\n' "$RELEASE_BRANCH"
         ;;
     validate-notes)
         [[ $# -eq 2 ]] || usage

@@ -70,7 +70,7 @@ struct LineLatencyPresentation: Equatable {
         } else {
             switch requirement {
             case .ready: detail = allowsTesting ? "点击右侧按钮测量请求延迟" : "尚无测速结果，可展开线路选择器手动测速"
-            case .connection: detail = "需先在 Next 中连接使用此线路的场景，才能测量这条线路；不会自动建立 AnyConnect / Tailscale 连接"
+            case .connection: detail = "需先连接使用此线路的场景，才能测量这条线路；不会自动建立 AnyConnect / Tailscale 连接"
             case .members: detail = "添加成员后可测速"
             case .unavailable: detail = "当前没有可测速的线路"
             }
