@@ -236,8 +236,19 @@ tailscale、sslcon 的全部本地补丁与组装它们的 `prepare-patched-go-m
 一个子目录（App、`XDial-<tag>.zip` 与 `.sha256`、公证记录、说明文件、`build.log`），另有
 `BUILD-INFO.json`。`RELEASE_UPDATE_ACCEPTANCE_ID` 使验收构建跳过 tag 与分支门禁（stable 的
 main、beta 的 `xdial-beta`）；`make publish` 和 release.yml 拒绝验收包。`--lower-ref` 与
-`--beta` 在临时 git worktree 里构建，worktree 在成功、失败、Ctrl-C、`kill`（SIGTERM）和关闭
-终端（SIGHUP）时都会删除；清理期间收到的停止信号等清理完再生效。
+`--beta` 在临时 git worktree 里构建，成功和失败时都会删除。
+
+停止构建：`make release` 在自己的会话里运行，终端的 Ctrl-C 和关闭终端只送到脚本。脚本收到
+Ctrl-C、`kill`（SIGTERM）或关闭终端（SIGHUP）时，像终端 Ctrl-C 那样对 `make` 的进程组发
+SIGINT：xcodebuild 据此取消它放在独立进程组里的构建任务，等任务结束才退出（SIGTERM 会让
+xcodebuild 立即退出，任务留下继续写 worktree 里的 `build/`）。进程组 30 秒内没退出再发
+SIGTERM，5 秒后发 SIGKILL；等进程组全部退出才删除 worktree，停止和清理期间再收到的停止信号
+等它们做完再生效。只有 SIGINT 没停下 `make` 时，xcodebuild 的构建任务可能留下并在 worktree
+删除后重新写出目录，脚本这时会提示，结束后检查 `$TMPDIR` 下的 `xdial-acceptance-*`。用 `nohup`
+启动时，关闭终端既不停脚本也不停 `make`。`kill -9` 跳过这一切：`make` 继续签名、公证，
+worktree 也留下。这时 `pgrep -f 'make release RELEASE_TAG='` 列出的 PID 就是进程组号，
+`kill -INT -<进程组号>` 停掉构建，再对 `git worktree list` 里 `xdial-acceptance-*` 下的
+worktree 执行 `git worktree remove --force`。
 
 所有包签名 Info.plist 的 `XDialUpdateAcceptanceID` 相同，客户端只读
 `https://saymiao.github.io/xdial-updates/acceptance/<ID>/<channel>.json`（清单仓库的

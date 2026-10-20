@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +25,7 @@ ACCEPTANCE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ACCEPTANCE
 SPEC.loader.exec_module(ACCEPTANCE)
 REAL_RUN = subprocess.run
+REAL_POPEN = subprocess.Popen
 REAL_RMTREE = shutil.rmtree
 
 ACCEPTANCE_ID = "pages-test"
@@ -43,7 +45,71 @@ CHANNEL_TAGS = {"stable": re.compile(CORE + r"\Z"),
 # Each package carries its own minimum, so a feed cannot borrow another's.
 MINIMUM_SYSTEM = {"v1.0.0": "15.0", "v1.1.0-beta.1": "15.4", "v1.1.0": "15.5"}
 TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
-STOP_SIGNALS = {signal.SIGINT, *TERMINATION_SIGNALS}
+STOP_SIGNALS = (signal.SIGINT, *TERMINATION_SIGNALS)
+# Stands in for make release when a stop signal arrives during a build. Like
+# make running xcodebuild, it starts a build step and, on SIGINT, cancels the
+# step and waits for it, while SIGTERM ends it at once. It reports how it was
+# started, signals the script (0 sends nothing) and then waits to be stopped
+# or exits.
+MAKE_STAND_IN = r'''
+import json, os, signal, subprocess, sys, time
+
+def note(record, **values):
+    with open(record, "a") as stream:
+        stream.write(json.dumps(values) + "\n")
+
+if sys.argv[1] == "step":
+    # Like a build task xcodebuild runs in a process group of its own, a task
+    # step writes into the worktree on its way out, after the script is asked
+    # to stop once more. A stubborn step stays in make's group and ignores
+    # SIGINT and SIGTERM.
+    record, mode, script, again = sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+    def finish(signum, frame):
+        os.kill(script, again)
+        time.sleep(0.3)
+        os.makedirs("build/late", exist_ok=True)
+        note(record, step_stopped=signum)
+        sys.exit(0)
+    for name in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(name, signal.SIG_IGN if mode == "stubborn" else finish)
+    print("ready", flush=True)
+else:
+    record, signum, then, mode = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
+    step = None
+    def cancel(received, frame):
+        if step:
+            os.kill(step.pid, signal.SIGINT)
+            step.wait()
+        stopped(received, frame)
+    def stopped(received, frame):
+        note(record, make_stopped=received)
+        sys.exit(128 + received)
+    # Like make, it leaves SIGINT ignored when started with it ignored.
+    interrupt_ignored = signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+    if mode == "stubborn":
+        for name in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(name, signal.SIG_IGN)
+    else:
+        if not interrupt_ignored:
+            signal.signal(signal.SIGINT, cancel)
+        signal.signal(signal.SIGTERM, stopped)
+    if mode != "none":
+        step = subprocess.Popen([sys.executable, sys.argv[0], "step", record, mode,
+                                 str(os.getppid()), str(signum)], stdout=subprocess.PIPE,
+                                start_new_session=mode == "task")
+        step.stdout.readline()
+    note(record, make=os.getpid(), session=os.getsid(0), step=step and step.pid,
+         step_group=step and os.getpgid(step.pid),
+         blocked=sorted(signal.pthread_sigmask(signal.SIG_BLOCK, ())),
+         hangup_ignored=signal.getsignal(signal.SIGHUP) is signal.SIG_IGN,
+         interrupt_ignored=interrupt_ignored)
+    os.kill(os.getppid(), signum)
+    if then == "exit":
+        sys.exit(0)
+# Outliving a script that never stops it fails the test instead of hanging it.
+time.sleep(15)
+sys.exit(1)
+'''
 
 
 def git(directory: Path, *arguments: str) -> str:
@@ -77,17 +143,47 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.builds = []
         self.fail_on = None
         self.signal_on = None
+        self.signal_on_start = None
+        self.make_then = "wait"
+        self.make_step = "task"
         self.signal_on_cleanup = None
         self.worktree_remove_fails = False
         self.plist_overrides = {}
+        self.stand_in = base / "make-stand-in.py"
+        self.stand_in.write_text(MAKE_STAND_IN)
+        self.record = base / "make-record.jsonl"
         # A stop signal the script leaves unhandled fails the test instead of
-        # ending the test process.
+        # ending the test process; Ctrl-C raises as in a terminal.
         for signum in TERMINATION_SIGNALS:
             self.addCleanup(signal.signal, signum, signal.signal(signum, self.unexpected_signal))
+        self.addCleanup(signal.signal, signal.SIGINT,
+                        signal.signal(signal.SIGINT, signal.default_int_handler))
         self.addCleanup(signal.pthread_sigmask, signal.SIG_UNBLOCK, STOP_SIGNALS)
+        self.addCleanup(self.kill_stand_ins)
 
     def unexpected_signal(self, signum, frame):
         raise AssertionError(f"signal {signum} reached the test")
+
+    def stand_in_reports(self):
+        if not self.record.exists():
+            return {}
+        reports = {}
+        for line in self.record.read_text().splitlines():
+            reports.update(json.loads(line))
+        return reports
+
+    def kill_stand_ins(self):
+        """Leave nothing running when the script under test failed to stop it."""
+        reports = self.stand_in_reports()
+        for pid in filter(None, [reports.get("make"), reports.get("step")]):
+            command = REAL_RUN(["ps", "-p", str(pid), "-o", "command="],
+                               capture_output=True, text=True).stdout
+            if str(self.stand_in) in command:
+                os.kill(pid, signal.SIGKILL)
+
+    def assert_gone(self, pid):
+        with self.assertRaises(ProcessLookupError, msg=f"process {pid} still exists"):
+            os.kill(pid, 0)
 
     def commit(self, tag, makefile):
         (self.root / "Makefile").write_text("\n".join(makefile) + "\n")
@@ -113,9 +209,32 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
             self.signal_cleanup("scratch")
         return REAL_RMTREE(path, *arguments, **options)
 
+    def reset_run(self):
+        self.kill_stand_ins()
+        with contextlib.suppress(FileNotFoundError):
+            self.record.unlink()
+        shutil.rmtree(self.output, ignore_errors=True)
+        self.builds = []
+
+    def fake_popen(self, command, *arguments, **options):
+        if command[0] != "make":
+            # subprocess.run starts git through Popen as well; nothing else may run.
+            self.assertEqual(command[0], "git", command)
+            return REAL_POPEN(command, *arguments, **options)
+        # make runs for real as a stand-in process, started exactly as asked.
+        stand_in = self.fake_make(command, options["cwd"], options["env"])
+        process = REAL_POPEN(stand_in, *arguments, **options)
+        if self.signal_on_start and str(self.stand_in) in stand_in:
+            # The request lands once make runs, before the script holds it.
+            deadline = time.monotonic() + 10
+            while "make" not in self.stand_in_reports():
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.02)
+            signum, self.signal_on_start = self.signal_on_start, None
+            os.kill(os.getpid(), signum)
+        return process
+
     def fake_run(self, command, *arguments, **options):
-        if command[0] == "make":
-            return self.fake_make(command, **options)
         if command[:3] == ["git", "worktree", "remove"]:
             self.signal_cleanup("worktree")
             if self.worktree_remove_fails:
@@ -131,9 +250,10 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         self.assertEqual(command[0], "git", command)
         return REAL_RUN(command, *arguments, **options)
 
-    def fake_make(self, command, cwd, env, stdout, stderr, check):
+    def fake_make(self, command, cwd, env):
+        """Record the build, write what make release leaves behind and return
+        the command of the process that stands in for make."""
         self.assertEqual(command[:2], ["make", "release"])
-        self.assertTrue(check)
         values = dict(argument.split("=", 1) for argument in command[2:])
         directory = Path(cwd).resolve()
         notes = Path(values["RELEASE_NOTES_FILE"])
@@ -145,9 +265,7 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         })
         tag = values["RELEASE_TAG"]
         if tag == self.fail_on:
-            raise subprocess.CalledProcessError(2, command)
-        if self.signal_on and self.signal_on[0] == tag:
-            os.kill(os.getpid(), self.signal_on[1])
+            return ["/bin/sh", "-c", "exit 2"]
         release = directory / "build/release"
         contents = release / "XDial.app/Contents"
         contents.mkdir(parents=True, exist_ok=True)
@@ -167,7 +285,10 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         archive.write_bytes(f"archive {tag}".encode())
         (release / f"XDial-{tag}.zip.sha256").write_text(f"checksum {tag}\n")
         (release / f"XDial-{tag}-notarization.json").write_text("{}\n")
-        return subprocess.CompletedProcess(command, 0)
+        if self.signal_on and self.signal_on[0] == tag:
+            return [sys.executable, str(self.stand_in), "make", str(self.record),
+                    str(int(self.signal_on[1])), self.make_then, self.make_step]
+        return ["/bin/sh", "-c", "exit 0"]
 
     def run_main(self, *arguments, environment=None, acceptance_id=ACCEPTANCE_ID,
                  lower="1.0.0", higher="1.1.0"):
@@ -179,6 +300,7 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(ACCEPTANCE, "ROOT", self.root))
             stack.enter_context(patch.object(ACCEPTANCE.subprocess, "run", self.fake_run))
+            stack.enter_context(patch.object(ACCEPTANCE.subprocess, "Popen", self.fake_popen))
             stack.enter_context(patch.object(ACCEPTANCE.shutil, "rmtree", self.fake_rmtree))
             stack.enter_context(patch.dict(os.environ, values, clear=True))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
@@ -432,8 +554,13 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
             self.assertFalse(build["cwd"].exists())
         self.assertEqual(self.worktrees(), [self.root])
 
-    def assert_stopped_and_cleaned(self, raised, signum):
-        self.assertEqual(raised.exception.code, 128 + signum)
+    def stopped_by(self, signum):
+        """Ctrl-C raises KeyboardInterrupt; kill and a closed terminal exit."""
+        return KeyboardInterrupt if signum == signal.SIGINT else SystemExit
+
+    def assert_stopped_and_cleaned(self, raised, signum, interrupt=signal.default_int_handler):
+        if signum != signal.SIGINT:
+            self.assertEqual(raised.exception.code, 128 + signum)
         for build in self.builds:
             self.assertTrue(build["registered"])
             self.assertFalse(build["cwd"].exists())
@@ -443,31 +570,110 @@ class BuildUpdateAcceptanceTests(unittest.TestCase):
         # The script hands the signals back as it found them.
         for name in TERMINATION_SIGNALS:
             self.assertEqual(signal.getsignal(name), self.unexpected_signal)
-        self.assertFalse(signal.pthread_sigmask(signal.SIG_BLOCK, set()) & STOP_SIGNALS)
+        self.assertIs(signal.getsignal(signal.SIGINT), interrupt)
+        self.assertFalse(signal.pthread_sigmask(signal.SIG_BLOCK, set()) & set(STOP_SIGNALS))
+
+    def assert_make_stopped(self, stopped=signal.SIGINT):
+        """make ran in a session of its own with no stop signal held, stopped on
+        the given signal (None: only SIGKILL ended it), and neither it nor the
+        step it started outlived the cleanup."""
+        reports = self.stand_in_reports()
+        self.assertEqual(reports["session"], reports["make"])
+        self.assertFalse(set(reports["blocked"]) & set(STOP_SIGNALS))
+        self.assertFalse(reports["interrupt_ignored"])
+        # A task step runs outside make's group, as xcodebuild's build tasks do.
+        self.assertEqual(reports["step_group"] == reports["make"], self.make_step == "stubborn")
+        self.assertEqual(reports.get("make_stopped"), stopped)
+        # The step wrote into the worktree on its way out, before it was removed.
+        self.assertEqual(reports.get("step_stopped"), stopped)
+        self.assert_gone(reports["make"])
+        self.assert_gone(reports["step"])
+
+    def short_stop_sequence(self):
+        """The stop sequence with short waits for what make ignores."""
+        return tuple((signum, 0.3 if signum != signal.SIGKILL else grace)
+                     for signum, grace in ACCEPTANCE.STOP_SEQUENCE)
 
     def test_termination_signals_still_remove_the_worktrees(self):
-        # kill and a closed terminal end Python without finally blocks by default.
-        for signum in TERMINATION_SIGNALS:
+        # kill and a closed terminal end Python without finally blocks by
+        # default; make runs in its own session, so for all three the script
+        # has to stop it and every step it started.
+        for signum in STOP_SIGNALS:
             with self.subTest(signal=signum):
-                shutil.rmtree(self.output, ignore_errors=True)
-                self.builds = []
+                self.reset_run()
                 self.signal_on = ("v1.1.0-beta.1", signum)
-                with self.assertRaises(SystemExit) as raised:
+                with self.assertRaises(self.stopped_by(signum)) as raised:
                     self.run_main("--beta", "--lower-ref", "v1.1.0")
                 self.assertEqual(len(self.builds), 2)
+                self.assert_make_stopped()
                 self.assert_stopped_and_cleaned(raised, signum)
 
+    def test_a_stop_signal_while_make_starts_still_stops_it(self):
+        for signum in STOP_SIGNALS:
+            with self.subTest(signal=signum):
+                self.reset_run()
+                self.signal_on = ("v1.1.0-beta.1", 0)
+                self.signal_on_start = signum
+                with self.assertRaises(self.stopped_by(signum)) as raised:
+                    self.run_main("--beta", "--lower-ref", "v1.1.0")
+                self.assertIsNone(self.signal_on_start)
+                self.assertEqual(len(self.builds), 2)
+                self.assert_make_stopped()
+                self.assert_stopped_and_cleaned(raised, signum)
+
+    def test_make_receives_sigint_even_when_the_script_ignores_it(self):
+        # A non-interactive shell starts a background job with SIGINT ignored.
+        self.addCleanup(signal.signal, signal.SIGINT, signal.signal(signal.SIGINT, signal.SIG_IGN))
+        self.signal_on = ("v1.1.0-beta.1", signal.SIGTERM)
+        with patch.object(ACCEPTANCE, "STOP_SEQUENCE", self.short_stop_sequence()), \
+                self.assertRaises(SystemExit) as raised:
+            self.run_main("--beta", "--lower-ref", "v1.1.0")
+        self.assert_make_stopped()
+        self.assert_stopped_and_cleaned(raised, signal.SIGTERM, interrupt=signal.SIG_IGN)
+
+    def test_make_that_ignores_sigint_and_sigterm_is_killed_before_the_cleanup(self):
+        self.signal_on = ("v1.1.0-beta.1", signal.SIGTERM)
+        self.make_step = "stubborn"
+        stderr = io.StringIO()
+        with patch.object(ACCEPTANCE, "STOP_SEQUENCE", self.short_stop_sequence()), \
+                contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+            self.run_main("--beta", "--lower-ref", "v1.1.0")
+        self.assert_make_stopped(stopped=None)
+        self.assert_stopped_and_cleaned(raised, signal.SIGTERM)
+        self.assertIn("did not stop on SIGINT", stderr.getvalue())
+
+    def test_an_ignored_hangup_stays_ignored(self):
+        # Under nohup a closed terminal must stop neither the script nor make.
+        self.addCleanup(signal.signal, signal.SIGHUP, signal.signal(signal.SIGHUP, signal.SIG_IGN))
+        self.signal_on = ("v1.1.0-beta.1", signal.SIGHUP)
+        self.make_then = "exit"
+        self.make_step = "none"
+
+        self.run_main("--beta", "--lower-ref", "v1.1.0")
+
+        self.assertEqual(len(self.builds), 3)
+        self.assertTrue(self.stand_in_reports()["hangup_ignored"])
+        self.assertTrue((self.output / "feeds").is_dir())
+        self.assertEqual(self.worktrees(), [self.root])
+        self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), self.unexpected_signal)
+
     def test_a_stop_signal_during_cleanup_waits_for_it(self):
+        # Each signal once the builds are done; Ctrl-C also as the second of
+        # two presses, the first stopping B's build.
+        cases = [(signum, None) for signum in STOP_SIGNALS] + [(signal.SIGINT, "v1.1.0-beta.1")]
         for step in ["worktree", "scratch"]:
-            for signum in TERMINATION_SIGNALS:
-                with self.subTest(step=step, signal=signum):
-                    shutil.rmtree(self.output, ignore_errors=True)
-                    self.builds = []
+            for signum, interrupted in cases:
+                with self.subTest(step=step, signal=signum, interrupted=interrupted):
+                    self.reset_run()
+                    self.signal_on = interrupted and (interrupted, signum)
                     self.signal_on_cleanup = (step, signum)
-                    with self.assertRaises(SystemExit) as raised:
+                    with self.assertRaises(self.stopped_by(signum)) as raised:
                         self.run_main("--beta", "--lower-ref", "v1.1.0")
                     self.assertIsNone(self.signal_on_cleanup)
-                    self.assertEqual(len(self.builds), 3)
+                    self.assertEqual(len(self.builds), 2 if interrupted else 3)
+                    if interrupted:
+                        self.assert_make_stopped()
                     self.assert_stopped_and_cleaned(raised, signum)
 
     def test_one_stop_request_is_enough(self):

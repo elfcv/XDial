@@ -53,6 +53,13 @@ LOWER_REF_VARIABLES = ("RELEASE_UPDATE_ACCEPTANCE_ID", "RELEASE_NOTES_FILE")
 # `kill` sends SIGTERM and a closed terminal SIGHUP; by default either ends
 # Python without running finally blocks. Ctrl-C (SIGINT) already raises.
 TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+STOP_SIGNALS = (signal.SIGINT, *TERMINATION_SIGNALS)
+# What make release's process group receives on a stop request, in turn, and
+# how many seconds each signal gets. SIGINT comes first, as from Ctrl-C in a
+# terminal: xcodebuild then cancels the build tasks it runs in process groups
+# of their own and waits for them, where SIGTERM ends xcodebuild at once and
+# leaves them writing into the worktree.
+STOP_SEQUENCE = ((signal.SIGINT, 30.0), (signal.SIGTERM, 5.0), (signal.SIGKILL, 5.0))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -138,12 +145,14 @@ def private_configuration(commits: list, environment: dict) -> list:
 def exit_on_termination():
     """Raise SystemExit for SIGTERM and SIGHUP, as Ctrl-C raises
     KeyboardInterrupt, so the temporary worktrees are still removed. One stop
-    request is enough: later termination signals are ignored."""
+    request is enough: later termination signals are ignored. A signal ignored
+    on entry, such as SIGHUP under nohup, stays ignored, for make as well."""
     def terminate(signum, frame):
         for name in TERMINATION_SIGNALS:
             signal.signal(name, signal.SIG_IGN)
         sys.exit(128 + signum)
-    previous = {name: signal.signal(name, terminate) for name in TERMINATION_SIGNALS}
+    previous = {name: signal.signal(name, terminate) for name in TERMINATION_SIGNALS
+                if signal.getsignal(name) is not signal.SIG_IGN}
     try:
         yield
     finally:
@@ -154,12 +163,69 @@ def exit_on_termination():
 @contextlib.contextmanager
 def signals_deferred():
     """Hold stop signals while a cleanup runs, so none can cut it short; they
-    arrive once it is done."""
-    held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, *TERMINATION_SIGNALS})
+    arrive once it is done. Yields the mask to restore."""
+    held = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
     try:
-        yield
+        yield held
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, held)
+
+
+def process_group_ended(process: subprocess.Popen, seconds: float) -> bool:
+    """Whether every process in make's group is gone within seconds."""
+    deadline = time.monotonic() + seconds
+    while True:
+        process.poll()  # reaps make, the group leader, once it has exited
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass  # macOS answers EPERM while the group holds only unreaped zombies
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def stop_release(process: subprocess.Popen, directory: Path) -> None:
+    """Signal make's process group along STOP_SEQUENCE until none of it runs:
+    a survivor would write build/ into the worktree again after it is removed."""
+    for attempt, (signum, grace) in enumerate(STOP_SEQUENCE):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signum)
+        if process_group_ended(process, grace):
+            if attempt:
+                print(f"warning: make release did not stop on SIGINT; build tasks xcodebuild "
+                      f"started may still write into {directory}", file=sys.stderr, flush=True)
+            return
+    print(f"warning: make release (process group {process.pid}) is still running; stop it "
+          f"with kill -KILL -{process.pid}", file=sys.stderr, flush=True)
+
+
+def run_release(command: list, directory: Path, environment: dict, stream) -> None:
+    """Run make release in a session of its own, so only this script receives
+    the terminal's Ctrl-C and hangup, and stop it on any stop request before
+    the worktree is removed."""
+    process = None
+    try:
+        # A signal arriving while make starts waits until process is set.
+        with signals_deferred() as held:
+            def prepare():
+                # make must not inherit the held signals, and acts on the
+                # SIGINT stop_release sends even if this script ignores it.
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                signal.pthread_sigmask(signal.SIG_SETMASK, held)
+            process = subprocess.Popen(
+                command, cwd=directory, env=environment, stdout=stream,
+                stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=prepare)
+        returncode = process.wait()
+    except BaseException:
+        if process is not None:
+            with signals_deferred():
+                stop_release(process, directory)
+        raise
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, command)
 
 
 def remove_directory(directory: Path) -> None:
@@ -220,9 +286,8 @@ def build_package(package: Package, acceptance_id: str, output: Path, environmen
     print(f"Building and notarizing {package.role}: {package.tag[1:]} / {package.build}{origin}",
           flush=True)
     with log.open("w") as stream:
-        subprocess.run(release_command(package, acceptance_id, notes),
-                       cwd=package.source.directory, env=environment,
-                       stdout=stream, stderr=subprocess.STDOUT, check=True)
+        run_release(release_command(package, acceptance_id, notes), package.source.directory,
+                    environment, stream)
     source = package.source.directory / "build/release"
     names = ["XDial.app", package.archive_name, f"{package.archive_name}.sha256",
              f"XDial-{package.tag}-notarization.json"]
