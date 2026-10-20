@@ -200,6 +200,11 @@ test-release-contract:
 	python3 -m unittest discover -s test -p 'publish*release_test.py'
 	python3 -m unittest discover -s test -p 'restart_macos_test.py'
 
+# Fixture repositories and plists only; plutil keeps it in the macOS CI job.
+.PHONY: test-debug-rollback
+test-debug-rollback:
+	bash test/check_debug_rollback_test.sh
+
 # Opt-in macOS login-session check: launches only isolated fixture apps.
 .PHONY: test-installation-launch
 test-installation-launch:
@@ -209,7 +214,7 @@ macos-identity-contract:
 	cd macos && xcodegen generate
 	bash scripts/verify-macos-identity-contract.sh
 
-test-macos-transaction: test-release-contract macos-identity-contract
+test-macos-transaction: test-release-contract test-debug-rollback macos-identity-contract
 	@! rg -n 'probeNetwork|127\.0\.0\.1:9090|test-out' macos/Sources/XDial
 	@test "$$(rg -l 'willSleepNotification' macos/Sources/XDial macos/Shared | sort)" = macos/Sources/XDial/AppState.swift
 	@! rg -n 'screensDidSleepNotification|systemIsSleeping|sawUnavailablePath' macos/Sources/XDial macos/Shared
@@ -236,6 +241,7 @@ test-macos-transaction: test-release-contract macos-identity-contract
 	@! rg -n 'NSApp\.hide\(' macos/Sources/XDial/XDialApp.swift
 	@rg -q 'NSApp\.deactivate\(\)' macos/Sources/XDial/XDialApp.swift
 	@! rg -n '/usr/bin/open|open -n' scripts/restart-macos-app.sh macos/Sources/XDial/ApplicationRelocator.swift
+	@test "$$(awk '/^restart:/ { recipe = 1; next } recipe && !/^\t/ { exit } recipe && /check-debug-rollback\.sh/ { print "check" } recipe && /\$$\(MAKE\) app / { print "build" } recipe && /restart-macos-app\.sh/ { print "install" }' Makefile | paste -sd ' ' -)" = 'check build check install'
 	@rg -q 'ApplicationLaunchPolicy\.configure' tools/launch-macos-app.swift macos/Sources/XDial/ApplicationRelocator.swift macos/Sources/XDial/SettingsDockProxyCoordinator.swift
 	@rg -q 'addsToRecentItems = false' macos/Sources/XDial/ApplicationLaunchPolicy.swift
 	@! rg -n '@State[^\n]*dismissedScenarioSwitchFailure' macos/Sources/XDial/MainPopover.swift
@@ -433,8 +439,12 @@ publish-next:
 # /Applications 中的最终版本。外网验收必须放在新事务提交之后，
 # 不得在旧实例退出与新实例启动之间扩大断网窗口。
 # 构建失败不得影响正在运行的旧实例。
+# 构建前拒绝回退已装 Debug 里当前 HEAD 没有的提交；构建耗时较长，
+# 安装前再查一次，挡住构建期间其他工作区装上的 Debug。
 restart:
+	@bash scripts/check-debug-rollback.sh
 	@$(MAKE) app DEVELOPMENT_CHANNEL=debug DEBUG_BUILD_VERSION=$(DEBUG_BUILD_VERSION)
+	@bash scripts/check-debug-rollback.sh
 	@bash scripts/restart-macos-app.sh "$(BUILD_DIR_ABS)/XDial Debug.app" \
 		"$(MACOS_APP_LAUNCHER_ABS)"
 

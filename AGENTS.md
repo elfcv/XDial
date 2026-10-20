@@ -2,8 +2,20 @@
 
 macOS 菜单栏网络分流工具；iOS / tvOS 共用 Go 核心。
 
-修改完成后合入最新 main，验证后直接覆盖安装并重启 Debug。
+修改完成后合入最新 main，验证后直接覆盖安装并重启 Debug；`make restart` 会拒绝回退已装 Debug 里尚未进 main 的提交。
 XDial Next 是独立身份的测试通道，从远程 `xdial-next` 分支发布 GitHub prerelease，见 [Next 发布](docs/agent/next-releases.md)。
+
+## 分支
+
+| 分支 | 用途 | 规则 |
+|---|---|---|
+| `main` | 正式版基线，`vX.Y.Z` 从这里发布 | 只经 PR 合入；新工作从这里拉出 |
+| 工作分支：`claude/*`、`codex/*`、`cindy/*`、`feature/*`、`jev/*` | 单个修复或功能；`jev/*` 由 [jev 闭环](docs/agent/jev-loop.md) 自动创建 | 从 main 拉出，PR 只开向 main；修复直接进 main，实验功能另合进 `xdial-beta` |
+| `xdial-beta` | beta 线：main 加上实验功能，与正式版同一身份、靠更新源区分 | 只接收 main 和工作分支的合并，不从它拉分支、不合回 main；beta 发布上线前只作集成、不分发 |
+| `xdial-next` | 旧 Next 通道，已冻结 | Next 身份删除后移除 |
+
+Debug 从正在验证的工作分支构建（已合入最新 main），没有 Debug 专用分支；确需回退已装 Debug 时设 `ALLOW_DEBUG_ROLLBACK=1`。
+main 回滚过的功能要进 beta，先在 `xdial-beta` 上撤销那次回滚，再合入该功能分支。
 
 ## 核心边界
 

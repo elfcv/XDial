@@ -50,6 +50,12 @@ make app-debug MACOS_DEBUG_XCODEBUILD_FLAGS=-allowProvisioningUpdates
 | `make restart` | 完整构建 Debug 后退出旧 Debug、安装、启动最终 App，等待安装与连接意图收敛 |
 | 从 `/Applications` 外正常启动 App | 自动定位、替换同通道安装并启动最终 App，不是隔离的源码运行 |
 
+`make restart` 在构建前和安装前各运行一次只读的 [check-debug-rollback.sh](../../scripts/check-debug-rollback.sh)：
+已装 Debug 的 `XDialSourceRevision` 不是当前 HEAD 的祖先时，列出会被丢掉的提交并停止；读不到修订或本地没有该提交时同样停止
+（后者先 `git fetch`）。被拒时，这些提交都已在 `origin/main` 上，就先合入最新 main；否则它们属于别的分支尚未合入的工作，
+或本分支 amend / rebase 前的旧提交（列表用 `=` 标出 HEAD 已有同样改动的提交），不要合进当前工作分支，
+先和用户确认，再设 `ALLOW_DEBUG_ROLLBACK=1` 显式放行。修订取构建时的 HEAD，不记录未提交的改动。
+
 Debug 曾安装为 `/Applications/XDail Debug.app`。新包发现该路径上签名相同的 Debug 时，先结束旧 App，
 由新包注销旧容器注册的 helper，再装到新路径；新版 helper 与 System Extension 就绪后才把旧包移入废纸篓，
 仍有进程占用时留给下一次安装事务。正式版与 Next 按新旧两个路径识别 Debug；此前发布的版本只认旧路径，
