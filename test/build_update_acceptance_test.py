@@ -16,6 +16,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# Fixture repositories are removed right after use; keep git from starting a
+# detached auto maintenance that could still be writing into them.
+os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="maintenance.auto",
+                  GIT_CONFIG_VALUE_0="false")
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(

@@ -9,6 +9,11 @@ import unittest
 from unittest.mock import Mock, patch
 import uuid
 
+# Fixture repositories are removed right after use; keep git from starting a
+# detached auto maintenance that could still be writing into them.
+os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="maintenance.auto",
+                  GIT_CONFIG_VALUE_0="false")
+
 
 spec = importlib.util.spec_from_file_location("jev_loop", Path(__file__).resolve().parents[1] / "scripts/jev_loop.py")
 jev = importlib.util.module_from_spec(spec)
