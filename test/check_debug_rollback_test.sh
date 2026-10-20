@@ -7,6 +7,10 @@ check="$repository_root/scripts/check-debug-rollback.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/xdial-debug-rollback-test.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
 
+# Fixture repositories are removed right after use; keep git from starting a
+# detached auto maintenance that could still be writing into them.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false
+
 # The fixture must not pick up the operator's git hooks, signing or log format.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_CEILING_DIRECTORIES="$test_root"

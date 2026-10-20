@@ -7,6 +7,10 @@ contract="$repository_root/scripts/release-contract.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/xdial-release-test.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
 
+# Fixture repositories are removed right after use; keep git from starting a
+# detached auto maintenance that could still be writing into them.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false
+
 fail() {
     echo "release contract test failed: $*" >&2
     exit 1

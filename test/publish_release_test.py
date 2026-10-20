@@ -5,6 +5,7 @@ import importlib.util
 import io
 import itertools
 import json
+import os
 import plistlib
 import subprocess
 import tempfile
@@ -13,6 +14,11 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+# Fixture repositories are removed right after use; keep git from starting a
+# detached auto maintenance that could still be writing into them.
+os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="maintenance.auto",
+                  GIT_CONFIG_VALUE_0="false")
 
 
 ROOT = Path(__file__).resolve().parents[1]
