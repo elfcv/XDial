@@ -79,7 +79,7 @@ endif
 MACOS_DEPLOYMENT_VERIFIER := scripts/verify-macos-deployment-target.py
 MACOS_COMPONENT_NAMES_VERIFIER := scripts/verify-macos-component-names.py
 
-.PHONY: all cli cli-debug app ci-macos-build macos-identity-contract release-inputs release-app release publish test-release-contract restart inspector clean prepare-patched-go public-content-gate go-vet go-build test test-patched-tailscale test-patched-sing-box test-patched-sslcon test-macos-transaction test-smoke sing-box-test-validator check-mobile-libbox-deps libbox-xcframework libbox-ios-xcframework libbox-macos-xcframework appletv ios mobile-app-icons FORCE_PATCHED_GO
+.PHONY: all cli cli-debug app ci-macos-build macos-identity-contract release-inputs release-helper release-app release publish test-release-contract restart inspector clean prepare-patched-go public-content-gate go-vet go-build test test-patched-tailscale test-patched-sing-box test-patched-sslcon test-macos-transaction test-smoke sing-box-test-validator check-mobile-libbox-deps libbox-xcframework libbox-ios-xcframework libbox-macos-xcframework appletv ios mobile-app-icons FORCE_PATCHED_GO
 
 $(MACOS_ICON_GENERATOR_BINARY): $(MACOS_BRAND_PALETTE_SOURCE) $(MACOS_ICON_SOURCE) $(MACOS_ICON_GENERATOR)
 	@mkdir -p "$(BUILD_DIR)"
@@ -336,11 +336,15 @@ release-inputs:
 		echo "acceptance build: stable tag/main gate is intentionally skipped"; \
 	fi
 
-release-app: release-inputs libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
+# Go 按编译时的 git status 记录 helper 的 vcs.modified，而图标目标会重写已跟踪的
+# .icns，所以 helper 紧跟在确认工作树干净的 release-inputs 之后、其他前置目标之前编译。
+release-helper: release-inputs $(PATCHED_WORKFILE)
 	@mkdir -p $(BUILD_DIR)
 	$(MACOS_GO_BUILD_ENV) $(PATCHED_GO_ENV) go build -tags '$(DESKTOP_GO_TAGS)' -trimpath \
 		-ldflags "-X main.version=$(RELEASE_TAG) -s -w" \
 		-o $(BUILD_DIR)/xdial ./cmd/xdial/
+
+release-app: release-helper libbox-macos-xcframework macos/AppIcon.icns macos/SettingsDockIcon.icns macos-identity-contract
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDialTransparentProxy -configuration Release \
 		-destination 'platform=macOS,arch=arm64' \
 		-derivedDataPath $(BUILD_DIR)/macos-xcode-release \

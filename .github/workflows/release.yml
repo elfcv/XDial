@@ -125,6 +125,16 @@ jobs:
             NOTARY_KEY_ID="$NOTARY_KEY_ID" \
             NOTARY_ISSUER="$NOTARY_ISSUER"
 
+      # Official CI only: preset configuration packages share the release
+      # contract but are not necessarily built from a clean tag checkout.
+      - name: Verify the shipped helper comes from the clean tagged commit
+        run: |
+          shipped="$RUNNER_TEMP/xdial-shipped"
+          rm -rf "$shipped"
+          mkdir -p "$shipped"
+          /usr/bin/ditto -x -k "build/release/XDial-${RELEASE_TAG}.zip" "$shipped"
+          scripts/verify-release-helper-source.sh "$shipped/XDial.app" "$RELEASE_TAG"
+
       - name: Stage immutable release assets for verification
         run: |
           python3 - <<'PY'

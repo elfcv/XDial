@@ -37,6 +37,17 @@ provisioning profiles 与 Developer ID 签名，经公证、staple 和归档校�
 `NOTARY_KEY` / `NOTARY_KEY_ID` / `NOTARY_ISSUER`。`make release-app` 只生成待公证 App；
 tag workflow 将完整归档上传为 draft Release。
 
+`release-contract.sh verify-app` 是正式版、预置配置包和验收包共用的分发门禁：宿主、Settings UI、
+System Extension 与 helper 都须带 hardened runtime 和安全时间戳，且没有 `get-task-allow`；宿主
+`Contents/MacOS` 下的文件不得含 `DebugServer:`（Debug 配置把宿主代码放在 `*.debug.dylib`）；helper
+不得带 `main.buildFlavor`。`-trimpath` 构建的 `go version -m` 不记录 `-ldflags`，所以 helper 的
+`version` 输出会写出 flavor，由合约的 `xdial <tag>` 逐字比对拒绝。读 helper 的构建信息要用 `go`，
+所以运行 `verify-app` / `verify-archive` 的机器（含 `make publish` 的操作员 Mac）都须装 Go。只在 tag
+workflow 里，[verify-release-helper-source.sh](../../scripts/verify-release-helper-source.sh) 还要求
+helper 的 `vcs.revision` 等于 tag 所在提交且 `vcs.modified=false`。Go 只把目录形式的 `.git` 当作仓库根：
+在链接 worktree 里构建，会记下外层普通检出的修订；不在任何检出内时不记录 vcs。这项因此只在普通
+checkout 中成立；`release-app` 先编译 helper，再运行会重写已跟踪 `.icns` 的图标目标。
+
 `make publish RELEASE_TAG=vX.Y.Z` 调用 [publish-release.py](../../scripts/publish-release.py)。
 它使用签名 Mac 上的操作员 `gh` 登录，重新获取源码仓库的 main/tag 并校验主线归属，
 下载、校验真实附件，再公开 draft、派发更新仓库的 `publish.yml`，等待 Pages 部署并
