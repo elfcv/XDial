@@ -66,28 +66,42 @@ final class VersionConstantContractTests: XCTestCase {
     }
 
     func testUpdateFormatsArePinned() throws {
-        XCTAssertEqual(AppUpdateRelaunchIntent.schemaVersion, 1, policy)
+        XCTAssertEqual(AppUpdateRelaunchIntent.schemaVersion, 2, policy)
         let now = Date(timeIntervalSince1970: 1000)
-        for (schemaVersion, permitted) in [(1, true), (2, false)] {
+        // Schema 1 (written by v0.9.x and earlier, no targetBuild) stays readable;
+        // schema 2 also binds the build; anything newer is refused.
+        for (schemaVersion, permitted) in [(1, true), (2, true), (3, false)] {
             let intent = AppUpdateRelaunchIntent(
                 schemaVersion: schemaVersion, targetVersion: "0.8.0",
+                targetBuild: schemaVersion == 1 ? nil : "100",
                 reconnectScenarioID: nil, createdAt: now
             )
             XCTAssertEqual(
-                AppUpdateRelaunchIntentPolicy.permitsTarget(intent, version: "0.8.0", now: now),
+                AppUpdateRelaunchIntentPolicy.permitsTarget(intent, version: "0.8.0", build: "100", now: now),
                 permitted, "relaunch intent schemaVersion \(schemaVersion); \(policy)"
             )
         }
 
-        func manifest(schemaVersion: Int) throws -> Data {
+        // stable.json and beta.json share one manifest schema.
+        func manifest(schemaVersion: Int, channel: AppUpdateChannel) throws -> Data {
             try JSONSerialization.data(withJSONObject: [
-                "schemaVersion": schemaVersion, "revision": 1, "channel": "stable",
+                "schemaVersion": schemaVersion, "revision": 1, "channel": channel.rawValue,
                 "generatedAt": "1970-01-01T00:15:00Z", "release": NSNull(),
             ])
         }
-        XCTAssertEqual(try AppUpdateManifestParser.parse(manifest(schemaVersion: 1)).schemaVersion, 1, policy)
-        XCTAssertThrowsError(try AppUpdateManifestParser.parse(manifest(schemaVersion: 2)), policy) { error in
-            XCTAssertEqual(error as? AppUpdateManifestError, .unsupportedSchema, self.policy)
+        for channel in AppUpdateChannel.allCases {
+            XCTAssertEqual(
+                try AppUpdateManifestParser.parse(
+                    manifest(schemaVersion: 1, channel: channel), expectedChannel: channel
+                ).schemaVersion, 1, policy
+            )
+            XCTAssertThrowsError(
+                try AppUpdateManifestParser.parse(
+                    manifest(schemaVersion: 2, channel: channel), expectedChannel: channel
+                ), policy
+            ) { error in
+                XCTAssertEqual(error as? AppUpdateManifestError, .unsupportedSchema, self.policy)
+            }
         }
     }
 

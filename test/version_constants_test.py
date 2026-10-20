@@ -179,11 +179,11 @@ PINS = [
     },
     {
         "name": "更新后重启意图 schemaVersion",
-        "value": "1",
-        "shared": "旧版本在更新前写入 UserDefaults，新版本重启后读取并决定是否恢复连接",
+        "value": "2",
+        "shared": "旧版本在更新前写入 UserDefaults，新版本重启后读取并决定是否恢复连接；读取方仍接受 v0.9.x 及更早写下的 1",
         "sites": [
             site("Swift", "macos/Sources/XDial/AppUpdateTransaction.swift",
-                 r"struct AppUpdateRelaunchIntent: Codable, Equatable \{\s*static let schemaVersion = (\d+)"),
+                 r"struct AppUpdateRelaunchIntent: Codable, Equatable \{\s*(?:///[^\n]*\n\s*)*static let schemaVersion = (\d+)"),
         ],
     },
     {
@@ -194,7 +194,7 @@ PINS = [
             site("Swift", "macos/Sources/XDial/AppUpdateReleaseLookup.swift",
                  r"wire\.schemaVersion == (\d+)"),
             site("Python", "scripts/publish-release.py",
-                 r'feed\.get\("schemaVersion"\) != (\d+)'),
+                 r'expected = render_feed\(\{\s*"schemaVersion":\s*(\d+),'),
         ],
     },
     {
