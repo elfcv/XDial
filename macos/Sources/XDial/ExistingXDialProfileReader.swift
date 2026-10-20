@@ -4,15 +4,6 @@ import Security
 /// Read-only snapshots used for the first shared-library conversion. In particular, do
 /// not use KeychainStore.loadVault(): its legacy fallback writes to the source.
 enum ExistingXDialProfileReader {
-    static func readDebug(home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                          keychainVault: @escaping () throws -> Data? = readDebugKeychainVault) throws -> Profile {
-        let source = ConfigurationStorage.desktopLocations.first { $0.keychainService == "com.kafeifei.xdial.debug" }!
-        guard let profile = try read(source, home: home, keychainVault: keychainVault) else {
-            throw ProfileLibraryError.invalid("没有找到 XDial Debug 的已保存配置")
-        }
-        return profile
-    }
-
     static func profileData(at source: ConfigurationStorage.LegacyLocation, home: URL) throws -> Data? {
         let preferences = home.appendingPathComponent(source.preferencesPath)
         guard FileManager.default.fileExists(atPath: preferences.path) else { return nil }
@@ -88,7 +79,7 @@ enum ExistingXDialProfileReader {
             if let value = vault[id + "-ss"] { profile.lines[index].ssPassword = value }
             if let value = vault[id + "-vmess"] { profile.lines[index].vmessUUID = value }
             if let value = vault[id + "-anytls"] { profile.lines[index].anytlsPassword = value }
-            // A successful connection in Debug is not a verified Next line.
+            // A connection that succeeded in the old app does not verify the converted line.
             profile.lines[index].verified = profile.lines[index].type == "direct"
         }
         return profile
@@ -102,10 +93,6 @@ enum ExistingXDialProfileReader {
             throw ProfileLibraryError.invalid("现有配置超过迁移大小限制")
         }
         return data
-    }
-
-    static func readDebugKeychainVault() throws -> Data? {
-        try readKeychainVault(service: "com.kafeifei.xdial.debug")
     }
 
     static func readKeychainVault(service: String) throws -> Data? {

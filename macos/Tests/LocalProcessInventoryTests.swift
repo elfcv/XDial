@@ -3,7 +3,7 @@ import XCTest
 
 final class LocalProcessInventoryTests: XCTestCase {
     func testOtherInstalledChannelsDoNotBlockHelperRegistration() {
-        for name in ["XDial.app", "XDial Debug.app", "XDial Next.app"]
+        for name in ["XDial.app", "XDial Debug.app"]
         where name != XDialBuildIdentity.applicationBundleName {
             for executable in ["XDial", "xdial-daemon"] {
                 let entry = LocalProcessInventory.Entry(
@@ -17,6 +17,23 @@ final class LocalProcessInventoryTests: XCTestCase {
                     executableNames: ["xdial", "xdial-daemon"]
                 ), false, "The installed \(name) process must not block this channel")
             }
+        }
+    }
+
+    func testRetiredNextProcessStaysUnknown() {
+        // Next is no longer a known sibling. Its leftover helper must pause this
+        // channel's helper maintenance rather than be cleared as unrelated.
+        for executable in ["XDial", "xdial-daemon"] {
+            let entry = LocalProcessInventory.Entry(
+                pid: 42, name: nil,
+                executableURL: URL(fileURLWithPath:
+                    "/Applications/XDial Next.app/Contents/MacOS/\(executable)")
+            )
+            XCTAssertNil(entry.belongsToProductBundle(
+                XDialBuildIdentity.applicationDestinationURL,
+                excludingSiblingBundleURLs: XDialBuildIdentity.siblingApplicationDestinationURLs,
+                executableNames: ["xdial", "xdial-daemon"]
+            ), "The retired \(executable) process must stay unknown")
         }
     }
 

@@ -321,7 +321,7 @@ func handleClient(
 				}
 
 			case "tailscale-prepare":
-				profileJSON, err := config.ProfileWithTailscaleChannel(req.Profile, buildFlavor)
+				profileJSON, err := config.ProfileWithTailscaleChannel(req.Profile, currentRuntimeIdentity().tailscaleDeviceChannel)
 				if err != nil {
 					req.AuthKey = ""
 					client.SendResponse(Response{ID: req.ID, OK: false, Message: "invalid Tailscale profile"})

@@ -14,7 +14,7 @@ def main():
     arguments = parser.parse_args()
     bundle = arguments.bundle.resolve()
     info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
-    if info.get("XDialBuildConfiguration") not in ("Debug", "Next"):
+    if info.get("XDialBuildConfiguration") != "Debug":
         parser.error("requires a development bundle; release apps must not be launched by this check")
     executable = bundle / "Contents/MacOS/XDial"
     code = bundle / "Contents/MacOS/XDial.debug.dylib"

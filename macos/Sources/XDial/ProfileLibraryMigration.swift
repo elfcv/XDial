@@ -2,7 +2,8 @@ import CryptoKit
 import Foundation
 
 enum ProfileLibraryMigration {
-    /// Pre-shared Next libraries already contain user edits and multiple Profiles.
+    /// Libraries saved by the retired Next identity before the shared library
+    /// existed already contain user edits and multiple Profiles.
     /// Preserve the whole latest library before considering older single Profiles.
     static func initialLibrary(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,

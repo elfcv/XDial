@@ -2,60 +2,7 @@ import XCTest
 
 final class XDialBuildIdentityTests: XCTestCase {
     func testDevelopmentAndFormalIdentityAreCompleteAndDisjoint() {
-        #if XDIAL_NEXT_IDENTITY
-        XCTAssertTrue(XDialBuildIdentity.isDevelopment)
-        XCTAssertEqual(
-            XDialBuildIdentity.applicationIdentifier,
-            "com.kafeifei.xdial.next"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.helperIdentifier,
-            "com.kafeifei.xdial.next.helper"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.daemonIdentifier,
-            "com.kafeifei.xdial.next.daemon"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.transparentProxyIdentifier,
-            "com.kafeifei.xdial.next.transparent-proxy"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.settingsUIIdentifier,
-            "com.kafeifei.xdial.next.settings-ui"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.appGroupIdentifier,
-            "UVZM439VGU.com.kafeifei.xdial.next.network"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.applicationBundleName,
-            "XDial Next.app"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.applicationDisplayName,
-            "XDial Next"
-        )
-        XCTAssertEqual(
-            XDialBuildIdentity.transparentProxyDisplayName,
-            "XDial Next Network Extension"
-        )
-        XCTAssertEqual(XDialBuildIdentity.productTitle, "XDial Next")
-        XCTAssertEqual(XDialBuildIdentity.dataIdentifier, "com.kafeifei.xdial.next")
-        XCTAssertEqual(XDialBuildIdentity.userDataDirectoryName, ".xdial-next")
-        XCTAssertEqual(XDialBuildIdentity.applicationSupportDirectoryName, "XDial Next")
-        XCTAssertEqual(XDialBuildIdentity.logDirectoryName, "XDial Next")
-        XCTAssertEqual(XDialBuildIdentity.daemonSocketPath, "/tmp/xdial-next.sock")
-        XCTAssertEqual(XDialBuildIdentity.engineRuntimePath, "/tmp/xdial-next-engine")
-        XCTAssertEqual(
-            XDialBuildIdentity.registrationMaintenancePath,
-            "/tmp/xdial-next-registration-maintenance"
-        )
-        XCTAssertEqual(XDialBuildIdentity.debugServerPort, 19878)
-        XCTAssertFalse(XDialBuildIdentity.allowsAutomaticUpdates)
-        XCTAssertFalse(XDialBuildIdentity.allowsFormalDataMigration)
-        XCTAssertFalse(XDialBuildIdentity.allowsLegacyCleanup)
-        #elseif XDIAL_DEVELOPMENT_IDENTITY
+        #if XDIAL_DEVELOPMENT_IDENTITY
         XCTAssertTrue(XDialBuildIdentity.isDevelopment)
         XCTAssertEqual(
             XDialBuildIdentity.applicationIdentifier,
@@ -112,6 +59,9 @@ final class XDialBuildIdentityTests: XCTestCase {
         XCTAssertFalse(XDialBuildIdentity.allowsAutomaticUpdates)
         XCTAssertFalse(XDialBuildIdentity.allowsFormalDataMigration)
         XCTAssertFalse(XDialBuildIdentity.allowsLegacyCleanup)
+        XCTAssertEqual(XDialBuildIdentity.tailscaleDeviceChannel, "debug")
+        XCTAssertEqual(XDialBuildIdentity.updateStagingDirectoryName, "XDialDebugUpdates")
+        XCTAssertEqual(XDialBuildIdentity.installationArtifactPrefix, ".Xdial-debug")
         #else
         XCTAssertFalse(XDialBuildIdentity.isDevelopment)
         XCTAssertEqual(XDialBuildIdentity.applicationIdentifier, "com.kafeifei.xdial.app")
@@ -147,7 +97,22 @@ final class XDialBuildIdentityTests: XCTestCase {
         XCTAssertTrue(XDialBuildIdentity.allowsAutomaticUpdates)
         XCTAssertTrue(XDialBuildIdentity.allowsFormalDataMigration)
         XCTAssertTrue(XDialBuildIdentity.allowsLegacyCleanup)
+        // A beta release is this same formal build; it must not get its own
+        // Tailscale device name.
+        XCTAssertEqual(XDialBuildIdentity.tailscaleDeviceChannel, "stable")
+        XCTAssertEqual(XDialBuildIdentity.updateStagingDirectoryName, "XDialUpdates")
+        XCTAssertEqual(XDialBuildIdentity.installationArtifactPrefix, ".XDial")
         #endif
+    }
+
+    func testOnlyFormalAndDebugAreKnownInstalledIdentities() {
+        XCTAssertEqual(
+            Set(XDialBuildIdentity.installedChannels.map(\.applicationIdentifier)),
+            [XDialBuildIdentity.formalApplicationIdentifier, XDialBuildIdentity.developmentApplicationIdentifier]
+        )
+        XCTAssertTrue(XDialBuildIdentity.siblingChannels.allSatisfy {
+            $0.applicationIdentifier != XDialBuildIdentity.applicationIdentifier
+        })
     }
 
     func testInstalledVariantsCannotReplaceEachOther() {

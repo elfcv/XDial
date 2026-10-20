@@ -1,25 +1,10 @@
-# XDial Next 测试通道
+# Profile 配置库
 
-Next 的 Profile 配置库已合入 main，正式版、Debug 与 Next 使用同一份源码和共享配置库。
-Next 保留独立身份作为测试通道，从远程分支 `xdial-next` 发布；Next 发布不会替换正式版或 Debug 的组件。
+正式版与 Debug 使用同一份源码和共享配置库 `~/.xdial/configuration/profiles.enc`，密钥 service 为
+`com.kafeifei.xdial.configuration`；两个身份各自的系统组件、偏好域和运行目录见 [构建与安装](development-builds.md)。
 产品设计依据 [Profile v0.3](../plans/profile-subscriptions.md)。
 
-## 构建与隔离
-
-`make app-next MACOS_DEBUG_XCODEBUILD_FLAGS=-allowProvisioningUpdates` 生成 Apple Development
-签名的 `build/XDial Next.app`。默认安装目的地为 `/Applications/XDial Next.app`。
-这是开发构建，不能公开分发。`NextRelease` 使用同一 Next 身份构建无调试服务的分发包；
-`make restart` 只作用于 Debug。
-
-| 项目 | Next |
-|---|---|
-| Host / Settings / Helper / Extension / Daemon | `com.kafeifei.xdial.next` 及对应后缀 |
-| App Group | `UVZM439VGU.com.kafeifei.xdial.next.network` |
-| 共享配置 / 密钥 service | `~/.xdial/configuration/profiles.enc` / `com.kafeifei.xdial.configuration` |
-| Next 偏好 / 运行状态目录 | `com.kafeifei.xdial.next` / `~/.xdial-next` |
-| helper 状态与 socket | `/Library/Application Support/XDial Next` / `/tmp/xdial-next.sock` |
-| 诊断 HTTP | 调试包 `127.0.0.1:19878`；分发包不包含 |
-| 更新 | 手动更新同一 Next 身份，不消费正式更新 |
+## 启动与迁移
 
 首次启动不自动连接，也不自动注册系统组件。用户可以先配置；通用里的安装入口或显式
 连接才启动安装事务。已有同通道 helper 的安装验证仍在启动时执行。
@@ -42,8 +27,6 @@ Profile 管理，不再提供“导入旧版配置”。尚不能完整转换的
 卸载默认保留数据。勾选“同时删除新旧版本的配置与密码”后，清理共享库、已知 XDial / Debug /
 Next 历史配置目录与偏好域、对应钥匙串凭据；其他版本仍在运行时先提示退出，避免数据被写回。
 系统组件和 root 运行目录仍只清理当前卸载的通道，不通过配置清理去关闭其他网络。
-
-候选包的 `--check-xdial-debug-import` 仍可只读诊断单份旧 Debug 配置；不初始化网络。
 
 ## 这一版可用
 
@@ -125,15 +108,11 @@ Go 统一展开为现有的有序条件绑定，再交给原 sing-box 编译路�
 
 - Go：`core/config`、`core/libbox`、`core/subscription`、`cmd/xdial` 全包测试；配置用同版本
   sing-box validator 检查；涵盖原生规则/组、脱敏往返、严格拒绝、稳定 ID、DNS 归属及身份隔离。
-- Swift：XDialTests 的 Next 配置；覆盖加密、篡改、钥匙串不可用、刷新引用与选择器选择等。
+- Swift：XDialTests（CI 分别以 Debug 与 Release 配置运行）；覆盖加密、篡改、钥匙串不可用、刷新引用与选择器选择等。
 - `make test-profile-document-bridge` 使用实际 Libbox framework 解析公司示例，再用实际
   Swift Profile 解码、复制和脱敏往返。覆盖 Go 省略空字段时 Swift 解码的兼容边界。
-- `scripts/verify-macos-identity-contract.sh` 同时检查 Next、Debug、正式配置；
-  `scripts/verify-macos-debug-app.py '<Next app>' next` 检查实际签名产物。
 - 真正的跨 Profile 网络切换、企业 VPN 登录、在线订阅刷新仍需要运行验收。
   编译、单元测试或打开设置窗口不作为这些行为已验证的证据。
-
-Next 发布检查身份、数据升级、源码提交和更新目标；Next 发布入口不得指向稳定版 feed 或正式身份。
 
 订阅导入对 AnyTLS 的 `tfo=true` 做有界兼容：关闭 sing-box 不支持的 TCP Fast Open，
 保留节点、TLS/认证选项和路由内容，并在预览及管理页展示合并后的兼容说明。
@@ -167,6 +146,6 @@ Profile 脱敏导出仅含来源线路和规则，使用便携文档 schema 2 + 
 明确失败；不能丢掉依赖后悄悄改成直连。完整本地库和迁移备份包含全局对象与来源关系；
 这一版不新增便携式整库备份/恢复界面。
 
-Debug/Next 候选包提供 `--render-settings-preview <目录>` 离线验收入口，使用合成的两份
+Debug 候选包提供 `--render-settings-preview <目录>` 离线验收入口，使用合成的两份
 来源及跨来源组、场景，依次渲染实际 SwiftUI 五页到 PNG；不执行应用定位安装、配置加载、
 订阅刷新、连接或安装初始化。此结果只证明界面布局，不证明实际网络行为。

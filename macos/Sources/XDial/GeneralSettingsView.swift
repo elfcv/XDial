@@ -169,8 +169,8 @@ struct GeneralSettingsView: View {
             Divider()
             HStack(alignment: .top, spacing: 12) {
                 note(state.tr(
-                    "配置和凭据加密保存，与其他版本的数据独立。",
-                    "Configurations and credentials are encrypted and stored separately from other editions."
+                    "配置和凭据加密保存，本机各版本共用同一份配置。",
+                    "Configurations and credentials are encrypted and shared by every edition on this Mac."
                 ))
                 Spacer(minLength: 0)
                 Button(state.tr("卸载…", "Uninstall…"), role: .destructive) {
@@ -195,8 +195,8 @@ struct GeneralSettingsView: View {
             } else {
                 Text(state.tr("独立开发版 · 手动更新", "Independent build · Manual updates"))
                 note(state.tr(
-                    "使用同一 Next 通道的安装包升级。",
-                    "Upgrade using an installation package from the same Next channel."
+                    "从源码重新构建 Debug 并覆盖安装来升级，不接收正式版更新。",
+                    "Upgrade by rebuilding Debug from source and reinstalling; release updates are not received."
                 ))
             }
         }

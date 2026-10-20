@@ -3,6 +3,7 @@ import Foundation
 import Security
 
 enum ConfigurationDataDeletion {
+    /// Retired identities stay listed: a running one could write its data back.
     static let applicationIdentifiers: Set<String> = [
         "com.kafeifei.xdial", "com.kafeifei.xdial.app", "com.kafeifei.xdial.debug",
         "com.kafeifei.xdial.next", "com.kafeifei.xdial.ne-probe",

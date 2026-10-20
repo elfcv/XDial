@@ -373,7 +373,6 @@ enum XDialApplicationIdentifierPolicy {
         case legacyRelease: legacyReleaseSettingsUI
         case release: releaseSettingsUI
         case development: developmentSettingsUI
-        case "com.kafeifei.xdial.next": "com.kafeifei.xdial.next.settings-ui"
         default: nil
         }
     }

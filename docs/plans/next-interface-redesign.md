@@ -1,5 +1,7 @@
 # XDial Next 界面重设计 · 结构与交互草案
 
+> 历史记录：本文写于 XDial Next 测试通道仍存在时；Next 身份已移除，文中的 Next 指当时的测试通道。当前能力见 [Profile 配置库](../agent/profiles.md)。
+
 后续实施范围已按用户调整：保留现有配置 UI；仅将“通用”改为下述独立分类设置窗口，
 Profile 保留选择与管理、移除“通用 / 配置”页面切换职责。本文其余整体重设计暂不实施。
 
@@ -196,7 +198,7 @@ Next 当前没有正式更新订阅，原型采用“选取 Next 更新包”的
 本轮仅新增本设计文档与独立交互草图。结束时只读确认 Debug 进程、连接事务及场景未变化，
 外网请求返回 HTTP 204；Next 仍未连接，自动连接关闭。
 
-核对来源：[架构](../../ARCHITECTURE.md)、[当前能力](../agent/profile-next.md)、
+核对来源：[架构](../../ARCHITECTURE.md)、[当前能力](../agent/profiles.md)、
 [模型](../../macos/Sources/XDial/Models.swift)、[Profile](../../macos/Sources/XDial/AppState+Profiles.swift)、
 [导入与刷新](../../macos/Sources/XDial/ProfileDocumentService.swift)、
 [运行意图](../../macos/Sources/XDial/AppState.swift)、[原生能力](../../core/config/native_resources.go)。

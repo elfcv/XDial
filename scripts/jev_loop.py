@@ -104,7 +104,7 @@ def sanitized_observation(raw):
         raise ValueError("Invalid candidate state")
     if not member(raw.get("activeRelationship"), {"source", "target", "unknown", "other"}):
         raise ValueError("Invalid active relationship")
-    if not member(raw.get("channel"), {"debug", "next", "stable"}):
+    if not member(raw.get("channel"), {"debug", "stable"}):
         raise ValueError("Invalid channel")
     started, observed = timestamp(raw.get("startedAt")), timestamp(raw.get("observedAt"))
     kinds = raw.get("failedTaskKinds", [])

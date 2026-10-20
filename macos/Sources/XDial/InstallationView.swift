@@ -248,8 +248,8 @@ struct InstallationView: View {
                     ))
                     .font(.system(size: 12, weight: .medium))
                     Text(state.tr(
-                        "包括所有版本共用的配置，以及 XDial、Debug、Next 留下的旧配置和密码",
-                        "Includes shared configuration and legacy settings and passwords from XDial, Debug, and Next"
+                        "包括所有版本共用的配置，以及各版本留下的旧配置和密码",
+                        "Includes shared configuration and legacy settings and passwords from every edition"
                     ))
                     .font(.system(size: 10.5))
                     .foregroundStyle(
@@ -485,8 +485,8 @@ struct InstallationView: View {
     private var uninstallConfirmationMessage: String {
         if deleteDataOnUninstall {
             return state.tr(
-                "XDial 将被移到废纸篓。所有版本共用的配置，以及 XDial、Debug、Next 的旧配置和保存的密码都会被永久删除。请先退出其他版本。",
-                "XDial will be moved to Trash. Shared configuration and legacy settings and saved passwords from XDial, Debug, and Next will be permanently deleted. Quit other versions first."
+                "XDial 将被移到废纸篓。所有版本共用的配置，以及各版本的旧配置和保存的密码都会被永久删除。请先退出其他版本。",
+                "XDial will be moved to Trash. Shared configuration and legacy settings and saved passwords from every edition will be permanently deleted. Quit other versions first."
             )
         }
         return state.tr(

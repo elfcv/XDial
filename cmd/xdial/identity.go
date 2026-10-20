@@ -7,7 +7,8 @@ import (
 
 // buildFlavor is set to "debug" by the local Debug build's Go linker flags.
 // Empty, "release", and unknown values deliberately retain the historical
-// production identity so ordinary CLI and release builds cannot drift.
+// production identity so ordinary CLI and release builds cannot drift. There
+// is no beta flavor: a beta release is a formal build and must report stable.
 var buildFlavor string
 
 type runtimeIdentity struct {
@@ -21,23 +22,12 @@ type runtimeIdentity struct {
 	sharedAppGroup         string
 	registrationIntentPath string
 	logPath                string
+	// tailscaleDeviceChannel names this installation identity in Tailscale
+	// device names; it matches XDialBuildIdentity.tailscaleDeviceChannel.
+	tailscaleDeviceChannel string
 }
 
 func runtimeIdentityForFlavor(flavor string) runtimeIdentity {
-	if flavor == "next" {
-		return runtimeIdentity{
-			hostBundleIdentifier:   "com.kafeifei.xdial.next",
-			helperBundleIdentifier: "com.kafeifei.xdial.next.helper",
-			daemonLabel:            "com.kafeifei.xdial.next.daemon",
-			socketPath:             "/tmp/xdial-next.sock",
-			engineBasePath:         "/tmp/xdial-next-engine",
-			rootStatePath:          "/Library/Application Support/XDial Next",
-			userStateDirectoryName: ".xdial-next",
-			sharedAppGroup:         "UVZM439VGU.com.kafeifei.xdial.next.network",
-			registrationIntentPath: "/tmp/xdial-next-registration-maintenance",
-			logPath:                "/tmp/xdial-next.log",
-		}
-	}
 	if flavor == "debug" {
 		return runtimeIdentity{
 			hostBundleIdentifier:   "com.kafeifei.xdial.debug",
@@ -50,6 +40,7 @@ func runtimeIdentityForFlavor(flavor string) runtimeIdentity {
 			sharedAppGroup:         "UVZM439VGU.com.kafeifei.xdial.debug.network",
 			registrationIntentPath: "/tmp/xdial-debug-registration-maintenance",
 			logPath:                "/tmp/xdial-debug.log",
+			tailscaleDeviceChannel: "debug",
 		}
 	}
 
@@ -64,6 +55,7 @@ func runtimeIdentityForFlavor(flavor string) runtimeIdentity {
 		sharedAppGroup:         "UVZM439VGU.com.kafeifei.xdial.network",
 		registrationIntentPath: "/tmp/xdial-registration-maintenance",
 		logPath:                "/tmp/xdial.log",
+		tailscaleDeviceChannel: "stable",
 	}
 }
 

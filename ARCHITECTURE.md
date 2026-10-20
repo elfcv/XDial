@@ -24,7 +24,7 @@ XDial 对系统增加一个网络叠加层。外部已有的 Wi-Fi、网线、VP
 | RuleSet | 匹配内容与远程资源；不携带用户流量出口 |
 | Scenario | 绑定 RuleSet → Line、指定默认 Line；用户流量裁决的唯一连接点 |
 
-Next 配置库 schema 3 中，Profile 只持有来源线路与规则，线路组与 Scenario 由配置库全局持有。
+配置库 schema 3 中，Profile 只持有来源线路与规则，线路组与 Scenario 由配置库全局持有。
 稳定引用保留来源身份；同名对象不合并，旧 ID 冲突在迁移时重映射并保存翻译表。
 宿主将资源目录、全局组与场景投影为一个临时 Profile 交给既有 Go 编译入口，只有一份持久资源。
 Go 继续决定有效依赖、协议身份路径与运行指纹。Tailscale 的来源 Profile ID / hostname
@@ -91,11 +91,12 @@ Scenario 先选 Line，仅最终属于 Direct 的 flow 恢复该绑定，其他 
 ### 3.2 Tailscale 与 MagicDNS（D33）
 
 内置 Tailscale 是盒内 endpoint，不创建系统接口、不接管系统 DNS、不接受或发布系统路由。
-每个安装通道内，每个 Profile 共用一份持久身份；不同 Line 可选择不同 exit node，但 active Scenario 至多
+每个安装身份内，每个 Profile 共用一份持久身份；不同 Line 可选择不同 exit node，但 active Scenario 至多
 使用一条 Tailscale Line。未登录、需要认证或指定节点不可用产生结构化失败，不自动换节点。
 
-Tailscale 设备名在运行快照中按 Debug、Next、正式版添加 `xdial-debug-`、`xdial-next-`、
-`xdial-stable-` 前缀；不回写共享 Profile，不改变通道内的状态目录或 node key。
+Tailscale 设备名在运行快照中按安装身份添加前缀：Debug 为 `xdial-debug-`，正式版（含 beta）为
+`xdial-stable-`；共享 Profile 里残留的旧前缀 `xdial-next-` 同样被替换。不回写共享 Profile，
+不改变身份内的状态目录或 node key。
 
 登录管理按持久身份确定所有者，而不是用整个 XDial 的连接状态禁用操作。已提交的 Provider
 通过带事务 ID 的独立控制 IPC 提供当前身份的状态与登录续期；不在当前连接中的身份可启动
@@ -297,7 +298,7 @@ helper / 扩展失败停在对应安装步骤，幂等重试以 macOS 结构化�
 也会让替换它的新版一直等待。替换同样不依赖旧版配合：新版先请求退出，20 秒内未退出即强制结束，
 按崩溃恢复接管遗留的连接事务与维护记录。等待批准的步骤在安装窗口给出具体位置和打开系统设置的入口。
 
-Debug、Next 与正式版的 App、嵌套组件、签名、运行目录、App Group、IPC 和维护标记独立。
+Debug 与正式版的 App、嵌套组件、签名、运行目录、App Group、IPC 和维护标记独立。
 支持新版格式的构建共用 `~/.xdial/configuration/profiles.enc` 和
 `com.kafeifei.xdial.configuration` 的配置库密钥。仅当共享库不存在时，只读复制历史库或
 转换旧配置为默认 Profile；原文件不修改，也不把新版修改回写旧版。现存库损坏或不可解密
@@ -332,7 +333,7 @@ URL RuleSet 的 `fetch_line_id` 默认 Direct，仅拥有资源的 DNS、HTTPS�
 保留有效缓存、延后刷新，不破坏已提交连接。
 旧 Subscription 的 GEOIP 资源仅来自显式 `geoip_rule_set_url_template`，含 `{code}` 且为 HTTPS
 或规范化绝对 `file://` 路径；缺失或非法时生成失败，运行时无内置公共源或回退源。
-Next 的整份配置导入适配可将 GEOIP 转成具名、显式 URL RuleSet：导入预览说明来源，
+整份配置导入适配可将 GEOIP 转成具名、显式 URL RuleSet：导入预览说明来源，
 用户保存后按普通 RuleSet 的获取事务执行，来源可在本地配置中修改。此转换不为运行时
 添加隐式 GEOIP 兜底，也不把凭据或用户实际配置烘入应用与仓库。
 

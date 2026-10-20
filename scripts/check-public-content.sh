@@ -39,7 +39,7 @@ if [[ -n "$matched_files" ]]; then
   exit 1
 fi
 
-# Next materializes imported GEOIP as an explicit editable RuleSet and explains
+# Profile import materializes GEOIP as an explicit editable RuleSet and explains
 # the source in its import preview. Only those two declarations may name the
 # public source; the runtime must still have no implicit source or fallback.
 set +e

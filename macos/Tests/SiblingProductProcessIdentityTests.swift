@@ -15,7 +15,7 @@ final class SiblingProductProcessIdentityTests: XCTestCase {
 
     func testBundlePathOrIdentifierAloneCannotIdentifySibling() {
         for app in [
-            SiblingProductProcessIdentity.Application(identifier: "com.kafeifei.xdial.next", bundleURL: sibling.bundleURL),
+            SiblingProductProcessIdentity.Application(identifier: "com.kafeifei.xdial.app", bundleURL: sibling.bundleURL),
             .init(identifier: sibling.applicationIdentifier, bundleURL: URL(fileURLWithPath: "/tmp/Other.app"))
         ] {
             XCTAssertFalse(SiblingProductProcessIdentity.contains(42, channels: [sibling], application: { _ in app }, daemonPeer: { _ in nil }))

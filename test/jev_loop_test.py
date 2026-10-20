@@ -235,6 +235,12 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(state["invalid_observations"], 2)
         self.decision.assert_called_once()
 
+    def test_retired_next_channel_is_invalid(self):
+        state = self.process([observation(channel="next"), observation(channel="stable")])
+        self.assertEqual(state["invalid_observations"], 1)
+        self.decision.assert_called_once()
+        self.assertEqual(self.decision.call_args.args[0]["channel"], "stable")
+
     def test_failure_backoff_and_restart_do_not_repeat_successful_decisions(self):
         self.args.publish = True
         self.publisher.side_effect = RuntimeError("failed")

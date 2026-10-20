@@ -62,3 +62,11 @@ jobs:
         run: make ci-macos-build
       - name: connection transaction tests
         run: make test-macos-transaction MACOS_TEST_XCODEBUILD_FLAGS=CODE_SIGNING_ALLOWED=NO
+      # The Debug run above only reaches the Debug identity's branches; the
+      # formal identity (stable and beta releases) is asserted here.
+      - name: formal identity tests (Release configuration, unsigned)
+        run: |
+          xcodebuild -project macos/XDial.xcodeproj -scheme XDialTests \
+            -configuration Release -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/macos-tests-release \
+            CODE_SIGNING_ALLOWED=NO test
