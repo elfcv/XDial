@@ -218,6 +218,7 @@ struct XDialApp: App {
         Window("\(XDialBuildIdentity.productTitle) 设置", id: "settings") {
             SettingsView()
                 .environmentObject(state)
+                .environment(\.appUpdateChecker, updateChecker)
                 .tint(XDialPalette.accent)
                 .background(SettingsWindowChrome())
         }

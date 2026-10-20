@@ -82,10 +82,15 @@ struct MainPopover: View {
         .contextMenu {
             if let candidate = updater.releaseCandidate {
                 Button(
-                    state.tr(
-                        "新版本 v\(candidate.version)…",
-                        "New Version v\(candidate.version)…"
-                    )
+                    candidate.channel == .beta
+                        ? state.tr(
+                            "beta 版本 \(candidate.tag)…",
+                            "Beta Version \(candidate.tag)…"
+                        )
+                        : state.tr(
+                            "新版本 \(candidate.tag)…",
+                            "New Version \(candidate.tag)…"
+                        )
                 ) {
                     presentUpdateWindow()
                 }
@@ -187,8 +192,18 @@ struct MainPopover: View {
                         Circle()
                             .fill(XDialPalette.danger)
                             .frame(width: 5, height: 5)
-                        Text("v\(candidate.version)")
-                            .font(.system(size: 10.5, weight: .semibold))
+                        // A beta shows its X.Y.Z with the window's Beta mark
+                        // carrying beta.N, about as wide as the bare tag.
+                        if candidate.channel == .beta,
+                           let tag = candidate.releaseTag,
+                           let beta = tag.beta {
+                            Text(verbatim: "v\(tag.version)")
+                                .font(.system(size: 10.5, weight: .semibold))
+                            AppUpdateBetaBadge(text: "beta.\(beta)")
+                        } else {
+                            Text(candidate.tag)
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
                     }
                     .foregroundStyle(XDialPalette.warning)
                     .padding(.horizontal, 7)
@@ -207,10 +222,15 @@ struct MainPopover: View {
                 .buttonStyle(.plain)
                 .help(state.tr("打开 XDial 更新", "Open XDial Update"))
                 .accessibilityLabel(
-                    state.tr(
-                        "新版本 v\(candidate.version) 可用",
-                        "New version v\(candidate.version) available"
-                    )
+                    candidate.channel == .beta
+                        ? state.tr(
+                            "beta 版本 \(candidate.tag) 可用",
+                            "Beta version \(candidate.tag) available"
+                        )
+                        : state.tr(
+                            "新版本 \(candidate.tag) 可用",
+                            "New version \(candidate.tag) available"
+                        )
                 )
             }
             Spacer()

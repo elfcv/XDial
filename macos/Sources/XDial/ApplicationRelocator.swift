@@ -258,14 +258,8 @@ enum ApplicationRelocator {
                 throw InstallationError.installedSuccessorLocationMismatch
             }
             if AppUpdateStager.isOwnedStagedApplication(sourceURL) {
-                let sourceVersion = ApplicationBundleInfo.string(
-                    forKey: "CFBundleShortVersionString",
-                    at: sourceURL
-                ) ?? ""
                 guard AppUpdateRelaunchIntentStore
-                    .permitsStagedSuccessor(
-                        targetVersion: sourceVersion
-                    ) else {
+                    .permitsStagedSuccessor(bundleAt: sourceURL) else {
                     throw InstallationError
                         .automaticUpdateIdentityMismatch
                 }
@@ -304,6 +298,8 @@ enum ApplicationRelocator {
 
             switch ApplicationRelocationDecision.decide(
                 currentIsCanonical: isRunningFromApplications,
+                sourceURL: sourceURL,
+                destinationURL: destinationURL,
                 destinationExists: destinationExists,
                 destinationMatchesIdentity: destinationMatchesIdentity,
                 destinationIsRecognizedProduct:
@@ -320,6 +316,14 @@ enum ApplicationRelocator {
                     message:
                         "“应用程序”中已有另一份签名或标识不同的 \(XDialBuildIdentity.applicationDisplayName)。"
                         + "为避免覆盖未知程序，XDial 已停止自动安装。",
+                    canRetry: false
+                )
+            case .rejectDowngrade:
+                // Only the user's own uninstall may remove the newer System
+                // Extension; replacing the host alone would leave them mismatched.
+                return .failed(
+                    message: InstallationError.downgradeRejected
+                        .localizedDescription,
                     canRetry: false
                 )
             case .install, .replace:
@@ -383,6 +387,14 @@ enum ApplicationRelocator {
                         replacedIdentity.teamIdentifier == sourceIdentity.teamIdentifier
                 ) else {
                     throw InstallationError.existingApplicationNotReplaceable
+                }
+                // Every installer passes here, --install-only included, so a
+                // newer installation is never replaced by an older build.
+                guard !BundleBuildNumber.installationLowersBuild(
+                    from: sourceURL,
+                    over: destinationURL
+                ) else {
+                    throw InstallationError.downgradeRejected
                 }
             }
             try artifacts.perform { transaction in
@@ -1029,6 +1041,7 @@ enum ApplicationRelocator {
         case applicationUnregistrationFailed
         case automaticUpdateUnsupported
         case automaticUpdateIdentityMismatch
+        case downgradeRejected
 
         var canRetry: Bool {
             switch self {
@@ -1096,6 +1109,10 @@ enum ApplicationRelocator {
                 "当前 XDial 构建不允许应用内自动更新"
             case .automaticUpdateIdentityMismatch:
                 "下载的 XDial 版本或签名身份与当前应用不一致"
+            case .downgradeRejected:
+                "已安装更新的版本（可能是 beta），请先在 "
+                    + "\(XDialBuildIdentity.applicationDisplayName) "
+                    + "内卸载（不勾选删除数据），再安装这个版本。"
             }
         }
     }

@@ -30,8 +30,16 @@ extension AppUpdateFeedConfigurationError: LocalizedError {
     }
 }
 
+/// The feed a release is published to. Both channels ship the same signed
+/// identity; the channel never takes part in bundle authorization.
+enum AppUpdateChannel: String, CaseIterable, Sendable {
+    case stable
+    case beta
+}
+
 struct AppUpdateFeedConfiguration: Equatable, Sendable {
     static let acceptanceInfoKey = "XDialUpdateAcceptanceID"
+    /// Released clients read exactly this URL and cache namespace.
     static let production = AppUpdateFeedConfiguration(
         feedURL: URL(
             string: "https://saymiao.github.io/xdial-updates/stable.json"
@@ -39,7 +47,18 @@ struct AppUpdateFeedConfiguration: Equatable, Sendable {
         archiveOwner: "kafeifei",
         archiveRepository: "XDial",
         cacheNamespace: "production",
-        acceptanceID: nil
+        acceptanceID: nil,
+        channel: .stable
+    )
+    static let productionBeta = AppUpdateFeedConfiguration(
+        feedURL: URL(
+            string: "https://saymiao.github.io/xdial-updates/beta.json"
+        )!,
+        archiveOwner: "kafeifei",
+        archiveRepository: "XDial",
+        cacheNamespace: "production-beta",
+        acceptanceID: nil,
+        channel: .beta
     )
 
     let feedURL: URL
@@ -47,7 +66,23 @@ struct AppUpdateFeedConfiguration: Equatable, Sendable {
     let archiveRepository: String
     let cacheNamespace: String
     let acceptanceID: String?
+    let channel: AppUpdateChannel
 
+    /// The same signed source's feed for another channel: production stays
+    /// production, and an acceptance ID stays on its own acceptance feeds.
+    func configuration(
+        for channel: AppUpdateChannel
+    ) -> AppUpdateFeedConfiguration {
+        guard channel != self.channel else { return self }
+        guard let acceptanceID else {
+            return channel == .stable ? .production : .productionBeta
+        }
+        return (try? Self.acceptance(id: acceptanceID, channel: channel))
+            ?? self
+    }
+
+    /// The signed bundle's stable feed. The installed release's tag takes no
+    /// part: it must never select or lock a feed.
     static func current(
         infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:]
     ) throws -> AppUpdateFeedConfiguration {
@@ -73,12 +108,13 @@ struct AppUpdateFeedConfiguration: Equatable, Sendable {
     }
 
     static func acceptance(
-        id: String
+        id: String,
+        channel: AppUpdateChannel = .stable
     ) throws -> AppUpdateFeedConfiguration {
         guard permitsAcceptanceID(id),
               let feedURL = URL(
                   string: "https://saymiao.github.io/xdial-updates/"
-                      + "acceptance/\(id)/stable.json"
+                      + "acceptance/\(id)/\(channel.rawValue).json"
               ) else {
             throw AppUpdateFeedConfigurationError.invalidAcceptanceID
         }
@@ -86,8 +122,11 @@ struct AppUpdateFeedConfiguration: Equatable, Sendable {
             feedURL: feedURL,
             archiveOwner: "saymiao",
             archiveRepository: "xdial-updates",
-            cacheNamespace: "acceptance-\(id)",
-            acceptanceID: id
+            // IDs never contain ".", so no stable namespace can collide.
+            cacheNamespace: channel == .stable
+                ? "acceptance-\(id)" : "acceptance-\(id).beta",
+            acceptanceID: id,
+            channel: channel
         )
     }
 
@@ -132,7 +171,8 @@ enum AppUpdateManifestError: Error, Equatable, Sendable {
     case unexpectedFields
     case unsupportedSchema
     case invalidRevision
-    case invalidChannel
+    /// The manifest names another channel than the feed it was read from.
+    case invalidChannel(expected: AppUpdateChannel)
     case invalidGeneratedAt
     case invalidPublishedAt
 }
@@ -145,7 +185,9 @@ extension AppUpdateManifestError: LocalizedError {
         case .unexpectedFields: "更新清单包含缺失或未定义的字段"
         case .unsupportedSchema: "更新清单版本不受支持"
         case .invalidRevision: "更新清单修订号无效"
-        case .invalidChannel: "更新清单通道不是 stable"
+        // stable keeps the wording released clients already show.
+        case let .invalidChannel(expected):
+            "更新清单通道不是 \(expected.rawValue)"
         case .invalidGeneratedAt: "更新清单生成时间无效"
         case .invalidPublishedAt: "更新清单发布时间无效"
         }
@@ -163,7 +205,12 @@ enum AppUpdateManifestParser {
         "releaseNotes", "archiveURL", "archiveSize", "archiveSHA256",
     ])
 
-    static func parse(_ data: Data) throws -> AppUpdateFeedManifest {
+    /// stable.json and beta.json share one schema; each must name the channel
+    /// it was requested as.
+    static func parse(
+        _ data: Data,
+        expectedChannel: AppUpdateChannel = .stable
+    ) throws -> AppUpdateFeedManifest {
         guard data.count <= maximumBytes else {
             throw AppUpdateManifestError.tooLarge
         }
@@ -196,8 +243,10 @@ enum AppUpdateManifestParser {
         guard wire.revision > 0 else {
             throw AppUpdateManifestError.invalidRevision
         }
-        guard wire.channel == "stable" else {
-            throw AppUpdateManifestError.invalidChannel
+        guard wire.channel == expectedChannel.rawValue else {
+            throw AppUpdateManifestError.invalidChannel(
+                expected: expectedChannel
+            )
         }
         guard let generatedAt = ISO8601Timestamp.parse(wire.generatedAt) else {
             throw AppUpdateManifestError.invalidGeneratedAt
@@ -341,8 +390,40 @@ extension AppUpdateMetadataTransportError: LocalizedError {
 
 enum AppUpdateReleaseAvailability: Equatable, Sendable {
     case available(AppUpdateReleaseCandidate)
+    case buildNotNewer(AppUpdateBuildNotNewer)
     case upToDate
     case noRelease
+
+    /// Combines the feeds that answered. The highest installable tag wins;
+    /// otherwise a reversed build is surfaced before any quieter outcome.
+    static func merged(
+        _ availabilities: [AppUpdateReleaseAvailability]
+    ) -> AppUpdateReleaseAvailability {
+        var best: AppUpdateReleaseCandidate?
+        var reversedBuild: AppUpdateBuildNotNewer?
+        var upToDate = false
+        for availability in availabilities {
+            switch availability {
+            case let .available(candidate):
+                if let current = best,
+                   let currentTag = current.releaseTag,
+                   let candidateTag = candidate.releaseTag,
+                   candidateTag <= currentTag {
+                    continue
+                }
+                best = candidate
+            case let .buildNotNewer(detail):
+                reversedBuild = reversedBuild ?? detail
+            case .upToDate:
+                upToDate = true
+            case .noRelease:
+                break
+            }
+        }
+        if let best { return .available(best) }
+        if let reversedBuild { return .buildNotNewer(reversedBuild) }
+        return upToDate ? .upToDate : .noRelease
+    }
 }
 
 struct AppUpdateReleaseLookupResult: Equatable, Sendable {
@@ -417,24 +498,33 @@ actor AppUpdateReleaseLookup {
         transport: AppUpdateHTTPTransport? = nil,
         defaults: UserDefaults = xdialDefaults
     ) {
-        if let configuration {
+        self.init(
+            resolvedConfiguration: configuration.map { .success($0) }
+                ?? Result { try AppUpdateFeedConfiguration.current() },
+            transport: transport,
+            defaults: defaults
+        )
+    }
+
+    init(
+        resolvedConfiguration: Result<AppUpdateFeedConfiguration, Error>,
+        transport: AppUpdateHTTPTransport? = nil,
+        defaults: UserDefaults = xdialDefaults
+    ) {
+        switch resolvedConfiguration {
+        case let .success(configuration):
             self.configuration = configuration
             configurationError = nil
-        } else {
-            do {
-                self.configuration = try AppUpdateFeedConfiguration.current()
-                configurationError = nil
-            } catch {
-                self.configuration = nil
-                configurationError = error.localizedDescription
-            }
+        case let .failure(error):
+            configuration = nil
+            configurationError = error.localizedDescription
         }
         self.transport = transport ?? .boundedURLSession()
         self.defaults = defaults
     }
 
     func check(
-        currentVersion: String,
+        installed: InstalledRelease,
         currentSystemVersion: String? = nil,
         now: Date = Date()
     ) async throws -> AppUpdateReleaseLookupResult {
@@ -462,7 +552,7 @@ actor AppUpdateReleaseLookup {
         )
         request.setValue("no-cache", forHTTPHeaderField: "Pragma")
         request.setValue(
-            "XDial/\(currentVersion)",
+            "XDial/\(installed.shortVersion)",
             forHTTPHeaderField: "User-Agent"
         )
         if let etag = requestCache?.etag {
@@ -495,7 +585,7 @@ actor AppUpdateReleaseLookup {
             return try acceptNetworkManifest(
                 response,
                 configuration: configuration,
-                currentVersion: currentVersion,
+                installed: installed,
                 currentSystemVersion: currentSystemVersion,
                 now: now
             )
@@ -530,7 +620,7 @@ actor AppUpdateReleaseLookup {
                 let availability = try releaseAvailability(
                     from: cache.manifest,
                     configuration: configuration,
-                    currentVersion: currentVersion,
+                    installed: installed,
                     currentSystemVersion: currentSystemVersion
                 )
                 saveCache(
@@ -577,7 +667,7 @@ actor AppUpdateReleaseLookup {
     private func acceptNetworkManifest(
         _ response: AppUpdateHTTPResult,
         configuration: AppUpdateFeedConfiguration,
-        currentVersion: String,
+        installed: InstalledRelease,
         currentSystemVersion: String,
         now: Date
     ) throws -> AppUpdateReleaseLookupResult {
@@ -595,7 +685,10 @@ actor AppUpdateReleaseLookup {
 
         let manifest: AppUpdateFeedManifest
         do {
-            manifest = try AppUpdateManifestParser.parse(response.data)
+            manifest = try AppUpdateManifestParser.parse(
+                response.data,
+                expectedChannel: configuration.channel
+            )
         } catch {
             registerFailure(now: now)
             throw AppUpdateReleaseLookupError.manifestInvalid(
@@ -630,7 +723,7 @@ actor AppUpdateReleaseLookup {
             availability = try releaseAvailability(
                 from: manifest,
                 configuration: configuration,
-                currentVersion: currentVersion,
+                installed: installed,
                 currentSystemVersion: currentSystemVersion
             )
         } catch {
@@ -660,7 +753,7 @@ actor AppUpdateReleaseLookup {
     private func releaseAvailability(
         from manifest: AppUpdateFeedManifest,
         configuration: AppUpdateFeedConfiguration,
-        currentVersion: String,
+        installed: InstalledRelease,
         currentSystemVersion: String
     ) throws -> AppUpdateReleaseAvailability {
         guard let release = manifest.release else { return .noRelease }
@@ -670,12 +763,21 @@ actor AppUpdateReleaseLookup {
                     from: release,
                     generatedAt: manifest.generatedAt,
                     configuration: configuration,
-                    currentVersion: currentVersion,
+                    installed: installed,
                     currentSystemVersion: currentSystemVersion
                 )
             )
         } catch AppUpdateReleaseSelectionError.notNewer {
             return .upToDate
+        } catch AppUpdateReleaseSelectionError.buildNotNewer {
+            // The manifest itself is valid; keep its revision and report the
+            // reversed build as the outcome instead of backing off.
+            return .buildNotNewer(AppUpdateBuildNotNewer(
+                channel: configuration.channel,
+                tag: release.tag,
+                build: release.build,
+                installedBuild: installed.build
+            ))
         } catch AppUpdateReleaseSelectionError.unsupportedSystemVersion {
             return .noRelease
         }
@@ -693,7 +795,8 @@ actor AppUpdateReleaseLookup {
               record.endpoint == configuration.feedURL,
               Self.validETag(record.etag) != nil,
               let manifest = try? AppUpdateManifestParser.parse(
-                  record.manifestData
+                  record.manifestData,
+                  expectedChannel: configuration.channel
               ),
               record.validatedAt
                 <= now.addingTimeInterval(Self.maximumClockSkew),
@@ -809,6 +912,182 @@ actor AppUpdateReleaseLookup {
         let etag: String
         let manifestData: Data
         let validatedAt: Date
+    }
+}
+
+/// One feed's answer within a channel check.
+enum AppUpdateFeedOutcome: Equatable, Sendable {
+    case checked(AppUpdateReleaseLookupResult)
+    case failed(AppUpdateReleaseLookupError)
+
+    var result: AppUpdateReleaseLookupResult? {
+        guard case let .checked(result) = self else { return nil }
+        return result
+    }
+
+    var error: AppUpdateReleaseLookupError? {
+        guard case let .failed(error) = self else { return nil }
+        return error
+    }
+
+    /// With the preference off, an installed beta follows only its own X.Y.Z
+    /// line: beta.json may fix it, but never carries it into another line.
+    func confined(toLineOf installed: InstalledRelease) -> AppUpdateFeedOutcome {
+        guard case let .checked(result) = self,
+              let line = installed.tag?.version else { return self }
+        let tag: String
+        switch result.availability {
+        case let .available(candidate): tag = candidate.tag
+        case let .buildNotNewer(detail): tag = detail.tag
+        case .upToDate, .noRelease: return self
+        }
+        guard ReleaseTag(tag)?.version != line else { return self }
+        return .checked(AppUpdateReleaseLookupResult(
+            availability: .upToDate,
+            checkedAt: result.checkedAt,
+            revision: result.revision
+        ))
+    }
+}
+
+struct AppUpdateChannelLookupResult: Equatable, Sendable {
+    let checkedAt: Date
+    let stable: AppUpdateFeedOutcome
+    /// nil when beta.json was not requested.
+    let beta: AppUpdateFeedOutcome?
+
+    func outcome(
+        for channel: AppUpdateChannel
+    ) -> AppUpdateFeedOutcome? {
+        channel == .stable ? stable : beta
+    }
+
+    /// The highest installable release among the feeds that answered. The
+    /// caller decides whether a failed feed blocks the conclusion.
+    var availability: AppUpdateReleaseAvailability {
+        .merged([stable, beta].compactMap { $0?.result?.availability })
+    }
+
+    /// Every feed's reversed build, also when another feed's candidate or
+    /// failure decides the outcome: each one is a publishing fault to record.
+    var reversedBuilds: [AppUpdateBuildNotNewer] {
+        [stable, beta].compactMap {
+            guard case let .buildNotNewer(detail)? = $0?.result?.availability
+            else { return nil }
+            return detail
+        }
+    }
+}
+
+/// Reads stable.json, and beta.json only while the beta preference is on or
+/// the installed beta has not been passed by stable; with the preference off,
+/// beta.json only offers fixes on the installed beta's line. Each feed keeps
+/// its own backoff, ETag cache and revision chain.
+actor AppUpdateChannelLookup {
+    private let stable: AppUpdateReleaseLookup
+    private let beta: AppUpdateReleaseLookup
+
+    init(
+        configuration: AppUpdateFeedConfiguration? = nil,
+        transport: AppUpdateHTTPTransport? = nil,
+        defaults: UserDefaults = xdialDefaults
+    ) {
+        let source: Result<AppUpdateFeedConfiguration, Error> =
+            configuration.map { .success($0) }
+                ?? Result { try AppUpdateFeedConfiguration.current() }
+        stable = AppUpdateReleaseLookup(
+            resolvedConfiguration: source.map {
+                $0.configuration(for: .stable)
+            },
+            transport: transport,
+            defaults: defaults
+        )
+        beta = AppUpdateReleaseLookup(
+            resolvedConfiguration: source.map {
+                $0.configuration(for: .beta)
+            },
+            transport: transport,
+            defaults: defaults
+        )
+    }
+
+    func check(
+        installed: InstalledRelease,
+        receivesBeta: Bool,
+        currentSystemVersion: String? = nil,
+        now: Date = Date()
+    ) async throws -> AppUpdateChannelLookupResult {
+        let stableOutcome = try await outcome(
+            of: stable,
+            installed: installed,
+            currentSystemVersion: currentSystemVersion,
+            now: now
+        )
+        let betaOutcome: AppUpdateFeedOutcome?
+        if Self.readsBeta(
+            receivesBeta: receivesBeta,
+            installed: installed,
+            stable: stableOutcome
+        ) {
+            let answer = try await outcome(
+                of: beta,
+                installed: installed,
+                currentSystemVersion: currentSystemVersion,
+                now: now
+            )
+            betaOutcome = receivesBeta
+                ? answer : answer.confined(toLineOf: installed)
+        } else {
+            betaOutcome = nil
+        }
+        return AppUpdateChannelLookupResult(
+            checkedAt: now,
+            stable: stableOutcome,
+            beta: betaOutcome
+        )
+    }
+
+    /// The last successful stable check; beta never stands in for it.
+    func lastValidatedAt(now: Date = Date()) async -> Date? {
+        await stable.lastValidatedAt(now: now)
+    }
+
+    static func readsBeta(
+        receivesBeta: Bool,
+        installed: InstalledRelease,
+        stable: AppUpdateFeedOutcome
+    ) -> Bool {
+        if receivesBeta { return true }
+        guard installed.isBeta else { return false }
+        // Turning the preference off never downgrades: an installed beta keeps
+        // its beta line until stable offers a tag above it.
+        switch stable.result?.availability {
+        case .available, .buildNotNewer:
+            return false
+        case .upToDate, .noRelease, nil:
+            return true
+        }
+    }
+
+    private func outcome(
+        of lookup: AppUpdateReleaseLookup,
+        installed: InstalledRelease,
+        currentSystemVersion: String?,
+        now: Date
+    ) async throws -> AppUpdateFeedOutcome {
+        do {
+            return .checked(try await lookup.check(
+                installed: installed,
+                currentSystemVersion: currentSystemVersion,
+                now: now
+            ))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as AppUpdateReleaseLookupError {
+            return .failed(error)
+        } catch {
+            return .failed(.requestFailed(error.localizedDescription))
+        }
     }
 }
 

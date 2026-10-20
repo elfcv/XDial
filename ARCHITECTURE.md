@@ -309,10 +309,21 @@ FormalDevelopment 保留正式身份，仅用于正式身份验证。
 签名 profile 与 entitlement 属于对应身份，不以移除能力或借用正式身份填补 Debug 签名缺口。
 独立安装不代表两个数据面同时接管已被证明兼容。
 
-更新候选来自固定 Pages 地址的一份完整、版本化清单，归档由 GitHub Releases 托管；
+更新候选来自固定 Pages 地址的完整、版本化清单，归档由 GitHub Releases 托管；
 客户端不通过匿名 API 或 HTML 拼装候选。检查、下载和验证不改变当前连接，安装点击后才交接。
 缓存不是安装许可：下载与安装前重新确认候选，撤回、变化或无法确认即停止；归档大小、摘要、
 实际版本 / build 与嵌套签名共同绑定同一候选。验收包的固定 acceptance ID 与正式更新隔离。
+
+通道不改变身份：beta 与正式版是同一个正式身份的 App，区别只在多读的 beta.json。stable.json
+始终是结论的基准；用户开启 beta，或已装 beta 尚未被 stable 超过时才再读 beta.json，两份清单
+各自保持缓存与修订链，取标签更高者。关闭开关不降级，已装 beta 只接收本 X.Y.Z 线的修复；
+它尚未被 stable 超过时，beta.json 读取失败即无结论。新旧按发布标签的 SemVer 比较，候选
+构建号必须高于当前；构建号倒序不是“已是最新”，而是失败。包内发布标签只用来认出已装 beta，
+从而决定所在的线、新旧比较和是否多读 beta.json；它不替换或锁定 stable.json，不参与签名包
+授权。更低构建号的宿主不覆盖已装 App：自行安装和 `--install-only` 在安装锁内拒绝；Finder
+拖拽覆盖拦不住，之后扩展检查发现仍登记着更高构建号的扩展时不再激活，提示先卸载（不删数据）。
+两道门禁都由被装进来的更旧 App 执行，只有带门禁的构建才会拦截；装回不带门禁的构建（v0.9.6
+及更早）宿主仍被替换、与扩展失配，只能先卸载再安装。
 
 入口：[安装状态机](macos/Shared/InstallationTransaction.swift)、
 [构建与身份](docs/agent/development-builds.md)、[更新协议与发布](docs/agent/updates.md)。

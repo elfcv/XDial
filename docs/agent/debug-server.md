@@ -35,7 +35,7 @@ curl -sS '127.0.0.1:19877/ax?depth=8'
 | `setup-helper` | 进入完整安装事务，包含 helper 与 System Extension |
 | `sm-register`、`sm-unregister` | 注册或注销持久 helper 服务 |
 | `connect-with-failure` | 真实启动连接并在指定阶段注入失败，触发回滚 |
-| `fake-update`、`clear-update` | 注入更新 UI 候选；清除时还会丢弃已暂存更新并复位更新状态 |
+| `fake-update`、`clear-update` | 注入更新 UI 候选（可带 `version`，或带 `tag` 如 `v99.0.0-beta.1` 与 `channel` 为 `stable` / `beta`，未给 `channel` 时按标签推断，与标签形态不符时返回 400）；清除时还会丢弃已暂存更新并复位更新状态 |
 
 `open-settings` 可带 `scenarioID`，只展开当前编辑配置中的场景卡片；不修改运行选择、
 不保存配置、不连接网络。用于在真实窗口中复核布局问题，不能用 `select-scenario` 替代。
@@ -63,6 +63,12 @@ curl -sS -X POST 127.0.0.1:19877/action \
   断开、Scenario 或 transaction 变化时清空。
 - 路由探针的 `lineIDCounts` 表达本次实际 Line 归因；`outboundTagCounts` 是内部出口
   计数，不能独自证明 Line 映射。公网 IP 和旧 Clash API selector 也不表达本次归因。
+- `appUpdate` 的 `tag`、`channel` 描述当前候选，`preference` 是“接收 beta 版本”开关，
+  `installedTag` 是运行中 App 的发布标签；`secondaryNotice` 是 stable 已给出结论时 beta
+  清单的失败，`lastBuildNotNewer` 记录任一清单最近一次“标签更新但构建号不更高”的条目，
+  包括被另一份清单的候选盖过的。Debug 不自动更新，这些字段只反映注入的候选；Debug 也不显示
+  beta 开关，已装标签恒为空，所以开关、“等待正式版”和已装 beta 的标签显示只能用正式身份的
+  验收包验证，`fake-update` 只覆盖候选侧的标签与 Beta 标记。
 
 ## Release 的安装记录
 

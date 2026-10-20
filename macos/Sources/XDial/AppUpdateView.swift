@@ -1,5 +1,19 @@
 import SwiftUI
 
+/// Marks a beta candidate the same way in the update window and the popover.
+struct AppUpdateBetaBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(verbatim: text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(XDialPalette.warning)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(XDialPalette.warning.opacity(0.1), in: Capsule())
+    }
+}
+
 struct AppUpdateView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var updater: AppUpdateChecker
@@ -24,8 +38,16 @@ struct AppUpdateView: View {
                 .foregroundStyle(statusColor)
                 .frame(width: 34)
             VStack(alignment: .leading, spacing: 3) {
-                Text(versionTitle)
-                    .font(.title2.weight(.semibold))
+                HStack(spacing: 6) {
+                    Text(versionTitle)
+                        .font(.title2.weight(.semibold))
+                    if updater.releaseCandidate?.channel == .beta {
+                        AppUpdateBetaBadge(text: "Beta")
+                            .accessibilityLabel(
+                                state.tr("beta 版本", "Beta version")
+                            )
+                    }
+                }
                 Text(statusDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -85,6 +107,14 @@ struct AppUpdateView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+
+        if let notice = updater.secondaryNotice {
+            Text(notice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         }
 
         if let failure = updater.failure {
@@ -149,7 +179,7 @@ struct AppUpdateView: View {
                 }
                 .buttonStyle(.bordered)
             }
-        case .idle, .upToDate, .noRelease:
+        case .idle, .upToDate, .noRelease, .awaitingStable:
             Button(state.tr("检查更新", "Check for Updates")) {
                 Task { await updater.checkNow() }
             }
@@ -159,17 +189,15 @@ struct AppUpdateView: View {
         }
     }
 
+    /// Tags, not short versions: a beta and its stable release share X.Y.Z.
     private var versionTitle: String {
         guard let candidate = updater.releaseCandidate else {
             return state.tr(
-                "当前版本 v\(currentVersion)",
-                "Current Version v\(currentVersion)"
+                "当前版本 \(currentTag)",
+                "Current Version \(currentTag)"
             )
         }
-        return state.tr(
-            "v\(currentVersion) → v\(candidate.version)",
-            "v\(currentVersion) → v\(candidate.version)"
-        )
+        return "\(currentTag) → \(candidate.tag)"
     }
 
     private var statusDetail: String {
@@ -182,6 +210,8 @@ struct AppUpdateView: View {
             state.tr("已经是最新版本", "XDial is up to date")
         case .noRelease:
             state.tr("当前没有可用更新", "No update is currently available")
+        case .awaitingStable:
+            awaitingStableDetail
         case .available:
             state.tr("新版本已经可以下载", "A new version is available")
         case .downloading:
@@ -212,6 +242,7 @@ struct AppUpdateView: View {
         switch updater.phase {
         case .upToDate: "checkmark.circle.fill"
         case .noRelease: "minus.circle.fill"
+        case .awaitingStable: "hourglass.circle.fill"
         case .failed: "exclamationmark.octagon.fill"
         case .ready: "checkmark.seal.fill"
         case .downloading, .validating, .checking, .handingOff:
@@ -223,7 +254,7 @@ struct AppUpdateView: View {
     private var statusColor: Color {
         switch updater.phase {
         case .upToDate, .ready: XDialPalette.success
-        case .noRelease: XDialPalette.progress
+        case .noRelease, .awaitingStable: XDialPalette.progress
         case .failed: XDialPalette.danger
         case .available: XDialPalette.warning
         default: XDialPalette.progress
@@ -263,10 +294,20 @@ struct AppUpdateView: View {
         return report.scenario.id
     }
 
-    private var currentVersion: String {
+    private var currentTag: String {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String ?? "?"
+        ) is String ? updater.installedRelease.displayTag : "v?"
+    }
+
+    private var awaitingStableDetail: String {
+        guard let version = updater.installedRelease.tag?.version else {
+            return state.tr("等待正式版", "Waiting for the stable release")
+        }
+        return state.tr(
+            "等待正式版 v\(version)；之前继续接收这条 beta 线的修复",
+            "Waiting for stable v\(version); fixes on this beta line still arrive"
+        )
     }
 
     private func failureTitle(
@@ -277,6 +318,8 @@ struct AppUpdateView: View {
             state.tr("无法检查更新", "Couldn’t Check for Updates")
         case .candidateChanged:
             state.tr("更新清单已经变化", "The Update Has Changed")
+        case .buildNotNewer:
+            state.tr("更新包构建号没有提高", "The Update’s Build Is Not Newer")
         case .downloadFailed:
             state.tr("更新包下载失败", "Update Download Failed")
         case .validationFailed:
