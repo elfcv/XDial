@@ -164,16 +164,17 @@ struct InstallationView: View {
     /// exactly where it lives instead of assuming System Settings stayed open.
     private func approvalGuidance(for task: InstallationTaskReport) -> String? {
         guard task.state == .waitingForApproval else { return nil }
+        let name = XDialBuildIdentity.applicationDisplayName
         switch task.id {
         case "helper":
             return state.tr(
-                "在「通用 → 登录项与扩展」的「App 后台活动」中，打开 XDial。",
-                "In General → Login Items & Extensions, turn on XDial under App Background Activity."
+                "在「通用 → 登录项与扩展」的「App 后台活动」中，打开 \(name)。",
+                "In General → Login Items & Extensions, turn on \(name) under App Background Activity."
             )
         case "system-extension":
             return state.tr(
-                "在「通用 → 登录项与扩展」最下方的「扩展」里找到 XDial，点右侧的 ⓘ，打开「网络扩展」。",
-                "In General → Login Items & Extensions, find XDial under Extensions at the bottom, click ⓘ and turn on Network Extensions."
+                "在「通用 → 登录项与扩展」最下方的「扩展」里找到 \(name)，点右侧的 ⓘ，打开「网络扩展」。",
+                "In General → Login Items & Extensions, find \(name) under Extensions at the bottom, click ⓘ and turn on Network Extensions."
             )
         default:
             return nil
@@ -419,7 +420,7 @@ struct InstallationView: View {
         case .waitingForApproval:
             return state.tr(
                 "请按下方提示在系统设置中批准；批准后会自动继续。",
-                "Approve XDial in System Settings as shown below; setup then continues."
+                "Approve \(XDialBuildIdentity.applicationDisplayName) in System Settings as shown below; setup then continues."
             )
         case .ready:
             if needsSSIDAccess {
@@ -611,9 +612,10 @@ struct InstallationView: View {
                 "macOS requires location access to provide the current Wi-Fi name; XDial only uses it to match scenarios."
             )
         case .denied:
+            let name = XDialBuildIdentity.applicationDisplayName
             return state.tr(
-                "请在系统设置中允许 XDial 访问位置，否则场景不会随 Wi-Fi 自动切换。",
-                "Allow XDial location access in System Settings, or scenarios cannot switch automatically with Wi-Fi."
+                "请在系统设置中允许 \(name) 访问位置，否则场景不会随 Wi-Fi 自动切换。",
+                "Allow \(name) location access in System Settings, or scenarios cannot switch automatically with Wi-Fi."
             )
         case .unavailable:
             return state.tr(

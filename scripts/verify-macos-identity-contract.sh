@@ -195,4 +195,39 @@ for channel, name in [("debug", "XDial Debug"), ("next", "XDial Next"), ("app", 
     assert "BundleProgram" not in value, path
 PYTHON
 
-echo "macOS Next and development isolation, formal identity, and location-access contracts verified"
+# System Settings shows each component by CFBundleDisplayName. The name comes
+# only from XDIAL_PRODUCT_DISPLAY_NAME; a localization would pin it to one identity.
+python3 - <<'PYTHON'
+import json, pathlib, plistlib, subprocess
+for path in sorted(pathlib.Path("macos").rglob("*.lproj/InfoPlist.strings")):
+    values = json.loads(subprocess.check_output(["/usr/bin/plutil", "-convert", "json", "-o", "-", str(path)]))
+    for key in ("CFBundleDisplayName", "CFBundleName"):
+        assert key not in values, f"{path} overrides the identity name with {key}"
+for path, expected in [
+    ("Info.plist", "$(XDIAL_PRODUCT_DISPLAY_NAME)"),
+    ("SettingsDockUI/Info.plist", "$(XDIAL_PRODUCT_DISPLAY_NAME)"),
+    ("TransparentProxyExtension/Info.plist", "$(XDIAL_PRODUCT_DISPLAY_NAME) Network Extension"),
+]:
+    value = plistlib.loads((pathlib.Path("macos") / path).read_bytes()).get("CFBundleDisplayName")
+    assert value == expected, f"macos/{path} CFBundleDisplayName is {value!r}, expected {expected!r}"
+PYTHON
+
+# System Settings, the Applications folder, Force Quit and the menu bar show
+# Debug as "XDial Debug". Copy that sends the user there names the app through
+# XDialBuildIdentity.applicationDisplayName, never a literal "XDial".
+python3 - <<'PYTHON'
+import pathlib, re
+surface = re.compile(r"系统设置|System Settings|登录项|Login Items|位置服务|Location Services"
+                     r"|“应用程序”|Applications folder|强制退出|Force Quit|菜单栏|menu bar")
+literal = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+bare_name = re.compile(r"(?<![\w.])XDial(?!\w)")
+failures = [
+    f"{path}:{number}: {line.strip()}"
+    for path in sorted(pathlib.Path("macos").rglob("*.swift")) if "Tests" not in path.parts
+    for number, line in enumerate(path.read_text().splitlines(), 1)
+    if any(surface.search(text) and bare_name.search(text) for text in literal.findall(line))
+]
+assert not failures, "system-surface copy hard-codes XDial:\n" + "\n".join(failures)
+PYTHON
+
+echo "macOS Next and development isolation, formal identity, component-name, and location-access contracts verified"

@@ -3044,7 +3044,7 @@ extension ProviderError: LocalizedError {
         case .invalidUnderlaySnapshot:
             "XDial 启动前的系统网络快照无效"
         case .deallocated:
-            "XDial 网络扩展已经退出"
+            "\(XDialBuildIdentity.transparentProxyDisplayName) 已经退出"
         case .rollbackTimedOut:
             "XDial 回滚未能在 5 秒内完成"
         case let .relayDrainTimedOut(count):

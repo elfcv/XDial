@@ -169,7 +169,7 @@ final class InstallationCoordinator: ObservableObject {
             guard ApplicationRelocator.isRunningFromApplications else {
                 throw InstallationFailure(
                     code: "application-location-invalid",
-                    message: "XDial 没有从“应用程序”目录运行",
+                    message: "\(XDialBuildIdentity.applicationDisplayName) 没有从“应用程序”目录运行",
                     taskID: "application"
                 )
             }

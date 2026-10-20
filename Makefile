@@ -79,6 +79,7 @@ else
 MACOS_GO_BUILD_ENV =
 endif
 MACOS_DEPLOYMENT_VERIFIER := scripts/verify-macos-deployment-target.py
+MACOS_COMPONENT_NAMES_VERIFIER := scripts/verify-macos-component-names.py
 
 .PHONY: all cli cli-debug app ci-macos-build macos-identity-contract release-inputs release-app release publish test-release-contract restart inspector clean prepare-patched-go public-content-gate go-vet go-build test test-patched-tailscale test-patched-sing-box test-patched-sslcon test-macos-transaction test-smoke sing-box-test-validator check-mobile-libbox-deps libbox-xcframework libbox-ios-xcframework libbox-macos-xcframework appletv ios mobile-app-icons FORCE_PATCHED_GO
 
@@ -199,6 +200,7 @@ test-release-contract:
 	bash test/next_release_contract_test.sh
 	python3 -m unittest discover -s test -p 'publish*release_test.py'
 	python3 -m unittest discover -s test -p 'restart_macos_test.py'
+	python3 -m unittest discover -s test -p 'component_names_test.py'
 
 # Fixture repositories and plists only; plutil keeps it in the macOS CI job.
 .PHONY: test-debug-rollback
@@ -327,6 +329,7 @@ ci-macos-build: cli cli-debug cli-next libbox-macos-xcframework macos/AppIcon.ic
 		case "$$configuration" in Debug) product_name='XDial Debug';; Next*) product_name='XDial Next';; *) product_name=XDial;; esac; \
 		test "$$(plutil -extract LSUIElement raw "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app/Contents/Info.plist")" = true; \
 		python3 $(MACOS_DEPLOYMENT_VERIFIER) "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app" >/dev/null; \
+		python3 $(MACOS_COMPONENT_NAMES_VERIFIER) "$(BUILD_DIR)/macos-xcode-ci/Build/Products/$$configuration/$$product_name.app" "$$product_name" >/dev/null; \
 	done
 
 # Release 的 marketing version 只来自 RELEASE_TAG；build number 是独立、

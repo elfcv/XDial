@@ -156,6 +156,10 @@ enum XDialBuildIdentity {
         dataIdentifier + ".settings-dock.dismiss"
     static let providerConfigurationName =
         applicationDisplayName + " Transparent Proxy"
+    /// The extension's CFBundleDisplayName from project.yml, as System
+    /// Settings and `systemextensionsctl` show it. No localization overrides it.
+    static let transparentProxyDisplayName =
+        applicationDisplayName + " Network Extension"
     static let queueLabelPrefix = applicationIdentifier
     static let updateStagingDirectoryName = applicationIdentifier == "com.kafeifei.xdial.next"
         ? "XDialNextUpdates" : isDevelopment

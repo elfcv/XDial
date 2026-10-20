@@ -36,6 +36,10 @@ final class XDialBuildIdentityTests: XCTestCase {
             XDialBuildIdentity.applicationDisplayName,
             "XDial Next"
         )
+        XCTAssertEqual(
+            XDialBuildIdentity.transparentProxyDisplayName,
+            "XDial Next Network Extension"
+        )
         XCTAssertEqual(XDialBuildIdentity.productTitle, "XDial Next")
         XCTAssertEqual(XDialBuildIdentity.dataIdentifier, "com.kafeifei.xdial.next")
         XCTAssertEqual(XDialBuildIdentity.userDataDirectoryName, ".xdial-next")
@@ -86,6 +90,10 @@ final class XDialBuildIdentityTests: XCTestCase {
             "XDial Debug"
         )
         XCTAssertEqual(
+            XDialBuildIdentity.transparentProxyDisplayName,
+            "XDial Debug Network Extension"
+        )
+        XCTAssertEqual(
             XDialBuildIdentity.previousApplicationDestinationURLs.map(\.path),
             ["/Applications/XDail Debug.app"]
         )
@@ -123,6 +131,7 @@ final class XDialBuildIdentityTests: XCTestCase {
         )
         XCTAssertEqual(XDialBuildIdentity.applicationBundleName, "XDial.app")
         XCTAssertEqual(XDialBuildIdentity.applicationDisplayName, "XDial")
+        XCTAssertEqual(XDialBuildIdentity.transparentProxyDisplayName, "XDial Network Extension")
         XCTAssertEqual(XDialBuildIdentity.productTitle, "XDial")
         XCTAssertEqual(XDialBuildIdentity.dataIdentifier, "com.kafeifei.xdial")
         XCTAssertEqual(XDialBuildIdentity.userDataDirectoryName, ".xdial")
