@@ -442,48 +442,117 @@ enum UDPFlowSOCKSRelay {
         }
     }
 
+    private typealias DownlinkPipeline =
+        UDPRelayDownlinkPipeline<(Data, Network.NWEndpoint)>
+
+    /// Receiving and writing overlap without a task hop per datagram: the
+    /// loopback connection is read by a callback loop that never waits for the
+    /// application flow, and the pipeline hands everything queued during one
+    /// write to the next `writeDatagrams` call.
     private static func downlink(
         channel: UDPFlowChannel,
         association: UDPAssociation,
         traffic: ProviderTrafficLedger,
         logger: Logger
     ) async throws {
-        while !Task.isCancelled {
-            guard let datagramConnection = association.datagramConnection else {
-                throw RelayError.socksUnavailable
+        guard let datagramConnection = association.datagramConnection else {
+            throw RelayError.socksUnavailable
+        }
+        let flow = channel.flow
+        let generation = association.generation
+        let pipeline = DownlinkPipeline(
+            write: { batch, completion in
+                flow.writeDatagrams(batch) { error in
+                    completion(error)
+                }
+            },
+            written: { batch, dropped in
+                if dropped > 0 {
+                    logger.debug(
+                        "udp-receive-overflow trial=\(generation, privacy: .public) dropped=\(dropped)"
+                    )
+                }
+                for (payload, _) in batch {
+                    traffic.recordDownload(
+                        payload.count,
+                        transactionID: generation
+                    )
+                }
             }
-            let packet = try await receiveMessage(from: datagramConnection)
-            if packet.isEmpty {
+        )
+        receiveDownlink(
+            from: datagramConnection,
+            into: pipeline,
+            codec: channel.codec,
+            generation: generation,
+            logger: logger
+        )
+        // Cancellation stops the pipeline, and the receive loop stops at its
+        // next datagram; the relay's shutdown tears the connection down.
+        switch await pipeline.wait() {
+        case .finished:
+            return
+        case let .receiveFailed(error):
+            throw error
+        case let .writeFailed(error):
+            throw FlowFailure(underlying: error)
+        case .stopped:
+            throw CancellationError()
+        }
+    }
+
+    /// Reads the association's datagrams on the connection's own queue until
+    /// the connection ends or the pipeline closes. A connection end or failure
+    /// is reported behind the datagrams already accepted.
+    private static func receiveDownlink(
+        from connection: NWConnection,
+        into pipeline: DownlinkPipeline,
+        codec: UDPRelayDatagramCodec,
+        generation: String,
+        logger: Logger
+    ) {
+        connection.receiveMessage { data, _, isComplete, error in
+            if let error {
+                pipeline.finish(throwing: error)
                 return
             }
-            let decoded: (payload: Data, endpoint: Network.NWEndpoint)?
+            guard let packet = data else {
+                pipeline.finish(
+                    throwing: isComplete ? nil : RelayError.socksUnavailable
+                )
+                return
+            }
+            if packet.isEmpty {
+                pipeline.finish()
+                return
+            }
             do {
-                decoded = try channel.codec.decode(packet: packet)
+                if let decoded = try codec.decode(packet: packet) {
+                    let result = pipeline.push(
+                        (decoded.payload, decoded.endpoint),
+                        byteCount: decoded.payload.count
+                    )
+                    if result == .closed {
+                        return
+                    }
+                } else {
+                    logger.debug(
+                        "udp-receive-unmapped trial=\(generation, privacy: .public)"
+                    )
+                }
             } catch {
                 // A single malformed datagram is not a reason to retire the
                 // association, let alone the application's socket.
                 logger.debug(
-                    "udp-receive-dropped trial=\(association.generation, privacy: .public) code=\(diagnosticCode(error), privacy: .public)"
+                    "udp-receive-dropped trial=\(generation, privacy: .public) code=\(diagnosticCode(error), privacy: .public)"
                 )
-                continue
             }
-            guard let decoded else {
-                logger.debug(
-                    "udp-receive-unmapped trial=\(association.generation, privacy: .public)"
-                )
-                continue
-            }
-            do {
-                try await writeDatagrams(
-                    [(decoded.payload, decoded.endpoint)],
-                    to: channel.flow
-                )
-            } catch {
-                throw FlowFailure(underlying: error)
-            }
-            traffic.recordDownload(
-                decoded.payload.count,
-                transactionID: association.generation
+            receiveDownlink(
+                from: connection,
+                into: pipeline,
+                codec: codec,
+                generation: generation,
+                logger: logger
             )
         }
     }
@@ -674,21 +743,6 @@ enum UDPFlowSOCKSRelay {
         }
     }
 
-    private static func writeDatagrams(
-        _ datagrams: [(Data, Network.NWEndpoint)],
-        to flow: NEAppProxyUDPFlow
-    ) async throws {
-        let _: Void = try await awaitRelayCallback { completion in
-            flow.writeDatagrams(datagrams) { error in
-                if let error {
-                    completion(.failure(error))
-                } else {
-                    completion(.success(()))
-                }
-            }
-        }
-    }
-
     /// A SOCKS UDP association exists only while its TCP control connection is
     /// alive. Any EOF, error, or unexpected payload invalidates the UDP relay.
     private static func monitorControl(
@@ -798,24 +852,6 @@ enum UDPFlowSOCKSRelay {
             result.append(chunk)
         }
         return result
-    }
-
-    private static func receiveMessage(
-        from connection: NWConnection
-    ) async throws -> Data {
-        try await awaitRelayCallback { completion in
-            connection.receiveMessage { data, _, isComplete, error in
-                if let error {
-                    completion(.failure(error))
-                } else if let data {
-                    completion(.success(data))
-                } else if isComplete {
-                    completion(.success(Data()))
-                } else {
-                    completion(.failure(RelayError.socksUnavailable))
-                }
-            }
-        }
     }
 
 }
