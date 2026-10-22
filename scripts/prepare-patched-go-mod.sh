@@ -275,6 +275,8 @@ grep -Fq 'err = xdialHandleConnection(' \
 	"${patched_sing_box_dir}/protocol/socks/inbound.go"
 grep -Fq 'func TestXDialUDPAssociateHandshakeKeepsSocketFacts(' \
 	"${patched_sing_box_dir}/protocol/socks/xdial_udp_association_test.go"
+grep -Fq 'func TestXDialUDPAssociationEndsWithControlConnection(' \
+	"${patched_sing_box_dir}/protocol/socks/xdial_udp_association_test.go"
 grep -Fq 't.xdialDialUDP(ctx, destination, bind, nil, networkProtocol)' \
 	"${patched_sing_box_dir}/protocol/tailscale/endpoint.go"
 grep -Fq 'func TestXDialPreservedSourcePortReceivesPeerDatagrams(' \
