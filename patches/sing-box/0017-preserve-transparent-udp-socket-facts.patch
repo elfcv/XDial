@@ -9,6 +9,282 @@ diff --git a/adapter/inbound.go b/adapter/inbound.go
  
  	// sniffer
  
+diff --git a/adapter/xdial_source_port.go b/adapter/xdial_source_port.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/xdial_source_port.go
+@@ -0,0 +1,25 @@
++package adapter
++
++import (
++	"github.com/sagernet/sing/common"
++	M "github.com/sagernet/sing/common/metadata"
++)
++
++// XDialSourcePortFor returns the application socket's local port for the
++// flow's own packet connection to destination, or zero. Lookups made while
++// routing the flow carry the same metadata, and their sockets must never take
++// the port the flow needs.
++func (c *InboundContext) XDialSourcePortFor(destination M.Socksaddr) uint16 {
++	if c == nil || c.XDialSourcePort == 0 {
++		return 0
++	}
++	if destination.Port != c.Destination.Port {
++		return 0
++	}
++	if c.Destination.IsDomain() ||
++		destination.Addr == c.Destination.Addr ||
++		common.Contains(c.DestinationAddresses, destination.Addr) {
++		return c.XDialSourcePort
++	}
++	return 0
++}
+diff --git a/adapter/xdial_source_port_test.go b/adapter/xdial_source_port_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/xdial_source_port_test.go
+@@ -0,0 +1,45 @@
++package adapter
++
++import (
++	"net/netip"
++	"testing"
++
++	M "github.com/sagernet/sing/common/metadata"
++)
++
++func TestXDialSourcePortOnlyForFlowDestination(t *testing.T) {
++	peer := netip.MustParseAddr("100.103.86.57")
++	flow := M.SocksaddrFrom(peer, 5901)
++	metadata := &InboundContext{Destination: flow, XDialSourcePort: 5901}
++	if port := metadata.XDialSourcePortFor(flow); port != 5901 {
++		t.Fatalf("flow destination got port %d", port)
++	}
++	if port := metadata.XDialSourcePortFor(M.ParseSocksaddrHostPort("100.100.100.100", 53)); port != 0 {
++		t.Fatalf("lookup made for the flow took its source port %d", port)
++	}
++	if port := metadata.XDialSourcePortFor(M.SocksaddrFrom(peer, 5900)); port != 0 {
++		t.Fatalf("other port of the same peer took source port %d", port)
++	}
++	byName := &InboundContext{
++		Destination:     M.Socksaddr{Fqdn: "imac16k.example.ts.net", Port: 5901},
++		XDialSourcePort: 5901,
++	}
++	if port := byName.XDialSourcePortFor(flow); port != 5901 {
++		t.Fatalf("connect-by-name flow got port %d", port)
++	}
++	resolved := &InboundContext{
++		Destination:          M.Socksaddr{Fqdn: "imac16k.example.ts.net", Port: 5901},
++		DestinationAddresses: []netip.Addr{peer},
++		XDialSourcePort:      5901,
++	}
++	if port := resolved.XDialSourcePortFor(flow); port != 5901 {
++		t.Fatalf("resolved flow got port %d", port)
++	}
++	var missing *InboundContext
++	if port := missing.XDialSourcePortFor(flow); port != 0 {
++		t.Fatalf("connection without metadata got port %d", port)
++	}
++	if port := (&InboundContext{Destination: flow}).XDialSourcePortFor(flow); port != 0 {
++		t.Fatalf("flow without a reported port got port %d", port)
++	}
++}
+diff --git a/protocol/direct/outbound.go b/protocol/direct/outbound.go
+--- a/protocol/direct/outbound.go
++++ b/protocol/direct/outbound.go
+@@ -215,10 +215,18 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	portDialer := h.xdialSourcePortDialer(ctx, destination)
+ 	ctx, metadata := adapter.ExtendContext(ctx)
+ 	metadata.Outbound = h.Tag()
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "outbound packet connection")
++	if portDialer != nil {
++		conn, portErr := portDialer.ListenPacket(ctx, destination)
++		if portErr == nil {
++			return conn, nil
++		}
++		h.logger.DebugContext(ctx, "source port is not shared by the application: ", portErr)
++	}
+ 	conn, err := outboundDialer.ListenPacket(ctx, destination)
+ 	if err != nil {
+ 		return nil, err
+@@ -310,10 +318,18 @@ func (h *Outbound) ListenSerialNetworkPacket(ctx context.Context, destination M.
+ 	if err != nil {
+ 		return nil, netip.Addr{}, err
+ 	}
++	portDialer := h.xdialSourcePortDialer(ctx, destination)
+ 	ctx, metadata := adapter.ExtendContext(ctx)
+ 	metadata.Outbound = h.Tag()
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "outbound packet connection")
++	if portDialer != nil {
++		conn, newDestination, portErr := dialer.ListenSerialNetworkPacket(ctx, portDialer, destination, destinationAddresses, networkStrategy, networkType, fallbackNetworkType, fallbackDelay)
++		if portErr == nil {
++			return conn, newDestination, nil
++		}
++		h.logger.DebugContext(ctx, "source port is not shared by the application: ", portErr)
++	}
+ 	conn, newDestination, err := dialer.ListenSerialNetworkPacket(ctx, outboundDialer, destination, destinationAddresses, networkStrategy, networkType, fallbackNetworkType, fallbackDelay)
+ 	if err != nil {
+ 		return nil, netip.Addr{}, err
+diff --git a/protocol/direct/xdial_source_port.go b/protocol/direct/xdial_source_port.go
+new file mode 100644
+--- /dev/null
++++ b/protocol/direct/xdial_source_port.go
+@@ -0,0 +1,55 @@
++package direct
++
++import (
++	"context"
++
++	"github.com/sagernet/sing-box/adapter"
++	"github.com/sagernet/sing-box/common/dialer"
++	"github.com/sagernet/sing-box/option"
++	M "github.com/sagernet/sing/common/metadata"
++)
++
++func xdialSourcePortDialerOptions(
++	base option.DialerOptions,
++	boundInterface string,
++	sourcePort uint16,
++) option.DialerOptions {
++	if boundInterface != "" {
++		base = xdialBoundDialerOptions(base, boundInterface)
++	}
++	base.UDPBindPort = sourcePort
++	base.ReuseAddr = true
++	return base
++}
++
++// xdialSourcePortDialer binds the flow's own packet connection to the
++// application socket's local port, shared through SO_REUSEPORT. macOS does not
++// deliver datagrams to a socket the transparent proxy holds, so a peer that
++// sends to the port it negotiated (Screen Sharing's media) reaches the flow
++// only through this socket. A wildcard port the application holds exclusively
++// fails to bind, and the caller keeps its ephemeral dialer.
++func (h *Outbound) xdialSourcePortDialer(
++	ctx context.Context,
++	destination M.Socksaddr,
++) dialer.ParallelInterfaceDialer {
++	metadata := adapter.ContextFrom(ctx)
++	sourcePort := metadata.XDialSourcePortFor(destination)
++	if sourcePort == 0 {
++		return nil
++	}
++	newDialer, err := dialer.NewWithOptions(dialer.Options{
++		Context: h.ctx,
++		Options: xdialSourcePortDialerOptions(
++			h.dialerOptions,
++			metadata.XDialBoundInterface,
++			sourcePort,
++		),
++		RemoteIsDomain: true,
++		DirectOutbound: true,
++	})
++	if err != nil {
++		return nil
++	}
++	portDialer, _ := newDialer.(dialer.ParallelInterfaceDialer)
++	return portDialer
++}
+diff --git a/protocol/direct/xdial_source_port_test.go b/protocol/direct/xdial_source_port_test.go
+new file mode 100644
+--- /dev/null
++++ b/protocol/direct/xdial_source_port_test.go
+@@ -0,0 +1,90 @@
++package direct
++
++import (
++	"context"
++	"net"
++	"syscall"
++	"testing"
++
++	"github.com/sagernet/sing-box/common/dialer"
++	"github.com/sagernet/sing-box/option"
++	M "github.com/sagernet/sing/common/metadata"
++
++	"github.com/stretchr/testify/require"
++	"golang.org/x/sys/unix"
++)
++
++func TestXDialSourcePortDialerOptionsKeepBaseAndInterface(t *testing.T) {
++	base := option.DialerOptions{
++		AbstractDialerOptions: option.AbstractDialerOptions{
++			DomainResolver: &option.DomainResolveOptions{Server: "xdial-native-dns"},
++		},
++	}
++	options := xdialSourcePortDialerOptions(base, "en0", 5901)
++	require.Equal(t, uint16(5901), options.UDPBindPort)
++	require.True(t, options.ReuseAddr)
++	require.Equal(t, "en0", options.BindInterface)
++	require.Equal(t, "xdial-native-dns", options.DomainResolver.Server)
++	require.Zero(t, base.UDPBindPort)
++	require.False(t, base.ReuseAddr)
++
++	unbound := xdialSourcePortDialerOptions(base, "", 5900)
++	require.Empty(t, unbound.BindInterface)
++}
++
++func xdialApplicationSocket(t *testing.T, address string, share bool) uint16 {
++	t.Helper()
++	listenConfig := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
++		if !share {
++			return nil
++		}
++		var optionErr error
++		err := raw.Control(func(fd uintptr) {
++			optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
++			if optionErr == nil {
++				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
++			}
++		})
++		if err != nil {
++			return err
++		}
++		return optionErr
++	}}
++	conn, err := listenConfig.ListenPacket(context.Background(), "udp4", address+":0")
++	require.NoError(t, err)
++	t.Cleanup(func() { conn.Close() })
++	return uint16(conn.LocalAddr().(*net.UDPAddr).Port)
++}
++
++func xdialListenOnSourcePort(sourcePort uint16) (net.PacketConn, error) {
++	portDialer, err := dialer.NewDefault(context.Background(), xdialSourcePortDialerOptions(option.DialerOptions{}, "", sourcePort))
++	if err != nil {
++		return nil, err
++	}
++	return portDialer.ListenPacket(context.Background(), M.ParseSocksaddrHostPort("127.0.0.1", 9))
++}
++
++// Screen Sharing's media sockets share their ports: the viewer binds the
++// wildcard address, the shared Mac its own address. The Direct socket joins
++// either so the peer's datagrams to that port have a receiver. A wildcard port
++// the application holds exclusively refuses the bind, and the flow keeps an
++// ephemeral port.
++func TestXDialSourcePortDialerJoinsTheApplicationPort(t *testing.T) {
++	for name, application := range map[string]struct {
++		address string
++		share   bool
++	}{
++		"shared wildcard":         {"0.0.0.0", true},
++		"shared specific address": {"127.0.0.1", true},
++	} {
++		sourcePort := xdialApplicationSocket(t, application.address, application.share)
++		conn, err := xdialListenOnSourcePort(sourcePort)
++		require.NoError(t, err, name)
++		require.Equal(t, int(sourcePort), conn.LocalAddr().(*net.UDPAddr).Port, name)
++		conn.Close()
++	}
++
++	exclusivePort := xdialApplicationSocket(t, "0.0.0.0", false)
++	_, err := xdialListenOnSourcePort(exclusivePort)
++	require.Error(t, err)
++}
 diff --git a/protocol/socks/inbound.go b/protocol/socks/inbound.go
 --- a/protocol/socks/inbound.go
 +++ b/protocol/socks/inbound.go
@@ -731,7 +1007,7 @@ diff --git a/protocol/tailscale/xdial_udp_source_port.go b/protocol/tailscale/xd
 new file mode 100644
 --- /dev/null
 +++ b/protocol/tailscale/xdial_udp_source_port.go
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,66 @@
 +//go:build with_gvisor
 +
 +package tailscale
@@ -745,7 +1021,6 @@ new file mode 100644
 +	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
 +	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 +	"github.com/sagernet/sing-box/adapter"
-+	"github.com/sagernet/sing/common"
 +	M "github.com/sagernet/sing/common/metadata"
 +)
 +
@@ -762,7 +1037,7 @@ new file mode 100644
 +	remoteAddr *tcpip.FullAddress,
 +	networkProtocol tcpip.NetworkProtocolNumber,
 +) (*gonet.UDPConn, error) {
-+	sourcePort := xdialFlowSourcePort(adapter.ContextFrom(ctx), destination)
++	sourcePort := adapter.ContextFrom(ctx).XDialSourcePortFor(destination)
 +	udpConn, preserved, err := xdialDialUDPPreservingPort(
 +		t.stack,
 +		localAddr,
@@ -774,27 +1049,6 @@ new file mode 100644
 +		t.logger.InfoContext(ctx, "source port ", sourcePort, " is taken on the tailnet, using ", udpConn.LocalAddr())
 +	}
 +	return udpConn, err
-+}
-+
-+// xdialFlowSourcePort returns the application's local port only for the
-+// flow's own packet connection. Lookups made while routing the flow carry the
-+// same context, and a DNS socket must never take the port the flow needs.
-+func xdialFlowSourcePort(
-+	metadata *adapter.InboundContext,
-+	destination M.Socksaddr,
-+) uint16 {
-+	if metadata == nil || metadata.XDialSourcePort == 0 {
-+		return 0
-+	}
-+	if destination.Port != metadata.Destination.Port {
-+		return 0
-+	}
-+	if metadata.Destination.IsDomain() ||
-+		destination.Addr == metadata.Destination.Addr ||
-+		common.Contains(metadata.DestinationAddresses, destination.Addr) {
-+		return metadata.XDialSourcePort
-+	}
-+	return 0
 +}
 +
 +func xdialDialUDPPreservingPort(
@@ -824,7 +1078,7 @@ diff --git a/protocol/tailscale/xdial_udp_source_port_test.go b/protocol/tailsca
 new file mode 100644
 --- /dev/null
 +++ b/protocol/tailscale/xdial_udp_source_port_test.go
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,119 @@
 +//go:build with_gvisor
 +
 +package tailscale
@@ -842,8 +1096,6 @@ new file mode 100644
 +	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv4"
 +	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 +	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
-+	"github.com/sagernet/sing-box/adapter"
-+	M "github.com/sagernet/sing/common/metadata"
 +)
 +
 +var (
@@ -876,33 +1128,6 @@ new file mode 100644
 +
 +func xdialTestAddress(address netip.Addr, port uint16) tcpip.FullAddress {
 +	return tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(address.As4()), Port: port}
-+}
-+
-+func TestXDialFlowSourcePortOnlyForFlowDestination(t *testing.T) {
-+	flow := M.SocksaddrFrom(xdialTestPeerAddress, 5901)
-+	metadata := &adapter.InboundContext{Destination: flow, XDialSourcePort: 5901}
-+	if port := xdialFlowSourcePort(metadata, flow); port != 5901 {
-+		t.Fatalf("flow destination got port %d", port)
-+	}
-+	if port := xdialFlowSourcePort(metadata, M.ParseSocksaddrHostPort("100.100.100.100", 53)); port != 0 {
-+		t.Fatalf("lookup made for the flow took its source port %d", port)
-+	}
-+	if port := xdialFlowSourcePort(metadata, M.SocksaddrFrom(xdialTestPeerAddress, 5900)); port != 0 {
-+		t.Fatalf("other port of the same peer took source port %d", port)
-+	}
-+	byName := &adapter.InboundContext{
-+		Destination:     M.Socksaddr{Fqdn: "imac16k.example.ts.net", Port: 5901},
-+		XDialSourcePort: 5901,
-+	}
-+	if port := xdialFlowSourcePort(byName, flow); port != 5901 {
-+		t.Fatalf("connect-by-name flow got port %d", port)
-+	}
-+	if port := xdialFlowSourcePort(nil, flow); port != 0 {
-+		t.Fatalf("connection without metadata got port %d", port)
-+	}
-+	if port := xdialFlowSourcePort(&adapter.InboundContext{Destination: flow}, flow); port != 0 {
-+		t.Fatalf("flow without a reported port got port %d", port)
-+	}
 +}
 +
 +// macOS Screen Sharing sends media from and to the port numbers it announced,

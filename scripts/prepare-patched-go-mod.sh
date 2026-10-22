@@ -281,6 +281,12 @@ grep -Fq 't.xdialDialUDP(ctx, destination, bind, nil, networkProtocol)' \
 	"${patched_sing_box_dir}/protocol/tailscale/endpoint.go"
 grep -Fq 'func TestXDialPreservedSourcePortReceivesPeerDatagrams(' \
 	"${patched_sing_box_dir}/protocol/tailscale/xdial_udp_source_port_test.go"
+grep -Fq 'func (c *InboundContext) XDialSourcePortFor(' \
+	"${patched_sing_box_dir}/adapter/xdial_source_port.go"
+grep -Fq 'portDialer := h.xdialSourcePortDialer(ctx, destination)' \
+	"${patched_sing_box_dir}/protocol/direct/outbound.go"
+grep -Fq 'func TestXDialSourcePortDialerJoinsTheApplicationPort(' \
+	"${patched_sing_box_dir}/protocol/direct/xdial_source_port_test.go"
 
 patched_module_dir="${staging_dir}/tailscale"
 cp -R "${source_dir}" "${patched_module_dir}"
