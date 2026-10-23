@@ -1507,6 +1507,37 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
     }
 
+    /// Provider messages go through the manager this Host already holds.
+    /// Every `loadAllFromPreferences` returns new manager instances whose
+    /// `NETunnelProviderSession` outlives them and keeps receiving every change
+    /// of the same system session; loading once per message left about 5,000
+    /// of them in one Host process (2026-10-22), each change of the session's
+    /// last disconnect error then costing the main thread several seconds.
+    /// The session belongs to the configuration, not to one tunnel run;
+    /// requests that belong to a transaction name it and are checked against
+    /// the current one. Only a Host without a manager for this Provider loads
+    /// one.
+    private func withProviderMessageManager(
+        purpose: TransparentProxyManagerSelectionPurpose,
+        completion: @escaping (
+            Result<NETransparentProxyManager?, Error>
+        ) -> Void
+    ) {
+        guard
+            let manager,
+            (manager.protocolConfiguration as? NETunnelProviderProtocol)?
+                .providerBundleIdentifier == extensionIdentifier
+        else {
+            withExistingManager(purpose: purpose, completion: completion)
+            return
+        }
+        // Delivered later, like a preferences load, so callers keep their
+        // ordering against cancellation and timeouts.
+        DispatchQueue.main.async {
+            completion(.success(manager))
+        }
+    }
+
     private func withExistingManager(
         purpose: TransparentProxyManagerSelectionPurpose = .runtime,
         completion: @escaping (
@@ -1585,7 +1616,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             return
         }
 
-        withExistingManager { result in
+        withProviderMessageManager(purpose: .runtime) { result in
             switch result {
             case .failure:
                 completion(.failure(
@@ -2114,8 +2145,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         )
     }
 
-    /// 每次都从系统当前配置重新取得 connected manager/session。这里不缓存
-    /// `NETunnelProviderSession`，避免重连后把请求发给上一笔事务的连接对象。
+    /// 经已持有的 manager 发送（见 `withProviderMessageManager`）。请求与响应
+    /// 都带事务 ID，发给上一笔事务的请求由 `diagnosticsTransactionIsCurrent`
+    /// 和回包校验拒绝，不靠每次重新取得连接对象。
     func sendTailscaleControl(_ request: TailscaleControlRequest,
         completion: @escaping (Result<TailscaleControlResponse, Error>) -> Void) {
         let gate = HostCompletionGate(completion)
@@ -2126,7 +2158,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             gate.finish(.failure(ProviderDiagnosticsHostError.timedOut))
         }
-        withExistingManager(purpose: .diagnostics) { result in
+        withProviderMessageManager(purpose: .diagnostics) { result in
             guard case let .success(manager?) = result,
                   manager.connection.status == .connected,
                   self.diagnosticsTransactionIsCurrent(request.transactionID),
@@ -2160,7 +2192,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             gate.finish(.failure(ProviderDiagnosticsHostError.timedOut))
         }
-        withExistingManager(purpose: .diagnostics) { result in
+        withProviderMessageManager(purpose: .diagnostics) { result in
             guard case let .success(manager?) = result,
                   manager.connection.status == .connected,
                   self.diagnosticsTransactionIsCurrent(request.transactionID),
@@ -2200,7 +2232,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             gate.finish(.success(.unacknowledged))
         }
-        withExistingManager(purpose: .diagnostics) { result in
+        withProviderMessageManager(purpose: .diagnostics) { result in
             guard case let .success(manager?) = result,
                   manager.connection.status == .connected,
                   let session = manager.connection as? NETunnelProviderSession else {
@@ -2265,7 +2297,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 ProviderDiagnosticsHostError.timedOut
             ))
         }
-        withExistingManager(purpose: .diagnostics) { result in
+        withProviderMessageManager(purpose: .diagnostics) { result in
             switch result {
             case .failure:
                 gate.finish(.failure(

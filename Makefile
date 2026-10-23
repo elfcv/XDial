@@ -283,6 +283,8 @@ test-macos-transaction: test-release-contract test-debug-rollback macos-identity
 	@! rg -n 'str\([^)]*kAXValueAttribute' macos/Sources/XDial/DebugServer.swift
 	@test "$$(rg -n 'statusHandler\?\(' macos/Sources/XDial/TransparentProxyManager.swift | wc -l | tr -d ' ')" -eq 1
 	@rg -U -q 'private func publishRuntimeStatus\([^}]+TransparentProxyRuntimeGate\.resolve' macos/Sources/XDial/TransparentProxyManager.swift
+	@# Provider messages reuse the held manager; a preferences load per message leaks a NETunnelProviderSession each time.
+	@! rg -n 'withExistingManager\(purpose: \.diagnostics' macos/Sources/XDial/TransparentProxyManager.swift
 	cd macos && xcodegen generate
 	xcodebuild -project macos/XDial.xcodeproj -scheme XDialTests \
 		-configuration Debug -destination 'platform=macOS,arch=arm64' \
