@@ -321,6 +321,109 @@ final class AutomaticRecoveryOutcomeGateTests: XCTestCase {
         return ledger
     }
 
+    /// A Provider whose rollback could not finish ends with a failed report
+    /// that no Host confirmation completes. Once the system session is
+    /// inactive that report is the step's outcome; waiting would never end.
+    func testUnconfirmableRollbackDecidesOnlyOnceTheSessionIsInactive() {
+        var gate = AutomaticRecoveryOutcomeGate()
+        gate.await("retry")
+        let report = unsafeReport("retry", confirmable: false)
+
+        XCTAssertEqual(
+            gate.decide(
+                recoveryInProgress: true,
+                attemptPending: false,
+                report: report,
+                currentTransactionID: "retry",
+                systemSessionInactive: false
+            ),
+            .awaitOutcome
+        )
+        XCTAssertEqual(
+            gate.decide(
+                recoveryInProgress: true,
+                attemptPending: false,
+                report: report,
+                currentTransactionID: "retry",
+                systemSessionInactive: true
+            ),
+            .attemptOutcome
+        )
+    }
+
+    func testConfirmableRollbackStillWaitsForTheHostConfirmation() {
+        var gate = AutomaticRecoveryOutcomeGate()
+        gate.await("retry")
+
+        XCTAssertEqual(
+            gate.decide(
+                recoveryInProgress: true,
+                attemptPending: false,
+                report: unsafeReport("retry", confirmable: true),
+                currentTransactionID: "retry",
+                systemSessionInactive: true
+            ),
+            .awaitOutcome
+        )
+    }
+
+    /// Writing a Host failure into the awaited transaction publishes it, which
+    /// may already end or park recovery; the failure must then not report
+    /// "reconnecting" again.
+    func testHostFailureAfterTheStepWasDecidedDoesNotContinueRecovery() {
+        XCTAssertEqual(
+            AutomaticRecoveryOutcomeGate.failureContinuation(
+                wasRecovering: true,
+                stillRecovering: false
+            ),
+            .alreadyDecided
+        )
+        XCTAssertEqual(
+            AutomaticRecoveryOutcomeGate.failureContinuation(
+                wasRecovering: true,
+                stillRecovering: true
+            ),
+            .continueRecovery
+        )
+        XCTAssertEqual(
+            AutomaticRecoveryOutcomeGate.failureContinuation(
+                wasRecovering: false,
+                stillRecovering: false
+            ),
+            .notRecovering
+        )
+    }
+
+    private func unsafeReport(
+        _ transactionID: String,
+        confirmable: Bool
+    ) -> ConnectionReport {
+        var report = ConnectionReport(
+            transactionID: transactionID,
+            plan: plan()
+        )
+        report.updateTask(id: "underlay:system", state: .running)
+        report.fail(
+            code: "prepare-failed",
+            message: "prepare-failed",
+            taskID: "underlay:system"
+        )
+        report.setState(.rollingBack)
+        if !confirmable {
+            report.failRollback(
+                code: "rollback-runtime-timeout",
+                message: "rollback-runtime-timeout",
+                taskID: ""
+            )
+        }
+        report.rollbackSessionTasks(
+            systemTakeoverRemoved: false,
+            cleanupComplete: confirmable,
+            finalState: .failed
+        )
+        return report
+    }
+
     private func plan() -> ConnectionPlan {
         ConnectionPlan(
             schemaVersion: 3,

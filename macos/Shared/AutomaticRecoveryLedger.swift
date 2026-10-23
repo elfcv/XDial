@@ -507,11 +507,34 @@ struct AutomaticRecoveryOutcomeGate {
         awaitedTransactionID = nil
     }
 
+    enum FailureContinuation: Equatable {
+        /// Publishing the failed report already decided the recovery step
+        /// and ended or parked recovery with that report's error.
+        case alreadyDecided
+        case continueRecovery
+        case notRecovering
+    }
+
+    /// After a Host failure was written into the current transaction:
+    /// `wasRecovering` before writing it, `stillRecovering` after.
+    static func failureContinuation(
+        wasRecovering: Bool,
+        stillRecovering: Bool
+    ) -> FailureContinuation {
+        guard wasRecovering else { return .notRecovering }
+        return stillRecovering ? .continueRecovery : .alreadyDecided
+    }
+
+    /// `systemSessionInactive` is the Host's read of the system session. An
+    /// unsafe terminal report decides the step only once that session is
+    /// gone and no Host confirmation can complete its rollback; otherwise
+    /// waiting for it would never end.
     func decide(
         recoveryInProgress: Bool,
         attemptPending: Bool,
         report: ConnectionReport?,
-        currentTransactionID: String?
+        currentTransactionID: String?,
+        systemSessionInactive: Bool = false
     ) -> Decision {
         guard recoveryInProgress else { return .notRecovering }
         guard !attemptPending,
@@ -519,12 +542,16 @@ struct AutomaticRecoveryOutcomeGate {
               let report,
               report.transactionID == awaitedTransactionID,
               report.transactionID == currentTransactionID,
-              [.failed, .cancelled].contains(report.state),
-              report.rollbackComplete,
-              report.systemTakeoverRemoved else {
+              [.failed, .cancelled].contains(report.state) else {
             return .awaitOutcome
         }
-        return .attemptOutcome
+        if report.rollbackComplete && report.systemTakeoverRemoved {
+            return .attemptOutcome
+        }
+        return systemSessionInactive
+            && !report.canConfirmSystemDisconnectRollback
+            ? .attemptOutcome
+            : .awaitOutcome
     }
 }
 

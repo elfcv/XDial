@@ -65,10 +65,8 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             currentTransactionID: currentTransactionID,
             automaticReconnectInProgress:
                 automaticReconnectInProgress,
-            reconnectTransactionID:
-                automaticReconnectTransactionID,
-            networkExtensionSessionTransactionID:
-                networkExtensionSessionTransactionID
+            attemptTransactionID:
+                automaticReconnectTransactionID
         )
     }
 
@@ -84,7 +82,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
     private var deactivationRequest: OSSystemExtensionRequest?
     private var deactivationCompletion:
         ((Result<Void, Error>) -> Void)?
-    private var startAttemptID: UUID?
+    private var startAttempt: NetworkExtensionStartAttempt?
     private var startIntentID: UUID?
     private var currentTransactionID: String?
     /// Transactions this Host process began or adopted. Only transactions
@@ -100,8 +98,15 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
     private var automaticReconnectInProgress = false
     private var automaticReconnectTrigger: AutomaticReconnectTrigger?
     private var pendingInitialRetryTrigger: AutomaticReconnectTrigger?
+    /// The open recovery attempt's own transaction; nil while no attempt is
+    /// open, and never the transaction which opened recovery.
     private var automaticReconnectTransactionID: String?
-    private var networkExtensionSessionTransactionID: String?
+    /// The last transaction whose outcome a recovery step consumed.
+    private var consumedRecoveryTransactionID: String?
+    /// A transaction whose session the Host stopped for its start budget;
+    /// its outcome is worded as a start timeout, while retry and incident
+    /// classification still follow the code in its report.
+    private var budgetStoppedTransactionID: String?
     private let automaticReconnectRetryPolicy =
         AutomaticReconnectRetryPolicy()
     /// Full-recovery budgets keyed by recovery epoch, parking, grants and
@@ -330,14 +335,13 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         pendingInitialRetryTrigger = automaticRetryTrigger
         automaticReconnectTransactionID = nil
         automaticReconnectUnderlayWaitEvidence = nil
-        networkExtensionSessionTransactionID = nil
         connectedSessionTransactionID = nil
         activeReconnectIncidentID = nil
         stableResetIncidentID = nil
         cancelStableConnectionReset()
         cancelAutomaticReconnectRetry(resetAttempts: false)
         stopUnderlayMonitoring()
-        startAttemptID = nil
+        withdrawPendingStart()
         publishRuntimeStatus("connecting", error: nil)
         updateReport(transactionID: transactionID) {
             $0.updateTask(id: "underlay:system", state: .running)
@@ -398,6 +402,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             sourceReport.transactionID == currentTransactionID,
             sourceReport.state == .committed,
             !sourceReport.systemTakeoverRemoved,
+            // Only a proven session is a switch source; during recovery the
+            // attempt must prove its own transaction first.
+            connectedSessionTransactionID == sourceReport.transactionID,
             manager?.connection.status == .connected
         else {
             recordRejectedScenarioSwitch(code: "switch-unavailable")
@@ -999,7 +1006,6 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         pendingInitialRetryTrigger = nil
         automaticReconnectTransactionID = nil
         automaticReconnectUnderlayWaitEvidence = nil
-        networkExtensionSessionTransactionID = nil
         connectedSessionTransactionID = nil
         // Explicit disconnect (and quit, which stops through here) ends a
         // parked recovery immediately together with its observer and timers.
@@ -1017,7 +1023,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         cancelStableConnectionReset()
         cancelAutomaticReconnectRetry(resetAttempts: false)
         stopUnderlayMonitoring()
-        startAttemptID = nil
+        withdrawPendingStart()
         publishRuntimeStatus("disconnecting", error: nil)
         if let manager {
             // 正常退出发生在 NSApplication 的嵌套 RunLoop 中。此时再调用
@@ -1033,13 +1039,22 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 self.publishFailure(error)
             case .success(nil):
                 self.manager = nil
-                self.networkExtensionSessionTransactionID = nil
                 self.finishOrphanedTransactionIfNeeded()
                 self.publishRuntimeStatus("disconnected", error: nil)
             case let .success(manager?):
                 self.stopLoadedManager(manager)
             }
         }
+    }
+
+    /// Closes an open start attempt. Its session may still read inactive
+    /// because the system has not acted on the start yet, so the start is
+    /// withdrawn with a stop as well; stopping an inactive session is a no-op
+    /// otherwise.
+    private func withdrawPendingStart() {
+        guard startAttempt != nil else { return }
+        startAttempt = nil
+        manager?.connection.stopVPNTunnel()
     }
 
     private func stopLoadedManager(
@@ -1089,13 +1104,27 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             guard let self else { return }
             switch result {
             case let .failure(error):
+                // A failed preferences read says nothing about the session
+                // of an open start attempt; its own checks bound it.
+                guard self.startAttempt == nil else {
+                    self.publishRuntimeStatus(
+                        self.lastPublishedRuntimeStatus,
+                        error: nil
+                    )
+                    return
+                }
                 self.publishFailure(error)
             case .success(nil):
                 self.manager = nil
-                self.networkExtensionSessionTransactionID = nil
                 self.finishOrphanedTransactionIfNeeded()
                 self.publishRuntimeStatus("disconnected", error: nil)
-            case let .success(manager?):
+            case let .success(loaded?):
+                // An open start attempt is judged through the instance that
+                // started it. Nothing guarantees that separately loaded
+                // instances see the same session's changes at the same time.
+                let manager = self.startAttempt == nil
+                    ? loaded
+                    : self.manager ?? loaded
                 self.installStatusObserver(for: manager)
                 if self.reconcilePersistedTransactionIfNeeded(
                     manager
@@ -1409,10 +1438,19 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 publishFailure(ManagerError.missingTransaction)
                 return
             }
-            let attemptID = UUID()
-            startAttemptID = attemptID
+            // The attempt is judged through the instance that starts it; the
+            // status observer and later syncs follow the same one.
+            if self.manager !== manager {
+                installStatusObserver(for: manager)
+            }
+            let attempt = NetworkExtensionStartAttempt(
+                intentID: intentID,
+                transactionID: transactionID,
+                isRecoveryAttempt: automaticReconnectInProgress
+                    && automaticReconnectTransactionID == transactionID
+            )
+            startAttempt = attempt
             activeUnderlay = underlay
-            networkExtensionSessionTransactionID = transactionID
             do {
                 var options: [String: NSObject] = [
                     "profile": profileJSON as NSString,
@@ -1435,18 +1473,10 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 }
 #endif
                 try manager.connection.startVPNTunnel(options: options)
-                monitorStartAttempt(
-                    manager,
-                    attemptID: attemptID,
-                    checksRemaining: 90
-                )
+                monitorStartAttempt(manager, attemptID: attempt.id)
             } catch {
-                if startAttemptID == attemptID {
-                    startAttemptID = nil
-                }
-                if networkExtensionSessionTransactionID ==
-                    transactionID {
-                    networkExtensionSessionTransactionID = nil
+                if startAttempt?.id == attempt.id {
+                    startAttempt = nil
                 }
                 publishFailure(error)
             }
@@ -2023,7 +2053,6 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         requestedProfileJSON = active.profileJSON
         currentTransactionID = report.transactionID
         currentTransactionSeedJSON = reportJSON
-        networkExtensionSessionTransactionID = report.transactionID
         connectedSessionTransactionID = report.transactionID
         do {
             try ConnectionReportJournal.write(report)
@@ -2055,8 +2084,6 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         if let sourceReport {
             currentTransactionID = sourceReport.transactionID
             currentTransactionSeedJSON = sourceReportJSON
-            networkExtensionSessionTransactionID =
-                sourceReport.transactionID
             connectedSessionTransactionID = sourceReport.transactionID
             try? ConnectionReportJournal.write(sourceReport)
             publishReport(sourceReport)
@@ -2408,23 +2435,25 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         publishLatestReport()
         switch manager.connection.status {
         case .invalid, .disconnected:
+            if startAttempt?.inactiveSession == .beforeStart {
+                // The Host has not read the Provider's copy of this start and
+                // has no evidence it was rejected (no active session seen, or
+                // no answer from the Provider journal): the read may be the
+                // session before it and decides nothing. The attempt's own
+                // checks bound the wait.
+                publishRuntimeStatus(
+                    automaticReconnectInProgress
+                        ? "reconnecting"
+                        : "connecting",
+                    error: nil
+                )
+                return
+            }
             let disconnectedAt = Date()
             let reportBeforeRecovery = ConnectionReportJournal.read()
-            let failedStartScope: ConnectionStartAttemptScope? = {
-                guard
-                    startAttemptID != nil,
-                    let intentID = startIntentID,
-                    let transactionID =
-                        networkExtensionSessionTransactionID
-                        ?? currentTransactionID
-                else {
-                    return nil
-                }
-                return ConnectionStartAttemptScope(
-                    intentID: intentID,
-                    transactionID: transactionID
-                )
-            }()
+            // Only an attempt the Host saw acted on gets here.
+            let endedAttempt = startAttempt
+            startAttempt = nil
             let lostCommittedSession =
                 startIntentID != nil
                 && requestedProfileJSON != nil
@@ -2432,7 +2461,6 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 && connectedSessionTransactionID ==
                     reportBeforeRecovery?.transactionID
                 && !automaticReconnectInProgress
-            networkExtensionSessionTransactionID = nil
             connectedSessionTransactionID = nil
             cancelStableConnectionReset()
             stopUnderlayMonitoring()
@@ -2482,55 +2510,35 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 handleAutomaticReconnectAfterDisconnect(
                     report: ConnectionReportJournal.read()
                 )
-                return
             }
-            guard startAttemptID != nil,
-                  let failedStartScope else {
-                publishRuntimeStatus("disconnected", error: nil)
-                return
-            }
-            startAttemptID = nil
-            manager.connection.fetchLastDisconnectError { [weak self] error in
-                DispatchQueue.main.async {
-                    guard
-                        let self,
-                        failedStartScope.matches(
-                            currentIntentID: self.startIntentID,
-                            currentTransactionID:
-                                self.currentTransactionID
-                        )
-                    else {
-                        return
-                    }
-                    self.publishLatestReport()
-                    guard failedStartScope.matches(
-                        currentIntentID: self.startIntentID,
-                        currentTransactionID:
-                            self.currentTransactionID
-                    ) else {
-                        return
-                    }
-                    self.publishFailure(
-                        error ?? ManagerError.providerStartFailed
-                    )
+            guard let endedAttempt else {
+                if !automaticReconnectInProgress {
+                    publishRuntimeStatus("disconnected", error: nil)
                 }
+                return
             }
+            settleEndedStartAttempt(endedAttempt, manager: manager)
         case .connecting:
+            startAttempt?.noteSystemActive()
             publishRuntimeStatus(
                 automaticReconnectInProgress ? "reconnecting" : "connecting",
                 error: nil
             )
         case .connected:
-            startAttemptID = nil
+            // A connected session alone does not end the attempt; the
+            // committed report of its transaction does.
+            startAttempt?.noteSystemActive()
             publishRuntimeStatus("connected", error: nil)
             publishLatestReport()
             if lastPublishedRuntimeStatus == "connected" {
                 startUnderlayMonitoringIfNeeded()
             }
         case .reasserting:
+            startAttempt?.noteSystemActive()
             cancelStableConnectionReset()
             publishRuntimeStatus("reconnecting", error: nil)
         case .disconnecting:
+            startAttempt?.noteSystemActive()
             cancelStableConnectionReset()
             publishRuntimeStatus(
                 automaticReconnectInProgress ? "reconnecting" : "disconnecting",
@@ -2544,35 +2552,178 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
     }
 
-    private func monitorStartAttempt(
-        _ manager: NETransparentProxyManager,
-        attemptID: UUID,
-        checksRemaining: Int
+    /// The session of an attempt the Host saw acted on is inactive now. The
+    /// Provider's terminal report is written before its session ends, so it
+    /// is read again first; the disconnect error only words the failure and
+    /// is not waited for beyond a short deadline (its callback was seen to
+    /// arrive minutes late). What remains unsettled is settled from what the
+    /// Host saw, see `NetworkExtensionStartAttempt.settlement`.
+    private func settleEndedStartAttempt(
+        _ attempt: NetworkExtensionStartAttempt,
+        manager: NETransparentProxyManager
     ) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            guard self.startAttemptID == attemptID else {
+        let scope = attempt.scope
+        var done = false
+        let settle: (Error?) -> Void = { [weak self] error in
+            guard
+                !done,
+                let self,
+                scope.matches(
+                    currentIntentID: self.startIntentID,
+                    currentTransactionID: self.currentTransactionID
+                )
+            else {
                 return
             }
-            switch manager.connection.status {
+            done = true
+            let probed = self.publishLatestReport()
+            // A terminal report first read here may still need the Host's
+            // confirmation of the system teardown it already observed.
+            if Self.systemSessionState(self.manager) != .active {
+                self.finishSystemDisconnectRollbackIfNeeded()
+            }
+            guard scope.matches(
+                currentIntentID: self.startIntentID,
+                currentTransactionID: self.currentTransactionID
+            ) else {
+                return
+            }
+            let settled = ConnectionReportJournal.read().map {
+                $0.transactionID == scope.transactionID
+                    && [.failed, .cancelled].contains($0.state)
+            } ?? false
+            let settlement = NetworkExtensionStartAttempt.settlement(
+                isRecoveryAttempt: attempt.isRecoveryAttempt,
+                recoveryAwaitsTransaction:
+                    self.automaticReconnectInProgress
+                        && self.automaticRecoveryOutcomeGate
+                            .awaitedTransactionID == scope.transactionID,
+                recoveryConsumedTransaction:
+                    self.consumedRecoveryTransactionID == scope.transactionID,
+                stopRequested: attempt.stopRequested,
+                settled: settled,
+                providerTookTransaction:
+                    attempt.providerTookTransaction
+                        || probed?.transactionID == scope.transactionID
+            )
+            switch settlement {
+            case .alreadyDecided:
+                return
+            case let .recoveryStep(markSessionLost):
+                if markSessionLost {
+                    self.finishProviderSessionLost(scope.transactionID)
+                }
+                self.handleAutomaticReconnectAfterDisconnect(
+                    report: ConnectionReportJournal.read()
+                )
+            case let .fail(markSessionLost, cause):
+                if markSessionLost {
+                    self.finishProviderSessionLost(scope.transactionID)
+                }
+                switch cause {
+                case .startTimedOut:
+                    self.publishFailure(ManagerError.startTimedOut)
+                case .providerSessionLost:
+                    self.publishFailure(
+                        error ?? ManagerError.providerSessionLost
+                    )
+                case .providerStartFailed:
+                    self.publishFailure(
+                        error ?? ManagerError.providerStartFailed
+                    )
+                }
+            }
+        }
+        manager.connection.fetchLastDisconnectError { error in
+            DispatchQueue.main.async {
+                settle(error)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            settle(nil)
+        }
+    }
+
+    private func recoveryOutcomeMessage(
+        _ report: ConnectionReport?
+    ) -> String? {
+        guard let report else { return nil }
+        return report.transactionID == budgetStoppedTransactionID
+            ? ManagerError.startTimedOut.localizedDescription
+            : report.error?.message
+    }
+
+    private func finishProviderSessionLost(_ transactionID: String) {
+        finishInterruptedTransactionRecovery(
+            transactionID: transactionID,
+            error: .providerSessionLost,
+            code: ConnectionFailureCode.providerSessionLost
+        )
+    }
+
+    /// Re-evaluates the attempt every check until it is proven or settled, so
+    /// a state change that was missed or read before the session acted on the
+    /// start never leaves it open without a bound.
+    private func monitorStartAttempt(
+        _ manager: NETransparentProxyManager,
+        attemptID: UUID
+    ) {
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + NetworkExtensionStartAttempt.checkInterval
+        ) {
+            guard self.startAttempt?.id == attemptID else {
+                return
+            }
+            let status = manager.connection.status
+            switch status {
             case .connected, .invalid, .disconnected:
                 self.publishStatus(for: manager)
             case .connecting, .reasserting, .disconnecting:
-                guard checksRemaining > 1 else {
-                    self.startAttemptID = nil
-                    manager.connection.stopVPNTunnel()
-                    self.publishFailure(ManagerError.startTimedOut)
-                    return
-                }
-                self.monitorStartAttempt(
-                    manager,
-                    attemptID: attemptID,
-                    checksRemaining: checksRemaining - 1
-                )
+                self.startAttempt?.noteSystemActive()
             @unknown default:
-                self.startAttemptID = nil
+                self.startAttempt = nil
                 self.publishFailure(ManagerError.unknownStatus)
+                return
+            }
+            guard self.startAttempt?.id == attemptID else {
+                return
+            }
+            let sessionActive = status != .invalid && status != .disconnected
+            switch self.startAttempt?.recordCheck(
+                sessionActive: sessionActive
+            ) {
+            case .keepWaiting?:
+                self.monitorStartAttempt(manager, attemptID: attemptID)
+            case .stopSession?:
+                appLog(
+                    "Transparent Proxy start attempt unproven after "
+                        + Self.elapsedSeconds(since: self.startAttempt?.startedAt)
+                        + "s; stopping its session transaction="
+                        + (self.currentTransactionID ?? "")
+                )
+                self.budgetStoppedTransactionID =
+                    self.startAttempt?.transactionID
+                manager.connection.stopVPNTunnel()
+                self.monitorStartAttempt(manager, attemptID: attemptID)
+            case .timedOut?:
+                appLog(
+                    "Transparent Proxy start attempt timed out after "
+                        + Self.elapsedSeconds(since: self.startAttempt?.startedAt)
+                        + "s session-active=\(sessionActive) transaction="
+                        + (self.currentTransactionID ?? "")
+                )
+                self.startAttempt = nil
+                // Also withdraws a start the system has not acted on yet.
+                manager.connection.stopVPNTunnel()
+                self.publishFailure(ManagerError.startTimedOut)
+            case nil:
+                return
             }
         }
+    }
+
+    private static func elapsedSeconds(since start: Date?) -> String {
+        String(Int((-(start?.timeIntervalSinceNow ?? 0)).rounded()))
     }
 
     private func publishFailure(_ error: Error) {
@@ -2580,7 +2731,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         let wasAutomaticReconnect =
             automaticReconnectInProgress
                 && automaticReconnectTrigger != nil
-        networkExtensionSessionTransactionID = nil
+        // The transaction is decided; no start attempt for it stays open,
+        // and a start the system has not acted on yet is withdrawn.
+        withdrawPendingStart()
         connectedSessionTransactionID = nil
         cancelStableConnectionReset()
         stopUnderlayMonitoring()
@@ -2610,6 +2763,12 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                     finalState: .failed
                 )
             }
+        }
+        if AutomaticRecoveryOutcomeGate.failureContinuation(
+            wasRecovering: wasAutomaticReconnect,
+            stillRecovering: automaticReconnectInProgress
+        ) == .alreadyDecided {
+            return
         }
         let report = ConnectionReportJournal.read()
         let shouldContinueAutomaticReconnect =
@@ -2654,7 +2813,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         automaticReconnectInProgress = true
         automaticReconnectTrigger = .automaticConnection
         automaticReconnectAttemptKind = nil
-        automaticReconnectTransactionID = report.transactionID
+        // The failed launch transaction opens the episode and is awaited as
+        // its first outcome, but it is no attempt: it can never prove recovery.
+        automaticReconnectTransactionID = nil
         automaticRecoveryOutcomeGate.await(report.transactionID)
         automaticRecoveryLedger.beginEpisode(
             in: recoveryEpoch(
@@ -2796,6 +2957,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
         hostOwnedTransactionIDs.insert(transactionID)
         try ConnectionReportJournal.write(report)
+        budgetStoppedTransactionID = nil
         currentTransactionID = transactionID
         currentTransactionSeedJSON = seedJSON
         beginReportPolling(transactionID: transactionID)
@@ -2846,19 +3008,29 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         }
     }
 
-    private func publishLatestReport() {
+    /// Returns the daemon's read of the Provider journal, nil when the probe
+    /// got no report.
+    @discardableResult
+    private func publishLatestReport() -> ConnectionReport? {
         let localReport = ConnectionReportJournal.read()
         var candidate: ConnectionReport?
         var shouldMirrorProviderReport = false
 
-        if let providerReport =
-            PrivilegeManager.probeProviderConnectionReport(),
+        let probedProviderReport =
+            PrivilegeManager.probeProviderConnectionReport()
+        startAttempt?.noteProviderReport(probedProviderReport)
+        if let providerReport = probedProviderReport,
            currentTransactionID == nil ||
             providerReport.transactionID == currentTransactionID {
             if let localReport,
                localReport
                 .isSystemDisconnectConfirmationSuccessor(
                     of: providerReport
+                ) || (
+                    Self.systemSessionState(manager) != .active
+                        && localReport.isHostSettlementSuccessor(
+                            of: providerReport
+                        )
                 ) {
                 candidate = localReport
             } else {
@@ -2878,7 +3050,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 currentTransactionID: currentTransactionID
             )
         else {
-            return
+            return probedProviderReport
         }
 
         currentTransactionID = report.transactionID
@@ -2886,6 +3058,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             try? ConnectionReportJournal.write(report)
         }
         publishReport(report)
+        return probedProviderReport
     }
 
     private func finishSystemDisconnectRollbackIfNeeded() {
@@ -2933,6 +3106,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         let isNewSession =
             connectedSessionTransactionID != report.transactionID
         connectedSessionTransactionID = report.transactionID
+        if startAttempt?.transactionID == report.transactionID {
+            startAttempt = nil
+        }
         if automaticReconnectInProgress {
             if let incidentID = activeReconnectIncidentID {
                 ReconnectIncidentJournal.finish(
@@ -3748,7 +3924,6 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         automaticReconnectAttemptKind = nil
         automaticReconnectTransactionID = nil
         automaticReconnectUnderlayWaitEvidence = nil
-        networkExtensionSessionTransactionID = nil
         cancelAutomaticReconnectRetry(resetAttempts: false)
         clearParkedRecovery()
         if let incidentID = activeReconnectIncidentID {
@@ -3959,7 +4134,9 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             recoveryInProgress: automaticReconnectInProgress,
             attemptPending: automaticRecoveryAttemptPending,
             report: report,
-            currentTransactionID: currentTransactionID
+            currentTransactionID: currentTransactionID,
+            systemSessionInactive:
+                Self.systemSessionState(manager) != .active
         ) {
         case .notRecovering:
             return
@@ -3970,12 +4147,16 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
             break
         }
         guard let report else { return }
-        // Consumed: a duplicate of this report decides nothing further.
+        // Consumed: a duplicate of this report decides nothing further, and
+        // the decided attempt's transaction can no longer prove recovery.
         automaticRecoveryOutcomeGate.reset()
+        automaticReconnectTransactionID = nil
+        consumedRecoveryTransactionID = report.transactionID
+        let outcomeMessage = recoveryOutcomeMessage(report)
         guard let trigger = automaticReconnectTrigger else {
             finishAutomaticReconnect(
                 report: report,
-                message: report.error?.message
+                message: outcomeMessage
             )
             return
         }
@@ -3999,7 +4180,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
 
         finishAutomaticReconnect(
             report: report,
-            message: report.error?.message
+            message: outcomeMessage
         )
     }
 
@@ -4030,7 +4211,7 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
                 let report = outcomeReport ?? ConnectionReportJournal.read()
                 finishAutomaticReconnect(
                     report: report,
-                    message: report?.error?.message
+                    message: recoveryOutcomeMessage(report)
                 )
                 return
             }
@@ -4383,7 +4564,6 @@ final class TransparentProxyManager: NSObject, OSSystemExtensionRequestDelegate 
         automaticReconnectAttemptKind = nil
         automaticReconnectTransactionID = nil
         automaticReconnectUnderlayWaitEvidence = nil
-        networkExtensionSessionTransactionID = nil
         cancelAutomaticReconnectRetry(resetAttempts: false)
         // A network-related failure that used up the epoch's budget, or that
         // ended a wake / tail attempt inside the parked epoch, parks with the
