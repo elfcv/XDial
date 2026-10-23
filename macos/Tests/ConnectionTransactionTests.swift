@@ -286,6 +286,63 @@ final class ConnectionTransactionTests: XCTestCase {
         )
     }
 
+    func testOnlyConfirmableRollbacksWaitForSystemDisconnect() {
+        var deferred = preparedCommittedReport()
+        deferred.setState(.rollingBack)
+        deferred.rollbackSessionTasks(
+            systemTakeoverRemoved: false,
+            cleanupComplete: true,
+            finalState: .cancelled
+        )
+        XCTAssertTrue(deferred.canConfirmSystemDisconnectRollback)
+
+        var runtimeTimeout = preparedCommittedReport()
+        runtimeTimeout.setState(.rollingBack)
+        runtimeTimeout.failRollback(
+            code: "rollback-runtime-timeout",
+            message: "数据面停止超时",
+            taskID: "data-plane:sing-box"
+        )
+        runtimeTimeout.rollbackSessionTasks(
+            systemTakeoverRemoved: false,
+            cleanupComplete: false,
+            finalState: .failed
+        )
+        XCTAssertFalse(runtimeTimeout.canConfirmSystemDisconnectRollback)
+    }
+
+    func testHostSettlementOutlivesTheProviderCopyOfAnEndedSession() {
+        let providerCopy = preparedCommittedReport()
+        var hostSettled = providerCopy
+        hostSettled.setState(.rollingBack)
+        hostSettled.fail(
+            code: "provider-session-lost",
+            message: "Provider session lost",
+            taskID: "ingress:transparent-proxy"
+        )
+        hostSettled.rollbackSessionTasks(
+            systemTakeoverRemoved: true,
+            cleanupComplete: true,
+            finalState: .failed
+        )
+
+        XCTAssertTrue(hostSettled.isHostSettlementSuccessor(of: providerCopy))
+
+        var providerSettled = providerCopy
+        providerSettled.setState(.rollingBack)
+        providerSettled.rollbackSessionTasks(
+            systemTakeoverRemoved: true,
+            cleanupComplete: true,
+            finalState: .cancelled
+        )
+        XCTAssertFalse(
+            hostSettled.isHostSettlementSuccessor(of: providerSettled)
+        )
+        XCTAssertFalse(
+            providerCopy.isHostSettlementSuccessor(of: providerCopy)
+        )
+    }
+
     func testResourceRuntimeStateUsesPlanIdentityNotDisplayName() {
         let report = makeReport()
 

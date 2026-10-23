@@ -991,43 +991,7 @@ struct ConnectionReport: Codable, Equatable {
     /// `.disconnected` or `.invalid`.
     @discardableResult
     mutating func confirmSystemDisconnectRollback() -> Bool {
-        guard [
-            ConnectionTransactionState.failed,
-            .cancelled,
-        ].contains(state),
-            !rollbackComplete || !systemTakeoverRemoved
-        else {
-            return false
-        }
-
-        if let rollbackError {
-            guard
-                rollbackError.code ==
-                    "rollback-network-settings-failed",
-                rollbackError.taskID ==
-                    "ingress:transparent-proxy"
-            else {
-                return false
-            }
-        }
-
-        let sessionKinds = Set([
-            "line",
-            "subscription",
-            "dns",
-            "data_plane",
-            "ingress",
-        ])
-        let cleanupStillRunning = tasks.contains {
-            sessionKinds.contains($0.kind) && [
-                ConnectionTaskState.running,
-                .ready,
-                .committing,
-                .committed,
-                .rollingBack,
-            ].contains($0.state)
-        }
-        guard !cleanupStillRunning else {
+        guard canConfirmSystemDisconnectRollback else {
             return false
         }
 
@@ -1057,6 +1021,63 @@ struct ConnectionReport: Codable, Equatable {
             taskID: "ingress:transparent-proxy"
         )
         return true
+    }
+
+    /// Whether `confirmSystemDisconnectRollback` can still make this
+    /// unsafe terminal report safe once the system session is inactive. When
+    /// it cannot, no later Host fact completes the rollback.
+    var canConfirmSystemDisconnectRollback: Bool {
+        guard [
+            ConnectionTransactionState.failed,
+            .cancelled,
+        ].contains(state),
+            !rollbackComplete || !systemTakeoverRemoved
+        else {
+            return false
+        }
+
+        if let rollbackError {
+            guard
+                rollbackError.code ==
+                    "rollback-network-settings-failed",
+                rollbackError.taskID ==
+                    "ingress:transparent-proxy"
+            else {
+                return false
+            }
+        }
+
+        let sessionKinds = Set([
+            "line",
+            "subscription",
+            "dns",
+            "data_plane",
+            "ingress",
+        ])
+        return !tasks.contains {
+            sessionKinds.contains($0.kind) && [
+                ConnectionTaskState.running,
+                .ready,
+                .committing,
+                .committed,
+                .rollingBack,
+            ].contains($0.state)
+        }
+    }
+
+    /// The Host settles a transaction only after its system session was read
+    /// inactive. While that session stays inactive, a Provider copy of the
+    /// same transaction that is not terminal is its last entry before it
+    /// stopped, so it must not reopen the settled report.
+    func isHostSettlementSuccessor(
+        of providerReport: ConnectionReport
+    ) -> Bool {
+        transactionID == providerReport.transactionID
+            && ConnectionReportLiveProjection.isSafelySettledTerminal(self)
+            && ![
+                ConnectionTransactionState.failed,
+                .cancelled,
+            ].contains(providerReport.state)
     }
 
     /// Prevents the provider's final pre-disconnect journal entry from
