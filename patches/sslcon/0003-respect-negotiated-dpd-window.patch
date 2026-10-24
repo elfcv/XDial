@@ -1,0 +1,78 @@
+diff --git a/session/xdial_liveness.go b/session/xdial_liveness.go
+index 661155e..cd33267 100644
+--- a/session/xdial_liveness.go
++++ b/session/xdial_liveness.go
+@@ -28,0 +29 @@ type xdialTransportLiveness struct {
++	deadPeerTimeout     time.Duration
+@@ -86,0 +88 @@ type xdialTransportSnapshot struct {
++	DeadPeerTimeoutSeconds  int    `json:"dead_peer_timeout_seconds"`
+@@ -131,0 +134,8 @@ func newXDialLiveness(cSess *ConnSession, header http.Header) *xdialLiveness {
++	tlsDeadPeerTimeout := effectiveXDialDeadPeerTimeout(
++		tlsDPD,
++		cSess.TLSDpdTime,
++	)
++	dtlsDeadPeerTimeout := effectiveXDialDeadPeerTimeout(
++		dtlsDPD,
++		cSess.DTLSDpdTime,
++	)
+@@ -167,0 +178 @@ func newXDialLiveness(cSess *ConnSession, header http.Header) *xdialLiveness {
++			deadPeerTimeout:     tlsDeadPeerTimeout,
+@@ -175,0 +187 @@ func newXDialLiveness(cSess *ConnSession, header http.Header) *xdialLiveness {
++			deadPeerTimeout:     dtlsDeadPeerTimeout,
+@@ -220,0 +233,16 @@ func effectiveXDialDPD(force time.Duration, negotiatedSeconds int) time.Duration
++// effectiveXDialDeadPeerTimeout keeps force-DPD as an early probe interval,
++// but does not let it shorten the server's negotiated DPD window. This keeps
++// fast failure detection on ordinary links without tearing down a healthy
++// session after a brief high-latency or lossy-network stall.
++func effectiveXDialDeadPeerTimeout(
++	probe time.Duration,
++	negotiatedSeconds int,
++) time.Duration {
++	timeout := 2 * probe
++	negotiated := time.Duration(negotiatedSeconds) * time.Second
++	if negotiated > timeout {
++		return negotiated
++	}
++	return timeout
++}
++
+@@ -298 +326 @@ func stepXDialTransport(
+-	if sinceFrame >= 2*state.effectiveDPD {
++	if state.deadPeerTimeout > 0 && sinceFrame >= state.deadPeerTimeout {
+@@ -545,0 +574 @@ func snapshotXDialTransport(
++		DeadPeerTimeoutSeconds:  int(state.deadPeerTimeout / time.Second),
+diff --git a/session/xdial_liveness_test.go b/session/xdial_liveness_test.go
+index b06ea9e..e2851e3 100644
+--- a/session/xdial_liveness_test.go
++++ b/session/xdial_liveness_test.go
+@@ -27 +27 @@ func newXDialTestSession(t *testing.T) *ConnSession {
+-func TestXDialForceDPDUsesIdleAndRetryWindows(t *testing.T) {
++func TestXDialForceDPDProbesEarlyButRespectsNegotiatedDeadPeerWindow(t *testing.T) {
+@@ -51,2 +51,21 @@ func TestXDialForceDPDUsesIdleAndRetryWindows(t *testing.T) {
+-	if result := liveness.step(started.Add(10 * time.Second)); !result.tlsDead {
+-		t.Fatalf("peer not declared dead after two DPD intervals: %#v", result)
++	if result := liveness.step(started.Add(10 * time.Second)); result.tlsDead {
++		t.Fatalf("peer declared dead before negotiated DPD window: %#v", result)
++	}
++	if result := liveness.step(started.Add(119 * time.Second)); result.tlsDead {
++		t.Fatalf("peer declared dead before negotiated DPD window: %#v", result)
++	}
++	if result := liveness.step(started.Add(120 * time.Second)); !result.tlsDead {
++		t.Fatalf("peer not declared dead at negotiated DPD window: %#v", result)
++	}
++}
++
++func TestXDialForceDPDFallsBackToTwoProbeIntervalsWithoutNegotiatedDPD(t *testing.T) {
++	base.Cfg.SetXDialForceDPD(5)
++	cSess := (&Session{}).NewConnSession(&http.Header{})
++	started := cSess.xdial.tls.lastFrame
++
++	if result := cSess.xdial.step(started.Add(9 * time.Second)); result.tlsDead {
++		t.Fatalf("peer declared dead before fallback window: %#v", result)
++	}
++	if result := cSess.xdial.step(started.Add(10 * time.Second)); !result.tlsDead {
++		t.Fatalf("peer not declared dead after fallback window: %#v", result)
+@@ -96,0 +116,3 @@ func TestXDialDPDCountsQueueWriteAndResponseSeparately(t *testing.T) {
++	if snapshot.TLS.DeadPeerTimeoutSeconds != 120 {
++		t.Fatalf("dead-peer timeout = %d, want 120", snapshot.TLS.DeadPeerTimeoutSeconds)
++	}
